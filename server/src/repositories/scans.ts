@@ -67,6 +67,7 @@ function toScan(row: ScanRow): Scan {
     newFindingCount: row.new_finding_count,
     failedRepos: parseFailedRepos(row.failed_repos),
     error: row.error,
+    repoStats: null, // sp-shim
   };
 }
 
