@@ -1,13 +1,15 @@
 import picomatch from "picomatch";
 import { parse as parseYaml } from "yaml";
-import { isPlainObject, stringArray } from "./lockfiles/common.ts";
+import { errorMessage, isPlainObject, stringArray } from "./lockfiles/common.ts";
 import type { LockfileKind } from "./lockfiles/index.ts";
 
 /**
  * lockfile 디렉터리의 workspace glob.
  * - `pnpm`: 그 디렉터리의 `pnpm-workspace.yaml` 의 `packages` 만 읽는다.
  * - 그 외 3종: 그 디렉터리의 `package.json` 의 `workspaces`(배열 또는 `.packages`)만 읽는다.
- * 파일이 없거나 비어 있거나 형식이 맞지 않으면 `[]` (예외 없음).
+ * 파일이 없거나 비어 있거나 `packages`·`workspaces` 가 없거나 형식이 맞지 않으면 `[]` (예외 없음).
+ * `pnpm-workspace.yaml` 의 YAML 문법이 깨졌으면 예외다(S-14) — glob 0개로 두면 workspace 의
+ * 직접 의존성이 range 검사로 넘어가 잘못된 검출이 생긴다.
  */
 export function readWorkspaceGlobs(
   kind: LockfileKind,
@@ -23,8 +25,8 @@ export function readWorkspaceGlobs(
     let data: unknown;
     try {
       data = parseYaml(sources.pnpmWorkspaceYaml);
-    } catch {
-      return [];
+    } catch (error) {
+      throw new Error(`pnpm-workspace.yaml 을 해석할 수 없습니다: ${errorMessage(error)}`);
     }
     return isPlainObject(data) ? stringArray(data.packages) : [];
   }

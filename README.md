@@ -116,7 +116,7 @@ HTTP 전송을 직접 지원하지 않는 클라이언트(예: Claude Desktop)�
 
 ## 알려진 한계
 
-- GitHub 가 파일 트리를 잘라서(`truncated`) 돌려주는 대형 repo 와, `package.json` 이나 lockfile 을 해석할 수 없는 repo 는 매 스캔 실패 repo 로 기록되어 스캔이 `partial` 이 된다.
+- GitHub 가 파일 트리를 잘라서(`truncated`) 돌려주는 대형 repo 와, `package.json`, lockfile, `pnpm-workspace.yaml` 을 해석할 수 없는 repo 는 매 스캔 실패 repo 로 기록되어 스캔이 `partial` 이 된다.
 - `bun.lockb`(바이너리)는 읽지 않는다. `bun.lock` 이 없으면 lockfile 이 없는 것으로 보고 `package.json` 의 range 로만 검사하며 경고 로그를 남긴다.
 - lockfile 이 없는 `package.json` 은 range 겹침으로 검사한다. `latest` 같은 dist-tag, `workspace:`, git URL 처럼 semver range 가 아닌 spec 은 "모든 버전" 항목에만 검출된다.
 - GitHub API primary rate limit 이 소진되면 기다리지 않고 남은 repo 를 `RATE_LIMITED` 실패로 기록한다. 다음 스캔에서 다시 검사한다.

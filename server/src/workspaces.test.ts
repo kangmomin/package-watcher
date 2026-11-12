@@ -127,3 +127,24 @@ describe("assignLockfiles (A-1 귀속 규칙)", () => {
     expect(lockfilesOf(result, "packages/a/package.json")).toEqual(["package-lock.json"]);
   });
 });
+
+describe("readWorkspaceGlobs — 깨진 pnpm-workspace.yaml (S-14)", () => {
+  it("[EC-13] YAML 문법이 깨진 pnpm-workspace.yaml 은 glob 0개가 아니라 예외다", () => {
+    const broken = [
+      "packages:\n  - 'packages/*\n", // 닫히지 않은 따옴표
+      "packages: [apps/*, packages/*\n", // 닫히지 않은 flow sequence
+      "packages:\n\t- 'packages/*'\n", // 탭 들여쓰기
+    ];
+    for (const yaml of broken) {
+      expect(() => readWorkspaceGlobs("pnpm", { pnpmWorkspaceYaml: yaml })).toThrow(
+        /pnpm-workspace\.yaml/,
+      );
+    }
+  });
+
+  it("[EC-13] 문법이 맞으면 주석뿐인 파일·packages 형식 불일치·최상위 목록은 지금처럼 glob 0개다", () => {
+    for (const yaml of ["# packages 없음\n", "packages: 'packages/*'\n", "- packages/*\n"]) {
+      expect(readWorkspaceGlobs("pnpm", { pnpmWorkspaceYaml: yaml })).toEqual([]);
+    }
+  });
+});

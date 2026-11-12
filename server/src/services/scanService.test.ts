@@ -487,3 +487,78 @@ describe("resolve ① (EC-04)", () => {
     expect(t.mailer.sentText()).toContain("api");
   });
 });
+
+describe("깨진 workspace 선언 (EC-13, S-14)", () => {
+  /** workspace `packages/a` 의 직접 의존성 lodash 가 루트 lockfile 에 있는 모노레포 */
+  function monorepoFiles(kind: "pnpm" | "npm"): Record<string, string> {
+    const workspace = pkgJson({ name: "a", dependencies: { lodash: "^4.17.0" } });
+    if (kind === "pnpm") {
+      return {
+        "package.json": pkgJson({ name: "root" }),
+        "packages/a/package.json": workspace,
+        "pnpm-lock.yaml": pnpmV9Lock({ lodash: "4.17.20" }),
+        "pnpm-workspace.yaml": "packages:\n  - 'packages/*'\n",
+      };
+    }
+    return {
+      "package.json": pkgJson({ name: "root", workspaces: ["packages/*"] }),
+      "packages/a/package.json": workspace,
+      "package-lock.json": npmLockV3({ lodash: "4.17.20" }),
+    };
+  }
+
+  async function seedMonorepo(kind: "pnpm" | "npm") {
+    await addBlacklist(t, LODASH);
+    t.github.setRepos([
+      { name: "mono", files: monorepoFiles(kind) },
+      { name: "good", files: { "package.json": clean() } },
+    ]);
+    await runScan(t);
+    const before = findOne(await allFindings(t), { repo: "mono" });
+    expect(before).toMatchObject({ version: "4.17.20", dependencyType: "direct", status: "open" });
+    t.mailer.clear();
+    t.clock.advance(60_000);
+    return before;
+  }
+
+  it("[EC-13] pnpm-workspace.yaml 의 YAML 문법이 깨지면 그 repo 는 실패(partial, failedRepos)이고 기존 검출은 유지, workspace 의존성을 range 검사로 새로 검출하지 않는다", async () => {
+    const before = await seedMonorepo("pnpm");
+
+    t.github.setFiles("mono", {
+      ...monorepoFiles("pnpm"),
+      "pnpm-workspace.yaml": "packages:\n  - 'packages/*\n",
+    });
+    const scan = await runScan(t);
+
+    expect(scan).toMatchObject({ status: "partial", newFindingCount: 0, repoCount: 2 });
+    expect(scan.failedRepos).toHaveLength(1);
+    expect(scan.failedRepos[0]?.repo).toBe("mono");
+    expect(scan.failedRepos[0]?.error).toContain("pnpm-workspace.yaml");
+    const items = await allFindings(t);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      id: before.id,
+      status: "open",
+      dependencyType: "direct",
+      resolvedAt: null,
+    });
+    expect(t.mailer.attempts).toHaveLength(0);
+  });
+
+  it("[EC-13] workspaces 를 선언한 루트 package.json 의 JSON 이 깨져도 그 repo 는 실패이고 기존 검출은 유지된다", async () => {
+    const before = await seedMonorepo("npm");
+
+    t.github.setFiles("mono", {
+      ...monorepoFiles("npm"),
+      "package.json": '{ "name": "root", "workspaces": ["packages/*"',
+    });
+    const scan = await runScan(t);
+
+    expect(scan).toMatchObject({ status: "partial", newFindingCount: 0 });
+    expect(scan.failedRepos.map((failed) => failed.repo)).toEqual(["mono"]);
+    const items = await allFindings(t);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ id: before.id, status: "open", resolvedAt: null });
+    expect(t.mailer.attempts).toHaveLength(0);
+  });
+});

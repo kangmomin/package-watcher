@@ -278,3 +278,36 @@ describe("결과 중복 제거 (검출 키당 1행)", () => {
     expect(await allFindings(t)).toHaveLength(1);
   });
 });
+
+describe("남은 running 행 (S-16)", () => {
+  it("[EC-05] 종료 트랜잭션과 failed 기록이 모두 실패해 running 으로 남은 행은 다음 스캔을 시작할 때 failed(\"비정상 종료\")가 된다", async () => {
+    await addBlacklist(t, EVIL);
+    t.github.setRepos([{ name: "api", files: { "package.json": withEvil() } }]);
+    // 스캔 행 마감(UPDATE)만 막는다: 종료 트랜잭션과 failUnexpected 의 기록이 모두 실패한다.
+    t.instance.db.exec(
+      "CREATE TRIGGER pw_test_fail_finish BEFORE UPDATE ON scans BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+    );
+
+    const stuck = await runScan(t);
+
+    expect(t.instance.services.scans.isRunning()).toBe(false);
+    expect(await getScan(t, stuck.id)).toMatchObject({ status: "running", finishedAt: null });
+    expect(await allFindings(t)).toEqual([]);
+
+    t.instance.db.exec("DROP TRIGGER pw_test_fail_finish");
+    t.clock.advance(60_000);
+    const res = await t.request("POST", "/api/scans");
+    expect(res.status, res.text).toBe(202);
+    const next = scanSchema.parse(res.json);
+
+    expect(await getScan(t, stuck.id)).toMatchObject({
+      status: "failed",
+      error: "비정상 종료",
+      finishedAt: t.clock.iso(),
+    });
+    expect(next).toMatchObject({ status: "running", trigger: "manual" });
+    await waitForScans(t);
+    expect(await getScan(t, next.id)).toMatchObject({ status: "success", newFindingCount: 1 });
+    expect(t.logger.texts("warn").some((text) => text.includes("비정상 종료"))).toBe(true);
+  });
+});

@@ -49,6 +49,7 @@ const ACCESS_SUSPECT =
   "접근 불가 의심: 대상 목록이 비었거나 직전보다 절반 넘게 줄어서 resolve 를 보류했습니다";
 const STILL_EXISTS = "대상 목록에 없지만 저장소가 존재합니다. 토큰의 접근 권한을 확인하십시오";
 const ORG_CHANGED = "스캔 중 GitHub org 설정이 바뀌어 결과를 저장하지 않았습니다";
+const ABANDONED = "비정상 종료";
 const DEPENDENCY_FIELDS = [
   "dependencies",
   "devDependencies",
@@ -134,6 +135,20 @@ function findingKey(match: FindingKey): string {
 function describeError(error: unknown): string {
   if (error instanceof RateLimitedError) return RATE_LIMITED;
   return errorMessage(error) || "알 수 없는 오류";
+}
+
+/**
+ * ② 재확인 응답의 `full_name` 이 그 repo 자신인가.
+ * org 는 소문자로 정규화해 저장하므로 org 부분은 대소문자를 무시한다. repo 이름은 목록이 준 정식 이름이므로
+ * 대소문자까지 같아야 한다 — 대소문자만 바뀐 이름(`Foo` → `foo`)도 이름 변경이다(S-15).
+ */
+function isSameRepo(fullName: string, org: string, repo: string): boolean {
+  const slash = fullName.indexOf("/");
+  return (
+    slash !== -1 &&
+    fullName.slice(0, slash).toLowerCase() === org.toLowerCase() &&
+    fullName.slice(slash + 1) === repo
+  );
 }
 
 // [Assumption] org·repo·경로 조각을 percent-encoding 한다 — 근거: 공백·`#` 이 든 경로도 유효한 URL 이 되게 한다(일반 이름은 계약 형식과 같다).
@@ -263,6 +278,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       lockPackages.set(file.path, parseLockfileOrThrow(file, contentOf(file.path)));
     }
 
+    // 문법이 깨진 pnpm-workspace.yaml 은 readWorkspaceGlobs 가 throw 해서 repo 실패가 된다(S-14).
     const assignment = assignLockfiles(
       packageJsons.map((entry) => entry.path),
       lockfiles.map((file) => {
@@ -373,9 +389,9 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       }
       try {
         const info = await client.getRepo(org, name);
-        const renamed = info !== null && info.fullName.toLowerCase() !== `${org}/${name}`.toLowerCase();
-        if (info === null || info.archived || info.fork || renamed) resolveRepos.push(name);
-        else lookupFailures.push({ repo: name, error: STILL_EXISTS });
+        if (info === null || info.archived || info.fork || !isSameRepo(info.fullName, org, name)) {
+          resolveRepos.push(name); // 삭제·archived·fork·이름 변경(대소문자만 바뀐 것 포함)·이전
+        } else lookupFailures.push({ repo: name, error: STILL_EXISTS });
       } catch (error) {
         if (error instanceof RateLimitedError) rateLimited = true;
         lookupFailures.push({ repo: name, error: describeError(error) });
@@ -561,8 +577,15 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     if (githubTokenSource === "none" || !github) throw new AppError("TOKEN_MISSING", TOKEN_MISSING_MESSAGE);
     if (running) throw new AppError("SCAN_RUNNING", "스캔이 이미 실행 중입니다");
 
+    // lock 이 없는데 running 인 행은 종료 트랜잭션과 failed 기록이 모두 실패하고 남은 것이다(S-16).
+    const now = toIso(clock.now());
+    const abandoned = repos.scans.failRunning(ABANDONED, now);
+    if (abandoned > 0) {
+      logger.warn(`running 으로 남은 스캔 ${abandoned}건을 failed(${ABANDONED})로 기록했습니다`);
+    }
+
     const snapshot = repos.blacklist.list();
-    const scan = repos.scans.insertRunning(trigger, toIso(clock.now()));
+    const scan = repos.scans.insertRunning(trigger, now);
     // lock 은 메일 발송까지 끝난 뒤 finally 에서 푼다.
     const done = execute(scan, org, github, snapshot).finally(() => {
       running = null;

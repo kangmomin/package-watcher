@@ -87,7 +87,7 @@ describe("resolve ② — 대상 목록에서 빠진 repo 재확인", () => {
     await runScan(t);
 
     t.github.hide("private-svc");
-    t.github.lookups.set("private-svc", repoInfo(ORG, "Private-Svc", { fullName: "My-Org/Private-Svc" }));
+    t.github.lookups.set("private-svc", repoInfo(ORG, "Private-Svc", { fullName: "My-Org/private-svc" }));
     const scan = await nextScan();
 
     expect(scan.status).toBe("partial");
@@ -214,5 +214,43 @@ describe("resolve ② 안전장치 (listed_baseline)", () => {
     expect(findOne(items, { repo: "hit-20" }).status).toBe("resolved");
     const hit19 = findOne(items, { repo: "hit-19" });
     expect(hit19).toMatchObject({ id: before.id, status: "open" });
+  });
+});
+
+describe("resolve ② — 대소문자만 바뀐 repo 이름 (S-15)", () => {
+  it("[EC-04] repo 이름이 대소문자만 바뀌면(Foo-Svc → foo-svc) 이전 이름의 검출을 resolve 하고 새 이름은 일반 repo 로 스캔한다 (partial 로 남지 않는다)", async () => {
+    t.github.setRepos([...fillers(4), { name: "Foo-Svc", files: { "package.json": withEvil() } }]);
+    await runScan(t);
+    const before = findOne(await allFindings(t), { repo: "Foo-Svc" });
+
+    // GitHub 는 repo 이름을 대소문자 무시로 찾으므로 이전 이름의 재확인도 200 + 새 정식 이름이다.
+    t.github.removeRepo("Foo-Svc");
+    t.github.upsertRepo({ name: "foo-svc", files: { "package.json": withEvil() } });
+    t.github.lookups.set("Foo-Svc", repoInfo(ORG, "foo-svc"));
+    const scan = await nextScan();
+
+    expect(scan).toMatchObject({ status: "success", failedRepos: [], newFindingCount: 1 });
+    const items = await allFindings(t);
+    expect(findOne(items, { repo: "Foo-Svc" })).toMatchObject({ id: before.id, status: "resolved" });
+    expect(findOne(items, { repo: "foo-svc" }).status).toBe("open");
+
+    const after = await nextScan();
+    expect(after).toMatchObject({ status: "success", failedRepos: [] });
+  });
+
+  it("[EC-01] 재확인 full_name 의 repo 이름이 정확히 같으면 org 의 대소문자만 달라도 같은 repo 다 (유지 + failedRepos)", async () => {
+    t.github.setRepos([...fillers(4), { name: "private-svc", files: { "package.json": withEvil() } }]);
+    await runScan(t);
+
+    t.github.hide("private-svc");
+    t.github.lookups.set("private-svc", repoInfo(ORG, "private-svc", { fullName: "My-Org/private-svc" }));
+    const scan = await nextScan();
+
+    expect(scan.status).toBe("partial");
+    expect(scan.failedRepos.map((failed) => failed.repo)).toEqual(["private-svc"]);
+    expect(findOne(await allFindings(t), { repo: "private-svc" })).toMatchObject({
+      status: "open",
+      resolvedAt: null,
+    });
   });
 });
