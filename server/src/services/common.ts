@@ -1,7 +1,8 @@
-import { digestTimeSchema, scanIntervalHoursSchema, toDetails } from "@pw/shared";
+import { DIGEST_TIMEZONE, digestTimeSchema, scanIntervalHoursSchema, toDetails } from "@pw/shared";
 import type { z } from "zod";
 import type { TokenSource } from "../config.ts";
 import { AppError } from "../errors.ts";
+import { stringArray } from "../lockfiles/common.ts";
 import type { SettingsRepository } from "../repositories/settings.ts";
 
 export const HOUR_MS = 60 * 60 * 1000;
@@ -10,6 +11,26 @@ export const DEFAULT_DIGEST_TIME = "09:00";
 
 export const toIso = (date: Date): string => date.toISOString();
 export const addMs = (date: Date, ms: number): Date => new Date(date.getTime() + ms);
+
+// 서버 TZ 와 무관하게 Asia/Seoul 기준의 날짜와 시각을 얻는다(`Intl` 만 사용).
+const KST_PARTS = new Intl.DateTimeFormat("en-US", {
+  timeZone: DIGEST_TIMEZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
+
+/** KST 날짜(`yyyy-MM-dd`)와 시각(`HH:mm`). 일일 요약 판정과 메일 제목이 함께 쓴다. */
+export function toKst(date: Date): { date: string; time: string } {
+  const parts = Object.fromEntries(KST_PARTS.formatToParts(date).map((part) => [part.type, part.value]));
+  return {
+    date: `${parts.year}-${parts.month}-${parts.day}`,
+    time: `${parts.hour}:${parts.minute}`,
+  };
+}
 
 /** shared 스키마로 검증한다. 실패하면 VALIDATION_ERROR(+details). */
 export function parseInput<S extends z.ZodType>(schema: S, input: unknown): z.output<S> {
@@ -43,8 +64,7 @@ export function readStoredSettings(settings: SettingsRepository): StoredSettings
 function parseRecipients(raw: string | null): string[] {
   if (raw === null) return [];
   try {
-    const value: unknown = JSON.parse(raw);
-    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+    return stringArray(JSON.parse(raw));
   } catch {
     return [];
   }

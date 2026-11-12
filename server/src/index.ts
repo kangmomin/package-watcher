@@ -1,9 +1,8 @@
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { serve } from "@hono/node-server";
-import { createApp } from "./app.ts";
+import { createApp, hasWebDist } from "./app.ts";
 import { systemClock } from "./clock.ts";
-import { isSmtpConfigured, loadConfig, readGhAuthToken } from "./config.ts";
+import { loadConfig, readGhAuthToken } from "./config.ts";
 import { createOctokitClient } from "./github/client.ts";
 import { consoleLogger } from "./logger.ts";
 import { createSmtpMailer, unconfiguredMailer } from "./services/notifier.ts";
@@ -15,22 +14,22 @@ const SHUTDOWN_TIMEOUT_MS = 10_000;
 function main(): void {
   const logger = consoleLogger;
   const config = loadConfig(process.env, readGhAuthToken);
-  const webDistDir = existsSync(join(config.webDistDir, "index.html")) ? config.webDistDir : null;
 
   const instance = createApp({
     dbPath: join(config.dataDir, DB_FILE_NAME),
     github: config.github.token ? createOctokitClient({ token: config.github.token }) : null,
     githubTokenSource: config.github.source,
     mailer: config.smtp ? createSmtpMailer(config.smtp) : unconfiguredMailer,
-    smtpConfigured: isSmtpConfigured(process.env),
+    smtpConfigured: config.smtp !== null,
     clock: systemClock,
     logger,
     initialSettings: config.initialSettings,
-    webDistDir,
+    // 없으면 createApp 이 정적 파일 제공을 건너뛴다.
+    webDistDir: config.webDistDir,
   });
 
   logger.info(`GitHub 토큰: ${config.github.source}, SMTP: ${config.smtp ? "설정됨" : "없음"}`);
-  if (!webDistDir) {
+  if (!hasWebDist(config.webDistDir)) {
     logger.info(`web 빌드(${config.webDistDir})가 없어 정적 파일 제공을 건너뜁니다`);
   }
 
@@ -40,6 +39,7 @@ function main(): void {
   );
   instance.scheduler.start();
 
+  // [Assumption] 종료 신호는 SIGTERM/SIGINT 이고 SHUTDOWN_TIMEOUT_MS 만큼만 기다린다 — 근거: Spec 에 종료 처리 규칙이 없다(A-7 은 재시작 보정만 정한다).
   let shuttingDown = false;
   const shutdown = (signal: string): void => {
     if (shuttingDown) return;

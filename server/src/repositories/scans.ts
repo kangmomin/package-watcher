@@ -1,4 +1,11 @@
-import type { FailedRepo, Page, Scan, ScanStatus, ScanTrigger } from "@pw/shared";
+import {
+  failedRepoSchema,
+  type FailedRepo,
+  type Page,
+  type Scan,
+  type ScanStatus,
+  type ScanTrigger,
+} from "@pw/shared";
 import type { Db } from "../db/index.ts";
 
 export interface ScanResult {
@@ -43,13 +50,7 @@ function parseFailedRepos(raw: string): FailedRepo[] {
   try {
     const value: unknown = JSON.parse(raw);
     if (!Array.isArray(value)) return [];
-    return value.filter(
-      (item): item is FailedRepo =>
-        typeof item === "object" &&
-        item !== null &&
-        typeof (item as FailedRepo).repo === "string" &&
-        typeof (item as FailedRepo).error === "string",
-    );
+    return value.filter((item): item is FailedRepo => failedRepoSchema.safeParse(item).success);
   } catch {
     return [];
   }

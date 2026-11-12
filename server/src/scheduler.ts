@@ -2,7 +2,7 @@ import type { Clock } from "./clock.ts";
 import type { TokenSource } from "./config.ts";
 import type { Logger } from "./logger.ts";
 import type { Repositories } from "./repositories/index.ts";
-import { addMs, canScan, HOUR_MS, readStoredSettings, toIso } from "./services/common.ts";
+import { addMs, canScan, HOUR_MS, readStoredSettings, toIso, toKst } from "./services/common.ts";
 import type { Notifier } from "./services/notifier.ts";
 import type { ScanService } from "./services/scanService.ts";
 
@@ -20,7 +20,7 @@ export interface Scheduler {
    *   실행 중이면 건너뛴다(스캔 행 없음). 두 경우 모두 `next_scan_at` 을 원래 격자의 다음 미래 시각으로 옮긴다.
    * - org 또는 토큰이 없으면 자동 스캔을 하지 않는다.
    * - 일일 요약: KST 날짜가 바뀌고 `digestTime` 이 지났으면 1회. `last_digest_date` 는 발송 전에 기록한다.
-   *   요약 발송은 tick 안에서 끝까지 기다린다. KST 계산은 `Intl`(`timeZone: "Asia/Seoul"`)만 쓴다.
+   *   요약 발송은 tick 안에서 끝까지 기다린다. KST 계산은 `toKst`(services/common, `Intl` 만 사용)를 쓴다.
    */
   tick(): Promise<void>;
 }
@@ -32,25 +32,6 @@ export interface SchedulerDeps {
   clock: Clock;
   githubTokenSource: TokenSource;
   logger: Logger;
-}
-
-// 서버 TZ 와 무관하게 Asia/Seoul 기준의 날짜와 시각을 얻는다.
-const KST_PARTS = new Intl.DateTimeFormat("en-US", {
-  timeZone: "Asia/Seoul",
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  hourCycle: "h23",
-});
-
-export function toKst(date: Date): { date: string; time: string } {
-  const parts = Object.fromEntries(KST_PARTS.formatToParts(date).map((part) => [part.type, part.value]));
-  return {
-    date: `${parts.year}-${parts.month}-${parts.day}`,
-    time: `${parts.hour}:${parts.minute}`,
-  };
 }
 
 /**

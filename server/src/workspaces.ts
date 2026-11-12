@@ -1,6 +1,6 @@
 import picomatch from "picomatch";
 import { parse as parseYaml } from "yaml";
-import { isPlainObject } from "./lockfiles/common.ts";
+import { isPlainObject, stringArray } from "./lockfiles/common.ts";
 import type { LockfileKind } from "./lockfiles/index.ts";
 
 /**
@@ -33,10 +33,6 @@ export function readWorkspaceGlobs(
   if (Array.isArray(workspaces)) return stringArray(workspaces);
   if (isPlainObject(workspaces)) return stringArray(workspaces.packages);
   return [];
-}
-
-function stringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
 export interface LockfileInput {

@@ -20,7 +20,7 @@ import {
   errorMessage,
   isPlainObject,
   normalizeText,
-  splitNameAndRest,
+  unwrapNpmAlias,
 } from "../lockfiles/common.ts";
 import {
   lockfileKindOf,
@@ -30,6 +30,7 @@ import {
 } from "../lockfiles/index.ts";
 import type { Logger } from "../logger.ts";
 import { matchExact, matchRange } from "../matcher.ts";
+import type { FindingKey } from "../repositories/findings.ts";
 import type { Repositories } from "../repositories/index.ts";
 import type { ScanResult } from "../repositories/scans.ts";
 import { assignLockfiles, dirOf, readWorkspaceGlobs } from "../workspaces.ts";
@@ -85,13 +86,8 @@ export interface ScanServiceDeps {
   logger: Logger;
 }
 
-interface Match {
-  repo: string;
-  filePath: string;
-  packageName: string;
-  version: string;
+interface Match extends FindingKey {
   dependencyType: DependencyType;
-  blacklistEntryId: number;
 }
 
 type RepoOutcome =
@@ -104,7 +100,7 @@ type Collected =
       kind: "listed";
       /** archived·fork 를 포함한 목록 크기 (`listed_baseline` 비교용) */
       listedCount: number;
-      targetCount: number;
+      /** 대상 repo(archived·fork 제외)마다 1개 */
       outcomes: RepoOutcome[];
       /** ② 재확인 결과 resolve 할 repo */
       resolveRepos: string[];
@@ -127,9 +123,9 @@ interface LockfileFile {
 
 const baseName = (path: string): string => path.slice(path.lastIndexOf("/") + 1);
 const joinPath = (dir: string, name: string): string => (dir === "" ? name : `${dir}/${name}`);
-const isInNodeModules = (path: string): boolean => path.split("/").includes("node_modules");
+const isInNodeModules = (path: string): boolean => `/${path}/`.includes("/node_modules/");
 
-function findingKey(match: Omit<Match, "dependencyType">): string {
+function findingKey(match: FindingKey): string {
   return [match.repo, match.filePath, match.packageName, match.version, match.blacklistEntryId].join(
     "\u0000",
   );
@@ -140,6 +136,7 @@ function describeError(error: unknown): string {
   return errorMessage(error) || "알 수 없는 오류";
 }
 
+// [Assumption] org·repo·경로 조각을 percent-encoding 한다 — 근거: 공백·`#` 이 든 경로도 유효한 URL 이 되게 한다(일반 이름은 계약 형식과 같다).
 function htmlUrlOf(org: string, repo: string, filePath: string): string {
   const path = filePath.split("/").map(encodeURIComponent).join("/");
   return `https://github.com/${encodeURIComponent(org)}/${encodeURIComponent(repo)}/blob/HEAD/${path}`;
@@ -185,7 +182,7 @@ function parseManifest(path: string, content: string): Manifest {
     for (const [alias, spec] of Object.entries(deps)) {
       if (typeof spec !== "string") continue;
       // `"x": "npm:real@^1"` 은 실제 이름 real 의 의존성이다.
-      const name = spec.startsWith("npm:") ? splitNameAndRest(spec.slice("npm:".length)).name : alias;
+      const { name } = unwrapNpmAlias(alias, spec);
       dependencies.push({ name, spec });
     }
   }
@@ -216,21 +213,30 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     if (tree.truncated) {
       throw new Error("파일 트리가 너무 커서 GitHub 가 일부만 반환했습니다(truncated)");
     }
-    const files = tree.entries.filter((entry) => !isInNodeModules(entry.path));
-    const packageJsons = files.filter((entry) => baseName(entry.path) === "package.json");
+    // 트리는 수만 개일 수 있어 한 번만 돌며 파일 이름으로 나눈다(각 목록은 트리 순서 유지).
+    const packageJsons: TreeEntry[] = [];
+    const lockfiles: (TreeEntry & LockfileFile)[] = [];
+    const bunLockbs: TreeEntry[] = [];
+    const yamlCandidates: TreeEntry[] = [];
+    for (const entry of tree.entries) {
+      if (isInNodeModules(entry.path)) continue;
+      const name = baseName(entry.path);
+      if (name === "package.json") packageJsons.push(entry);
+      else if (name === "bun.lockb") bunLockbs.push(entry);
+      else if (name === "pnpm-workspace.yaml") yamlCandidates.push(entry);
+      else {
+        const kind = lockfileKindOf(name);
+        if (kind) lockfiles.push({ ...entry, kind });
+      }
+    }
     // package.json 이 0개면 Node 프로젝트가 아니다(실패 아님).
     if (packageJsons.length === 0) return { packageJsonCount: 0, matches: [] };
 
-    const lockfiles: (TreeEntry & LockfileFile)[] = [];
-    for (const entry of files) {
-      const kind = lockfileKindOf(entry.path);
-      if (kind) lockfiles.push({ ...entry, kind });
-    }
     const dirsOf = (kind: LockfileKind) =>
       new Set(lockfiles.filter((file) => file.kind === kind).map((file) => dirOf(file.path)));
     const bunLockDirs = dirsOf("bun");
-    for (const entry of files) {
-      if (baseName(entry.path) === "bun.lockb" && !bunLockDirs.has(dirOf(entry.path))) {
+    for (const entry of bunLockbs) {
+      if (!bunLockDirs.has(dirOf(entry.path))) {
         logger.warn(
           `bun.lockb 는 읽지 않습니다. lockfile 이 없는 것으로 처리합니다 (EC-12): ` +
             `${org}/${repo.name}/${entry.path}`,
@@ -238,9 +244,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       }
     }
     const pnpmDirs = dirsOf("pnpm");
-    const workspaceYamls = files.filter(
-      (entry) => baseName(entry.path) === "pnpm-workspace.yaml" && pnpmDirs.has(dirOf(entry.path)),
-    );
+    const workspaceYamls = yamlCandidates.filter((entry) => pnpmDirs.has(dirOf(entry.path)));
 
     // 파일 1개라도 조회·파싱에 실패하면 repo 전체가 실패다(호출 쪽이 failedRepos 로 기록).
     const contents = new Map<string, string>();
@@ -295,14 +299,14 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       }
     }
     // 담당 lockfile 이 없거나, 담당 lockfile 모두에 없는 직접 의존성만 range 검사를 한다.
+    // 모노레포는 package.json 여럿이 같은 lockfile 을 공유하므로 이름 집합은 lockfile 마다 1번만 만든다.
+    const lockedNames = new Map(
+      [...lockPackages].map(([lockPath, pkgs]) => [lockPath, new Set(pkgs.map((pkg) => pkg.name))]),
+    );
     for (const [path, manifest] of manifests) {
-      const locked = new Set(
-        (assignment.byPackageJson.get(path) ?? []).flatMap(
-          (lockPath) => lockPackages.get(lockPath)?.map((pkg) => pkg.name) ?? [],
-        ),
-      );
+      const owners = assignment.byPackageJson.get(path) ?? [];
       for (const dep of manifest.dependencies) {
-        if (locked.has(dep.name)) continue;
+        if (owners.some((lockPath) => lockedNames.get(lockPath)?.has(dep.name))) continue;
         for (const entry of entriesByName.get(dep.name) ?? []) {
           if (!matchRange(dep.spec, entry.versionRange)) continue;
           matches.push({
@@ -362,10 +366,8 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
 
     const resolveRepos: string[] = [];
     const lookupFailures: FailedRepo[] = [];
-    let held = false;
     for (const name of candidates) {
       if (rateLimited || suspicious) {
-        held = true;
         lookupFailures.push({ repo: name, error: rateLimited ? RATE_LIMITED : ACCESS_SUSPECT });
         continue;
       }
@@ -375,10 +377,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
         if (info === null || info.archived || info.fork || renamed) resolveRepos.push(name);
         else lookupFailures.push({ repo: name, error: STILL_EXISTS });
       } catch (error) {
-        if (error instanceof RateLimitedError) {
-          rateLimited = true;
-          held = true;
-        }
+        if (error instanceof RateLimitedError) rateLimited = true;
         lookupFailures.push({ repo: name, error: describeError(error) });
       }
     }
@@ -386,11 +385,11 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     return {
       kind: "listed",
       listedCount: unique.length,
-      targetCount: targets.length,
       outcomes,
       resolveRepos,
       lookupFailures,
-      held,
+      // 재확인할 repo 가 있었고 rate limit 또는 접근 축소 의심으로 그 일부라도 확인하지 못했다.
+      held: candidates.length > 0 && (rateLimited || suspicious),
     };
   }
 
@@ -506,7 +505,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       const scan = repos.scans.finish(scanId, {
         status: failedRepos.length > 0 ? "partial" : "success",
         finishedAt: now,
-        repoCount: collected.targetCount,
+        repoCount: collected.outcomes.length,
         newFindingCount,
         failedRepos,
         error: null,

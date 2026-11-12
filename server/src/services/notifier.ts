@@ -5,7 +5,7 @@ import type { SmtpConfig } from "../config.ts";
 import { AppError } from "../errors.ts";
 import type { Logger } from "../logger.ts";
 import type { Repositories } from "../repositories/index.ts";
-import { readStoredSettings, toIso } from "./common.ts";
+import { readStoredSettings, toIso, toKst } from "./common.ts";
 
 /** 메일 본문 최대 행 수. 넘으면 "외 N건, GUI에서 확인" 을 붙인다. */
 export const MAIL_MAX_ROWS = 200;
@@ -87,16 +87,11 @@ export interface NotifierDeps {
 }
 
 const SUBJECT_PREFIX = "[package-watcher]";
-const KST_DATE = new Intl.DateTimeFormat("sv-SE", {
-  timeZone: "Asia/Seoul",
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-});
 
 const typeLabel = (finding: Finding): string =>
   finding.dependencyType === "direct" ? "직접" : "전이";
 
+// [Assumption] repo 안의 행은 파일 경로 → 패키지 → 버전 → id 순이다 — 근거: Spec 은 "repo 별로 묶음" 만 정한다.
 function compareFindings(a: Finding, b: Finding): number {
   return (
     a.repo.localeCompare(b.repo) ||
@@ -181,7 +176,7 @@ export function createNotifier(deps: NotifierDeps): Notifier {
       if (findings.length === 0) return;
       const to = recipientsForMail("일일 요약");
       if (!to) return;
-      const date = KST_DATE.format(clock.now());
+      const { date } = toKst(clock.now());
       await trySend("일일 요약", {
         to,
         subject: `${SUBJECT_PREFIX} 일일 요약 (${date}): 미해결 검출 ${findings.length}건`,

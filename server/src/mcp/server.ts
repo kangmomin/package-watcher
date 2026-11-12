@@ -1,15 +1,21 @@
 import { StreamableHTTPTransport } from "@hono/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import {
+  FINDING_STATUSES,
+  FINDINGS_DEFAULT_LIMIT,
+  FINDINGS_MAX_LIMIT,
+  SCANS_DEFAULT_LIMIT,
+  SCANS_MAX_LIMIT,
+} from "@pw/shared";
 import { Hono } from "hono";
 import { z } from "zod";
 import { AppError } from "../errors.ts";
 import { consoleLogger, type Logger } from "../logger.ts";
-import { toApiError } from "../routes/errors.ts";
+import { parseId, toApiError, toAppError } from "../routes/errors.ts";
 import type { AppServices } from "../services/index.ts";
 
 const SERVER_INFO = { name: "package-watcher", version: "0.1.0" };
-const ID_PATTERN = /^[1-9]\d*$/;
 
 /*
  * SDK 의 inputSchema 검증 실패는 JSON 이 아닌 문장으로 나간다(CT-11 위반).
@@ -22,15 +28,25 @@ const loose = (shape: Record<string, z.ZodType>, required: string[] = []) =>
 
 const ID = field({ type: "integer", minimum: 1, description: "대상 ID" });
 const FINDINGS_QUERY = loose({
-  status: field({ type: "string", enum: ["open", "resolved", "ignored"], description: "생략하면 모든 상태" }),
+  status: field({ type: "string", enum: FINDING_STATUSES, description: "생략하면 모든 상태" }),
   repo: field({ type: "string", description: "repo 이름 부분 일치(대소문자 무시)" }),
   package: field({ type: "string", description: "패키지 이름 부분 일치(대소문자 무시)" }),
   page: field({ type: "integer", minimum: 1, description: "기본 1" }),
-  limit: field({ type: "integer", minimum: 1, maximum: 200, description: "기본 50, 최대 200" }),
+  limit: field({
+    type: "integer",
+    minimum: 1,
+    maximum: FINDINGS_MAX_LIMIT,
+    description: `기본 ${FINDINGS_DEFAULT_LIMIT}, 최대 ${FINDINGS_MAX_LIMIT}`,
+  }),
 });
 const SCANS_QUERY = loose({
   page: field({ type: "integer", minimum: 1, description: "기본 1" }),
-  limit: field({ type: "integer", minimum: 1, maximum: 100, description: "기본 20, 최대 100" }),
+  limit: field({
+    type: "integer",
+    minimum: 1,
+    maximum: SCANS_MAX_LIMIT,
+    description: `기본 ${SCANS_DEFAULT_LIMIT}, 최대 ${SCANS_MAX_LIMIT}`,
+  }),
 });
 const NAME = field({ type: "string", description: "npm 패키지 이름(스코프 포함, 대소문자 구분)" });
 const REASON = field({ type: "string", description: "사유 (1~500자)" });
@@ -61,18 +77,18 @@ function jsonResult(value: unknown): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify(value) }] };
 }
 
-function errorResult(error: AppError): CallToolResult {
-  return { isError: true, content: [{ type: "text", text: JSON.stringify(toApiError(error).error) }] };
+/** 예외 → MCP 오류 결과. AppError 가 아니면 INTERNAL_ERROR(원인 로그는 호출 쪽). */
+function errorResult(error: unknown): CallToolResult {
+  const body = toApiError(toAppError(error)).error;
+  return { isError: true, content: [{ type: "text", text: JSON.stringify(body) }] };
 }
 
-/** REST 의 `:id` 와 같은 규칙: 양의 정수가 아니면 NOT_FOUND */
+/**
+ * REST 의 `:id` 와 같은 규칙(`parseId`): 양의 정수가 아니면 NOT_FOUND.
+ * [Assumption] 숫자 문자열("5")도 id 로 받는다 — 근거: 계약은 형식 오류를 NOT_FOUND 로만 정하고 REST 경로 값도 문자열이다.
+ */
 function toId(value: unknown): number {
-  const text = typeof value === "number" || typeof value === "string" ? String(value).trim() : "";
-  const id = Number(text);
-  if (!ID_PATTERN.test(text) || !Number.isSafeInteger(id)) {
-    throw new AppError("NOT_FOUND", "대상을 찾을 수 없습니다");
-  }
-  return id;
+  return parseId(typeof value === "number" || typeof value === "string" ? String(value).trim() : "");
 }
 
 /**
@@ -95,9 +111,8 @@ export function createMcpServer(services: AppServices, logger: Logger = consoleL
       try {
         return jsonResult(await run(args));
       } catch (error) {
-        if (error instanceof AppError) return errorResult(error);
-        logger.error(`MCP tool ${name} 처리 중 예외`, error);
-        return errorResult(new AppError("INTERNAL_ERROR", "서버 오류가 발생했습니다"));
+        if (!(error instanceof AppError)) logger.error(`MCP tool ${name} 처리 중 예외`, error);
+        return errorResult(error);
       }
     });
   };
@@ -193,6 +208,7 @@ export function createMcpRoutes(services: AppServices, logger: Logger = consoleL
   });
 
   // stateless 라서 SSE 스트림(GET)과 세션 종료(DELETE)를 지원하지 않는다.
+  // [Assumption] POST 가 아닌 모든 메서드에 405 — 근거: 계약은 `GET /mcp` 405 만 정한다.
   app.all("/mcp", (c) =>
     c.json(
       { jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed." }, id: null },

@@ -5,7 +5,6 @@ import {
   type Page,
   type Summary,
 } from "@pw/shared";
-import type { Clock } from "../clock.ts";
 import type { TokenSource } from "../config.ts";
 import { AppError } from "../errors.ts";
 import type { Repositories } from "../repositories/index.ts";
@@ -28,7 +27,6 @@ export interface FindingService {
 
 export interface FindingServiceDeps {
   repos: Repositories;
-  clock: Clock;
   githubTokenSource: TokenSource;
 }
 

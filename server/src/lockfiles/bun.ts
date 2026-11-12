@@ -35,6 +35,7 @@ export function parseBunLock(content: string): LockPackage[] {
   for (const value of Object.values(data.packages)) {
     if (!Array.isArray(value) || typeof value[0] !== "string") continue;
     const split = splitNameAndRest(value[0]);
+    // [Assumption] 버전이 없거나 `workspace:` 인 항목은 설치된 의존성이 아니라서 건너뛴다 — 근거: yarn berry 규칙(Backend Plan)과 S-13 을 bun.lock 에도 적용.
     if (split.rest === null || split.rest === "" || split.rest.startsWith("workspace:")) continue;
     const { name, rest } = unwrapNpmAlias(split.name, split.rest);
     packages.push({ name, version: rest });

@@ -3,7 +3,7 @@ import {
   isPlainObject,
   LockfileParseError,
   requireContent,
-  splitNameAndRest,
+  unwrapNpmAlias,
 } from "./common.ts";
 import type { LockPackage } from "./index.ts";
 
@@ -57,13 +57,11 @@ function readV1Dependencies(dependencies: Record<string, unknown>, out: LockPack
   for (const [key, value] of Object.entries(dependencies)) {
     if (!isPlainObject(value)) continue;
     const version = value.version;
-    if (typeof version === "string" && version !== "") out.push(resolveV1Entry(key, version));
+    if (typeof version === "string" && version !== "") {
+      // `version: "npm:real@1.2.3"` 별칭이면 실제 이름과 버전으로 분해한다.
+      const { name, rest } = unwrapNpmAlias(key, version);
+      out.push({ name, version: rest });
+    }
     if (isPlainObject(value.dependencies)) readV1Dependencies(value.dependencies, out);
   }
-}
-
-function resolveV1Entry(key: string, version: string): LockPackage {
-  if (!version.startsWith("npm:")) return { name: key, version };
-  const alias = splitNameAndRest(version.slice("npm:".length));
-  return { name: alias.name, version: alias.rest ?? "" };
 }

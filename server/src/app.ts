@@ -40,7 +40,7 @@ export interface AppDeps {
   github: GitHubClient | null;
   githubTokenSource: TokenSource;
   mailer: Mailer;
-  /** `config.isSmtpConfigured` 결과 */
+  /** `config.smtp !== null` (= `isSmtpConfigured`: SMTP_HOST && SMTP_FROM) */
   smtpConfigured: boolean;
   clock: Clock;
   /** 기본 consoleLogger */
@@ -115,7 +115,8 @@ function applyInitialSettings(repos: Repositories, initial: InitialSettingsEnv, 
   }
 }
 
-function hasWebDist(dir: string | null | undefined): dir is string {
+/** 빌드된 web 이 있는가(`index.html` 존재). index.ts 의 시작 로그도 같은 판정을 쓴다. */
+export function hasWebDist(dir: string | null | undefined): dir is string {
   return typeof dir === "string" && dir !== "" && existsSync(join(dir, "index.html"));
 }
 
@@ -153,7 +154,7 @@ export function createApp(deps: AppDeps): AppInstance {
     logger,
   });
   const services: AppServices = {
-    findings: createFindingService({ repos, clock, githubTokenSource }),
+    findings: createFindingService({ repos, githubTokenSource }),
     blacklist: createBlacklistService({ repos, clock }),
     scans,
     settings: createSettingsService({ repos, clock, githubTokenSource, smtpConfigured }),
@@ -183,6 +184,7 @@ export function createApp(deps: AppDeps): AppInstance {
     app.use("*", serveStatic({ root }));
     app.get("*", serveStatic({ root, path: "index.html" }));
   }
+  // [Assumption] /api·/mcp 밖에서 처리되지 않은 요청(web 빌드 없음, GET 이 아닌 요청)도 404 ApiError(JSON) — 근거: 계약은 /api/* 404 와 SPA 폴백만 정한다.
   app.notFound((c) => toErrorResponse(c, new AppError("NOT_FOUND", "요청한 경로가 없습니다")));
 
   let closing: Promise<void> | null = null;

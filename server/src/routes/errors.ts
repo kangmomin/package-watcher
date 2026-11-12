@@ -17,9 +17,14 @@ export function toApiError(error: AppError): ApiError {
   };
 }
 
+/** AppError 는 그대로, 그 외는 INTERNAL_ERROR. 원인 로그는 호출 쪽이 남긴다(REST·MCP 공용). */
+export function toAppError(error: unknown): AppError {
+  return error instanceof AppError ? error : new AppError("INTERNAL_ERROR", INTERNAL_MESSAGE);
+}
+
 /** 예외 → `ApiError` 응답. AppError 는 code 의 HTTP status 로, 그 외는 500 INTERNAL_ERROR(원인은 로그만). */
 export function toErrorResponse(c: Context, error: unknown): Response {
-  const appError = error instanceof AppError ? error : new AppError("INTERNAL_ERROR", INTERNAL_MESSAGE);
+  const appError = toAppError(error);
   return c.json(toApiError(appError), appError.status as ContentfulStatusCode);
 }
 
@@ -27,6 +32,7 @@ export function toErrorResponse(c: Context, error: unknown): Response {
 export async function readJsonBody(c: Context): Promise<unknown> {
   const contentType = c.req.header("content-type") ?? "";
   const mediaType = contentType.split(";")[0]?.trim().toLowerCase() ?? "";
+  // [Assumption] `+json` 접미사 미디어 타입(RFC 6839)도 JSON 으로 받는다 — 근거: 계약은 "JSON 이 아닌 Content-Type" 만 400 으로 정한다.
   if (mediaType !== "application/json" && !mediaType.endsWith("+json")) {
     throw new AppError("VALIDATION_ERROR", "요청 본문은 Content-Type: application/json 이어야 합니다");
   }

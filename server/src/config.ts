@@ -81,7 +81,7 @@ function read(env: Env, key: EnvKey): string | null {
 function readBoolean(env: Env, key: EnvKey): boolean | null {
   const value = read(env, key);
   if (value === null) return null;
-  return value.toLowerCase() === "true" || value === "1";
+  return value === "true" || value === "1";
 }
 
 function readPort(env: Env, key: EnvKey, fallback: number): number {

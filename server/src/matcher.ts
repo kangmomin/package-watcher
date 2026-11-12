@@ -1,5 +1,5 @@
 import { intersects, satisfies, validRange } from "semver";
-import { splitNameAndRest } from "./lockfiles/common.ts";
+import { unwrapNpmAlias } from "./lockfiles/common.ts";
 
 /**
  * lockfile 의 정확한 버전이 블랙리스트 range 를 만족하는가.
@@ -22,16 +22,11 @@ export function matchExact(version: string, range: string): boolean {
 export function matchRange(spec: string, range: string | null): boolean {
   if (range === null) return true;
   try {
-    const actual = unwrapAliasSpec(spec.trim());
+    // `npm:lodash@^4` → `^4`. 버전이 없으면 "" (모든 버전). 이름은 쓰지 않는다.
+    const actual = unwrapNpmAlias("", spec.trim()).rest;
     if (validRange(actual) === null) return false;
     return intersects(actual, range);
   } catch {
     return false;
   }
-}
-
-/** `npm:lodash@^4` → `^4`. 버전이 없으면 "" (모든 버전) */
-function unwrapAliasSpec(spec: string): string {
-  if (!spec.startsWith("npm:")) return spec;
-  return splitNameAndRest(spec.slice("npm:".length)).rest ?? "";
 }
