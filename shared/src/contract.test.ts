@@ -19,6 +19,9 @@ import {
   findingsPageSchema,
   findingsQuerySchema,
   findingStatusInputSchema,
+  scanRepoSchema,
+  scanReposPageSchema,
+  scanReposQuerySchema,
   scanSchema,
   scansPageSchema,
   scansQuerySchema,
@@ -389,5 +392,43 @@ describe("[CT-15] v2 입력 스키마", () => {
     });
     expect(findingsQuerySchema.safeParse({ severity: "urgent" }).success).toBe(false);
     expect(findingsQuerySchema.safeParse({ ecosystem: "foo" }).success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------- 스캔의 repo 별 진행 상황
+
+describe("[SP-00] 스캔 집계와 repo 별 기록", () => {
+  it("기존 Scan fixture 는 repoStats 가 null 이고, 키를 생략하면 거부한다", () => {
+    for (const scan of fx.scans) expect(scan.repoStats).toBeNull();
+    const { repoStats: _repoStats, ...withoutStats } = fx.scanSuccess;
+    expect(scanSchema.safeParse(withoutStats).success).toBe(false);
+  });
+
+  it.each(fx.scansWithStats.map((scan) => [scan.status, scan] as const))(
+    "집계가 있는 Scan %s: 상태별 수의 합 = total",
+    (_status, scan) => {
+      const stats = scanSchema.parse(scan).repoStats;
+      expect(stats).not.toBeNull();
+      if (!stats) return;
+      const { total, ...byStatus } = stats;
+      expect(Object.values(byStatus).reduce((sum, value) => sum + value, 0)).toBe(total);
+    },
+  );
+
+  it.each(fx.scanRepos.map((row) => [row.status, row] as const))("ScanRepo %s", (_status, row) => {
+    expect(scanRepoSchema.parse(row)).toEqual(row);
+  });
+
+  it("Page<ScanRepo> 와 query 의 기본값·검증", () => {
+    expect(scanReposPageSchema.parse(fx.scanReposPage).total).toBe(fx.scanRepos.length);
+    expect(scanReposQuerySchema.parse({})).toEqual({ page: 1, limit: 50 });
+    expect(scanReposQuerySchema.parse({ status: "failed", q: " Api ", page: "2", limit: "200" })).toEqual({
+      status: "failed",
+      q: "Api",
+      page: 2,
+      limit: 200,
+    });
+    expect(scanReposQuerySchema.safeParse({ status: "done" }).success).toBe(false);
+    expect(scanReposQuerySchema.safeParse({ limit: "201" }).success).toBe(false);
   });
 });

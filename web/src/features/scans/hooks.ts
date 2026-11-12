@@ -1,8 +1,8 @@
 // 스캔 이력·수동 실행 hooks.
 // 계약: GET /api/scans?page&limit (limit 20). isScanRunning(summary) && page === 1 이면 refetchInterval 5000.
 // POST 202·SCAN_RUNNING·INTERNAL_ERROR·NETWORK_ERROR·parse 실패 → scans·summary 무효화.
-// FE 는 GET /api/scans/:id 를 호출하지 않는다.
-import { SCANS_DEFAULT_LIMIT, type Page, type Scan } from "@pw/shared";
+// FE 는 GET /api/scans/:id 를 호출하지 않는다. repo별 표만 펼친 행에서 GET /api/scans/:id/repos 를 호출한다.
+import { SCAN_REPOS_DEFAULT_LIMIT, SCANS_DEFAULT_LIMIT, type Page, type Scan, type ScanRepo } from "@pw/shared";
 import {
   keepPreviousData,
   useMutation,
@@ -14,7 +14,7 @@ import {
 import { useNavigate } from "react-router";
 import { toast } from "sonner";
 import { isScanRunning, SCAN_POLL_INTERVAL_MS, useSummary } from "@/features/summary/useSummary";
-import { api, type ApiRequestError } from "@/lib/api";
+import { api, type ApiRequestError, type ScanReposFilter } from "@/lib/api";
 import { errorToastMessage, hasErrorCode, invalidateKeys, isUnknownOutcome } from "@/lib/errors";
 import { queryKeys } from "@/lib/queryKeys";
 
@@ -28,6 +28,21 @@ export function useScans(page: number): UseQueryResult<Page<Scan>, ApiRequestErr
     queryFn: () => api.listScans({ page, limit: SCANS_PAGE_LIMIT }),
     placeholderData: keepPreviousData,
     refetchInterval: poll ? SCAN_POLL_INTERVAL_MS : false,
+  });
+}
+
+/** 펼친 스캔의 repo별 진행 상황. 스캔이 running 이면 5초마다 다시 조회한다. */
+export function useScanRepos(
+  scanId: number,
+  filter: ScanReposFilter,
+  page: number,
+  running: boolean,
+): UseQueryResult<Page<ScanRepo>, ApiRequestError> {
+  return useQuery<Page<ScanRepo>, ApiRequestError>({
+    queryKey: queryKeys.scanRepos(scanId, filter, page),
+    queryFn: () => api.listScanRepos(scanId, { ...filter, page, limit: SCAN_REPOS_DEFAULT_LIMIT }),
+    placeholderData: keepPreviousData,
+    refetchInterval: running ? SCAN_POLL_INTERVAL_MS : false,
   });
 }
 

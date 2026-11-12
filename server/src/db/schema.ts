@@ -1,6 +1,6 @@
 import type { Db } from "./index.ts";
 
-export const LATEST_VERSION = 2;
+export const LATEST_VERSION = 3;
 
 // 시각은 모두 ISO 8601 UTC 문자열(`Date#toISOString`)로 저장한다. 문자열 정렬 = 시간 순서.
 // v1 스키마다. 새 DB 도 이것을 먼저 만든 뒤 v2 단계를 실행한다(마이그레이션 SQL 이 한 벌이다).
@@ -108,4 +108,40 @@ export function migrateToV2(db: Db): void {
   db.prepare("INSERT INTO sqlite_sequence (name, seq) VALUES ('blacklist_entries', ?)").run(
     Math.max(previousSeq, maxId),
   );
+}
+
+// repo 상태 값도 SQL 리터럴로 고정한다(배포된 마이그레이션 SQL 은 바뀌면 안 된다).
+const V3_SCAN_REPOS = `
+CREATE TABLE scan_repos (
+  scan_id            INTEGER NOT NULL,
+  repo               TEXT NOT NULL,
+  status             TEXT NOT NULL CHECK (status IN ('pending', 'running', 'passed', 'issue', 'failed', 'skipped')),
+  open_finding_count INTEGER NOT NULL DEFAULT 0,
+  new_finding_count  INTEGER NOT NULL DEFAULT 0,
+  file_count         INTEGER NOT NULL DEFAULT 0,
+  error              TEXT,
+  started_at         TEXT,
+  finished_at        TEXT,
+  PRIMARY KEY (scan_id, repo)
+);
+CREATE INDEX scan_repos_status ON scan_repos (scan_id, status);
+ALTER TABLE scans ADD COLUMN repo_stats TEXT;
+`;
+
+/** v3: repo 별 진행 기록과 스캔의 집계(JSON) */
+function migrateToV3(db: Db): void {
+  db.exec(V3_SCAN_REPOS);
+}
+
+/** `version` 은 그 단계가 만드는 `user_version`. 순서대로 실행한다. */
+const STEPS: { version: number; run: (db: Db) => void }[] = [
+  { version: 2, run: migrateToV2 },
+  { version: 3, run: migrateToV3 },
+];
+
+/** 호출자가 연 트랜잭션 안에서 현재 버전보다 큰 단계를 순서대로 실행한다. 어느 단계든 실패하면 호출자가 롤백한다. */
+export function migrateFrom(db: Db, currentVersion: number): void {
+  for (const step of STEPS) {
+    if (step.version > currentVersion) step.run(db);
+  }
 }

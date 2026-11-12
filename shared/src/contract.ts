@@ -10,6 +10,18 @@ export const FINDING_STATUSES = ["open", "resolved", "ignored"] as const;
 export const DEPENDENCY_TYPES = ["direct", "transitive"] as const;
 export const SCAN_TRIGGERS = ["scheduled", "manual"] as const;
 export const SCAN_STATUSES = ["running", "success", "partial", "failed"] as const;
+/**
+ * 스캔 1회 안에서 repo 1개의 상태.
+ * passed = 검사를 끝냈고 open 검출 0건, issue = open 검출 1건 이상, skipped = 검사할 파일이 없음.
+ */
+export const SCAN_REPO_STATUSES = [
+  "pending",
+  "running",
+  "passed",
+  "issue",
+  "failed",
+  "skipped",
+] as const;
 export const TOKEN_SOURCES = ["env", "gh", "none"] as const;
 export const ERROR_CODES = [
   "VALIDATION_ERROR",
@@ -42,6 +54,8 @@ export const findingStatusSchema = z.enum(FINDING_STATUSES);
 export const dependencyTypeSchema = z.enum(DEPENDENCY_TYPES);
 export const scanTriggerSchema = z.enum(SCAN_TRIGGERS);
 export const scanStatusSchema = z.enum(SCAN_STATUSES);
+export const scanRepoStatusSchema = z.enum(SCAN_REPO_STATUSES);
+export type ScanRepoStatus = z.infer<typeof scanRepoStatusSchema>;
 export const errorCodeSchema = z.enum(ERROR_CODES);
 
 export type FindingStatus = z.infer<typeof findingStatusSchema>;
@@ -70,6 +84,8 @@ export const ERROR_HTTP_STATUS: Record<ErrorCode, number> = {
 export const DIGEST_TIMEZONE = "Asia/Seoul";
 export const FINDINGS_DEFAULT_LIMIT = 50;
 export const FINDINGS_MAX_LIMIT = 200;
+export const SCAN_REPOS_DEFAULT_LIMIT = 50;
+export const SCAN_REPOS_MAX_LIMIT = 200;
 export const SCANS_DEFAULT_LIMIT = 20;
 export const SCANS_MAX_LIMIT = 100;
 
@@ -149,6 +165,18 @@ export type BlacklistList = z.infer<typeof blacklistListSchema>;
 export const failedRepoSchema = z.object({ repo: z.string(), error: z.string() });
 export type FailedRepo = z.infer<typeof failedRepoSchema>;
 
+/** repo 상태별 수. 6개 상태의 합 = total. */
+export const scanRepoStatsSchema = z.object({
+  total: countSchema,
+  pending: countSchema,
+  running: countSchema,
+  passed: countSchema,
+  issue: countSchema,
+  failed: countSchema,
+  skipped: countSchema,
+});
+export type ScanRepoStats = z.infer<typeof scanRepoStatsSchema>;
+
 export const scanSchema = z.object({
   id: idSchema,
   trigger: scanTriggerSchema,
@@ -159,8 +187,26 @@ export const scanSchema = z.object({
   newFindingCount: countSchema,
   failedRepos: z.array(failedRepoSchema),
   error: z.string().nullable(),
+  /** repo 별 기록이 없는 스캔(이 기능 이전의 스캔, repo 목록 조회에 실패한 스캔)은 null. */
+  repoStats: scanRepoStatsSchema.nullable(),
 });
 export type Scan = z.infer<typeof scanSchema>;
+
+export const scanRepoSchema = z.object({
+  repo: z.string().min(1),
+  status: scanRepoStatusSchema,
+  /** 스캔 종료 시점의 그 repo 의 open 검출 수. */
+  openFindingCount: countSchema,
+  /** 이 스캔이 새로 만든 검출 수. */
+  newFindingCount: countSchema,
+  /** 읽은 파일 수. */
+  fileCount: countSchema,
+  /** failed 일 때의 원인. */
+  error: z.string().nullable(),
+  startedAt: isoDateSchema.nullable(),
+  finishedAt: isoDateSchema.nullable(),
+});
+export type ScanRepo = z.infer<typeof scanRepoSchema>;
 
 export const summarySchema = z.object({
   openCount: countSchema,
@@ -200,6 +246,7 @@ export interface Page<T> {
 }
 export const findingsPageSchema = pageSchema(findingSchema);
 export const scansPageSchema = pageSchema(scanSchema);
+export const scanReposPageSchema = pageSchema(scanRepoSchema);
 
 export const testEmailResultSchema = z.object({ ok: z.literal(true) });
 export type TestEmailResult = z.infer<typeof testEmailResultSchema>;
@@ -425,6 +472,16 @@ export const scansQuerySchema = z.object({
   limit: limitParam(SCANS_MAX_LIMIT).default(SCANS_DEFAULT_LIMIT),
 });
 export type ScansQuery = z.infer<typeof scansQuerySchema>;
+
+export const scanReposQuerySchema = z.object({
+  /** 정확히 일치하는 상태만 반환한다. */
+  status: scanRepoStatusSchema.optional(),
+  /** repo 이름의 대소문자 무시 부분 일치. */
+  q: textFilter,
+  page: pageParam.default(1),
+  limit: limitParam(SCAN_REPOS_MAX_LIMIT).default(SCAN_REPOS_DEFAULT_LIMIT),
+});
+export type ScanReposQuery = z.infer<typeof scanReposQuerySchema>;
 
 // ---------------------------------------------------------------- 헬퍼
 

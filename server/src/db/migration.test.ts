@@ -27,7 +27,7 @@ import {
 } from "../test/v2.ts";
 import type { Db } from "./index.ts";
 
-const LATEST_VERSION = 2;
+const LATEST_VERSION = 3;
 const backupPathOf = (dbPath: string): string => `${dbPath}.v0-backup`;
 
 const handles: Db[] = [];
@@ -409,14 +409,14 @@ describe("DB 마이그레이션 v1 → v2 (CT-22)", () => {
     const path = createTempDbPath();
     createV1Database(path, (db) => {
       seedV1Rows(db);
-      db.pragma("user_version = 3");
+      db.pragma("user_version = 99");
     });
 
     const refused = openExpectingRefusal(path);
 
     expect(refused, "openDatabase 가 시작을 거부하지 않았습니다").toBeInstanceOf(Error);
     expect(() => createTestApp({ dbPath: path })).toThrow();
-    expect(inspect(path, (db) => [userVersionOf(db), countRows(db, "blacklist_entries")])).toEqual([3, 3]);
+    expect(inspect(path, (db) => [userVersionOf(db), countRows(db, "blacklist_entries")])).toEqual([99, 3]);
     expect(backupFilesIn(path)).toEqual([]);
   });
 });

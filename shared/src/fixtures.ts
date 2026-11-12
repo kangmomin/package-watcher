@@ -5,6 +5,7 @@ import type {
   Finding,
   Page,
   Scan,
+  ScanRepo,
   Settings,
   Summary,
   TestEmailResult,
@@ -220,6 +221,7 @@ export const scanSuccess: Scan = {
   newFindingCount: 2,
   failedRepos: [],
   error: null,
+  repoStats: null,
 };
 
 export const scanRunning: Scan = {
@@ -232,6 +234,7 @@ export const scanRunning: Scan = {
   newFindingCount: 0,
   failedRepos: [],
   error: null,
+  repoStats: null,
 };
 
 export const scanPartial: Scan = {
@@ -248,6 +251,7 @@ export const scanPartial: Scan = {
     { repo: "flaky", error: "GitHub API 오류 (502)" },
   ],
   error: null,
+  repoStats: null,
 };
 
 export const scanFailed: Scan = {
@@ -260,9 +264,92 @@ export const scanFailed: Scan = {
   newFindingCount: 0,
   failedRepos: [],
   error: "org 의 repo 목록을 가져오지 못했습니다 (401)",
+  repoStats: null,
 };
 
 export const scans: Scan[] = [scanRunning, scanSuccess, scanPartial, scanFailed];
+
+// repo 별 기록이 있는 스캔. 기존 묶음(scans)에는 넣지 않는다 — v1 화면 테스트의 표시를 유지한다.
+
+export const scanRunningWithStats: Scan = {
+  ...scanRunning,
+  id: 12,
+  repoStats: { total: 278, pending: 153, running: 5, passed: 110, issue: 1, failed: 2, skipped: 7 },
+};
+
+export const scanPartialWithStats: Scan = {
+  ...scanPartial,
+  id: 11,
+  repoCount: 278,
+  failedRepos: [
+    { repo: "legacy-theme", error: "theme/package.json 을 JSON 으로 읽을 수 없습니다" },
+    { repo: "online-class", error: "pnpm-lock.yaml 을 해석할 수 없습니다" },
+  ],
+  repoStats: { total: 278, pending: 0, running: 0, passed: 177, issue: 3, failed: 2, skipped: 96 },
+};
+
+export const scansWithStats: Scan[] = [scanRunningWithStats, scanPartialWithStats];
+
+// ---------------------------------------------------------------- ScanRepo
+
+const scanRepoBase: ScanRepo = {
+  repo: "web-app",
+  status: "passed",
+  openFindingCount: 0,
+  newFindingCount: 0,
+  fileCount: 4,
+  error: null,
+  startedAt: T0,
+  finishedAt: T1,
+};
+
+export const scanRepoPassed: ScanRepo = scanRepoBase;
+export const scanRepoIssue: ScanRepo = {
+  ...scanRepoBase,
+  repo: "api",
+  status: "issue",
+  openFindingCount: 3,
+  newFindingCount: 1,
+  fileCount: 12,
+};
+export const scanRepoFailed: ScanRepo = {
+  ...scanRepoBase,
+  repo: "legacy-theme",
+  status: "failed",
+  fileCount: 0,
+  error: "theme/package.json 을 JSON 으로 읽을 수 없습니다",
+};
+export const scanRepoSkipped: ScanRepo = {
+  ...scanRepoBase,
+  repo: "infra-docs",
+  status: "skipped",
+  fileCount: 0,
+};
+export const scanRepoRunning: ScanRepo = {
+  ...scanRepoBase,
+  repo: "mobile",
+  status: "running",
+  fileCount: 0,
+  finishedAt: null,
+};
+export const scanRepoPending: ScanRepo = {
+  ...scanRepoBase,
+  repo: "tools",
+  status: "pending",
+  fileCount: 0,
+  startedAt: null,
+  finishedAt: null,
+};
+
+/** API 의 정렬 순서: 실패 → 이슈 → 진행 중 → 대기 → 통과 → 건너뜀. */
+export const scanRepos: ScanRepo[] = [
+  scanRepoFailed,
+  scanRepoIssue,
+  scanRepoRunning,
+  scanRepoPending,
+  scanRepoPassed,
+  scanRepoSkipped,
+];
 
 // ---------------------------------------------------------------- Summary
 
@@ -314,6 +401,7 @@ export function pageOf<T>(items: T[], overrides: Partial<Page<T>> = {}): Page<T>
 
 export const findingsPage: Page<Finding> = pageOf(findings);
 export const scansPage: Page<Scan> = pageOf(scans, { limit: 20 });
+export const scanReposPage: Page<ScanRepo> = pageOf(scanRepos);
 export const emptyFindingsPage: Page<Finding> = pageOf<Finding>([]);
 export const emptyScansPage: Page<Scan> = pageOf<Scan>([], { limit: 20 });
 

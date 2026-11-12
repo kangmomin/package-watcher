@@ -1,7 +1,7 @@
 import { closeSync, fsyncSync, mkdirSync, openSync, readSync, renameSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
-import { LATEST_VERSION, migrateToV2 } from "./schema.ts";
+import { LATEST_VERSION, migrateFrom } from "./schema.ts";
 
 export type Db = Database.Database;
 
@@ -91,11 +91,12 @@ function backup(db: Db, dbPath: string, version: number): string | null {
 function migrate(db: Db): boolean {
   db.exec("BEGIN IMMEDIATE");
   try {
-    if (userVersionOf(db) >= LATEST_VERSION) {
+    const current = userVersionOf(db);
+    if (current >= LATEST_VERSION) {
       db.exec("ROLLBACK");
       return false;
     }
-    migrateToV2(db);
+    migrateFrom(db, current);
     db.pragma(`user_version = ${LATEST_VERSION}`);
     db.exec("COMMIT");
     return true;
