@@ -77,8 +77,8 @@ const FINDINGS = "/api/findings";
 const SUMMARY = "/api/summary";
 const SETTINGS = "/api/settings";
 
-/** 열 순서: 종류 | 이름 | 버전 범위 | 심각도 | 상태 | 만료일 | 사유 | 수정 | 삭제 */
-const COLUMN = { ecosystem: 0, name: 1, range: 2, severity: 3, status: 4, expiresAt: 5, reason: 6 } as const;
+/** 열 순서: [선택] | 종류 | 이름 | 버전 범위 | 심각도 | 상태 | 만료일 | 사유 | 수정 | 삭제 */
+const COLUMN = { ecosystem: 1, name: 2, range: 3, severity: 4, status: 5, expiresAt: 6, reason: 7 } as const;
 
 const allEntries: BlacklistEntry[] = [...blacklistEntries, ...blacklistEntryVariants];
 const settingsHigh: Settings = { ...settingsDefault, notifyMinSeverity: "high" };
@@ -167,11 +167,11 @@ describe("블랙리스트 v2 — 표", () => {
 
     const headers = within(screen.getByRole("table")).getAllByRole("columnheader");
     const texts = headers.map((header) => header.textContent?.trim() ?? "");
-    expect(texts).toHaveLength(9);
+    expect(texts).toHaveLength(10);
     expect(texts[COLUMN.ecosystem]).toBe("종류");
     // v1 머리글은 "패키지 이름" 이다. "이름" 으로 끝나면 된다
     expect(texts[COLUMN.name]).toMatch(/이름$/);
-    expect(texts.slice(2)).toEqual(["버전 범위", "심각도", "상태", "만료일", "사유", "수정", "삭제"]);
+    expect(texts.slice(3)).toEqual(["버전 범위", "심각도", "상태", "만료일", "사유", "수정", "삭제"]);
   });
 
   it("[CT-16][v2-AC-01] 행에 종류·심각도(배지, 영문 값 그대로)·만료일(YYYY-MM-DD 그대로, null = '-')을 표시한다", async () => {

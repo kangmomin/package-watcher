@@ -5,8 +5,10 @@ import {
   apiErrorSchema,
   blacklistEntrySchema,
   blacklistListSchema,
+  bulkResultSchema,
   findingSchema,
   findingsPageSchema,
+  importResultSchema,
   scanReposPageSchema,
   scanSchema,
   scansPageSchema,
@@ -15,12 +17,18 @@ import {
   testEmailResultSchema,
   type BlacklistEntry,
   type BlacklistInput,
+  type BlacklistFileFormat,
   type BlacklistList,
+  type BulkInput,
+  type BulkResult,
   type Ecosystem,
+  type EntryStatus,
   type ErrorCode,
   type Finding,
   type FindingStatus,
   type FindingStatusInput,
+  type ImportInput,
+  type ImportResult,
   type Page,
   type Scan,
   type ScanRepo,
@@ -52,6 +60,13 @@ export class ApiRequestError extends Error {
     this.code = code;
     this.details = details;
   }
+}
+
+/** 블랙리스트 목록·내보내기의 필터. 값이 없는 키는 요청에 넣지 않는다. */
+export interface BlacklistFilter {
+  ecosystem?: Ecosystem;
+  status?: EntryStatus;
+  q?: string;
 }
 
 export interface FindingsFilter {
@@ -137,6 +152,15 @@ function withQuery(path: string, params: Record<string, string | number | undefi
   return query === "" ? path : `${path}?${query}`;
 }
 
+function blacklistParams({ ecosystem, status, q }: BlacklistFilter) {
+  return { ecosystem, status, q };
+}
+
+/** 내보내기 링크. 목록과 같은 필터를 붙인다(선택 상태는 쓰지 않는다). */
+export function exportBlacklistUrl(format: BlacklistFileFormat, filter: BlacklistFilter): string {
+  return withQuery("/api/blacklist/export", { format, ...blacklistParams(filter) });
+}
+
 export const api = {
   getSummary: (): Promise<Summary> => request(summarySchema, "GET", "/api/summary"),
   listFindings: ({ status, repo, package: pkg, ecosystem, severity, page, limit }: FindingsParams): Promise<Page<Finding>> =>
@@ -147,7 +171,12 @@ export const api = {
     ),
   setFindingStatus: (id: number, input: FindingStatusInput): Promise<Finding> =>
     request(findingSchema, "PATCH", `/api/findings/${id}`, input),
-  listBlacklist: (): Promise<BlacklistList> => request(blacklistListSchema, "GET", "/api/blacklist"),
+  listBlacklist: (filter: BlacklistFilter = {}): Promise<BlacklistList> =>
+    request(blacklistListSchema, "GET", withQuery("/api/blacklist", blacklistParams(filter))),
+  bulkBlacklist: (input: BulkInput): Promise<BulkResult> =>
+    request(bulkResultSchema, "POST", "/api/blacklist/bulk", input),
+  importBlacklist: (input: ImportInput): Promise<ImportResult> =>
+    request(importResultSchema, "POST", "/api/blacklist/import", input),
   createBlacklistEntry: (input: BlacklistInput): Promise<BlacklistEntry> =>
     request(blacklistEntrySchema, "POST", "/api/blacklist", input),
   /** PUT 은 전체 교체다. versionRange 키를 항상 보낸다 (A-12). */
