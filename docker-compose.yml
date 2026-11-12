@@ -1,0 +1,20 @@
+services:
+  package-watcher:
+    build: .
+    image: package-watcher:local
+    init: true
+    restart: unless-stopped
+    ports:
+      # 로그인이 없으므로 이 PC 에서만 접속하게 한다.
+      - "127.0.0.1:3000:3000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # 셸의 값을 컨테이너에 전달한다. 예: GITHUB_TOKEN=$(gh auth token) docker compose up
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    volumes:
+      - pw-data:/data
+
+volumes:
+  pw-data:
