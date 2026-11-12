@@ -1,4 +1,5 @@
 import {
+  kstDateOf,
   blacklistCreateSchema,
   blacklistQuerySchema,
   blacklistUpdateSchema,
@@ -134,7 +135,11 @@ export function createBlacklistService(deps: BlacklistServiceDeps): BlacklistSer
       const current = mustGet(id, today);
       const value = prepareUpdate(current, input, today);
       return withDuplicateGuard(() =>
-        repos.transaction(() => applyUpdate(id, value, toIso(clock.now()), today)),
+        repos.transaction(() => {
+          // 활성 판정의 날짜와 기록 시각을 같은 순간에서 구한다. 검증 뒤에 KST 자정을 넘기면 두 값이 갈린다.
+          const now = clock.now();
+          return applyUpdate(id, value, toIso(now), kstDateOf(now));
+        }),
       );
     },
     remove(id) {

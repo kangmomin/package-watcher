@@ -140,16 +140,22 @@ export function createApp(deps: AppDeps): AppInstance {
   // ---- 시작 보정
   const startedAt = clock.now();
   // 이전 버전 이미지로 내려 둔 동안 생긴 검출을 맞춘다: 꺼지거나 만료된 항목의 활성 검출은 resolved, severity 는 항목의 값으로.
-  repos.findings.resolveForInactiveEntries(todayKst(clock), toIso(startedAt));
-  repos.findings.syncSeverityFromEntries();
-  const interrupted = repos.scans.failRunning(RESTART_ERROR, toIso(startedAt));
-  if (interrupted > 0) logger.warn(`서버 재시작으로 중단된 스캔 ${interrupted}건을 failed 로 기록했습니다`);
-  applyInitialSettings(repos, deps.initialSettings ?? {}, logger);
-  if (
-    canScan(repos.settings.get("org"), githubTokenSource) &&
-    repos.settings.get("next_scan_at") === null
-  ) {
-    repos.settings.set("next_scan_at", toIso(addMs(startedAt, FIRST_SCAN_DELAY_MS)));
+  try {
+    repos.findings.resolveForInactiveEntries(todayKst(clock), toIso(startedAt));
+    repos.findings.syncSeverityFromEntries();
+    const interrupted = repos.scans.failRunning(RESTART_ERROR, toIso(startedAt));
+    if (interrupted > 0) logger.warn(`서버 재시작으로 중단된 스캔 ${interrupted}건을 failed 로 기록했습니다`);
+    applyInitialSettings(repos, deps.initialSettings ?? {}, logger);
+    if (
+      canScan(repos.settings.get("org"), githubTokenSource) &&
+      repos.settings.get("next_scan_at") === null
+    ) {
+      repos.settings.set("next_scan_at", toIso(addMs(startedAt, FIRST_SCAN_DELAY_MS)));
+    }
+  } catch (error) {
+    // 시작을 거부할 때 연결을 닫는다 (열어 두면 Windows 에서 DB 파일이 잠긴 채로 남는다).
+    db.close();
+    throw error;
   }
 
   // ---- 서비스
