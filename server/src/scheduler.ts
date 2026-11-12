@@ -3,6 +3,7 @@ import type { TokenSource } from "./config.ts";
 import type { Logger } from "./logger.ts";
 import type { Repositories } from "./repositories/index.ts";
 import { addMs, canScan, HOUR_MS, readStoredSettings, toIso, toKst } from "./services/common.ts";
+import { todayKst } from "./services/entryActivity.ts";
 import type { Notifier } from "./services/notifier.ts";
 import type { ScanService } from "./services/scanService.ts";
 
@@ -86,6 +87,13 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     ticking = true;
     try {
       const now = clock.now();
+      // 만료는 상태를 따로 저장하지 않고 tick 마다 멱등으로 정리한다. 자동 스캔 판정보다 먼저 해서 스캔 전에 불변식을 맞춘다.
+      try {
+        const resolved = repos.findings.resolveForInactiveEntries(todayKst(clock), toIso(now));
+        if (resolved > 0) logger.info(`비활성(끔·만료) 항목의 활성 검출 ${resolved}건을 resolved 로 바꿨습니다`);
+      } catch (error) {
+        logger.error("비활성 항목 검출 정리 중 오류", error);
+      }
       try {
         runAutoScan(now);
       } catch (error) {

@@ -1,4 +1,4 @@
-import type { Finding, TestEmailResult } from "@pw/shared";
+import { SEVERITY_RANK, type Finding, type TestEmailResult } from "@pw/shared";
 import { createTransport } from "nodemailer";
 import type { Clock } from "../clock.ts";
 import type { SmtpConfig } from "../config.ts";
@@ -67,7 +67,8 @@ export const unconfiguredMailer: Mailer = {
 
 export interface Notifier {
   /**
-   * `notifiedAt` 이 null 인 `open` 검출을 repo 별로 묶어 메일로 보낸다(최대 MAIL_MAX_ROWS 행).
+   * `notifiedAt` 이 null 인 `open` 검출 중 심각도가 `notifyMinSeverity` 이상인 것을 메일로 보낸다(최대 MAIL_MAX_ROWS 행).
+   * 대상이 0건이면 보내지 않는다.
    * 발송 성공 시에만 그 검출의 `notifiedAt` 을 기록한다. 수신자 0명이면 보내지 않는다.
    * SMTP 실패는 throw 하지 않는다(로그만).
    */
@@ -91,9 +92,10 @@ const SUBJECT_PREFIX = "[package-watcher]";
 const typeLabel = (finding: Finding): string =>
   finding.dependencyType === "direct" ? "직접" : "전이";
 
-// repo 안의 행은 파일 경로 → 패키지 → 버전 → id 순이다 — 근거: Spec 은 "repo 별로 묶음" 만 정한다.
+// 심각도 높은 순 → repo → 파일 경로 → 패키지 → 버전 → id. 200행 절단도 이 순서라서 심각한 검출이 "외 N건" 으로 잘리지 않는다.
 function compareFindings(a: Finding, b: Finding): number {
   return (
+    SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] ||
     a.repo.localeCompare(b.repo) ||
     a.filePath.localeCompare(b.filePath) ||
     a.packageName.localeCompare(b.packageName) ||
@@ -102,7 +104,10 @@ function compareFindings(a: Finding, b: Finding): number {
   );
 }
 
-/** repo 별로 묶은 검출 목록. 검출 행은 최대 MAIL_MAX_ROWS 개(repo 제목 행은 세지 않는다, S-2). */
+/**
+ * 즉시 메일과 일일 요약이 함께 쓰는 렌더러. 검출 행은 최대 MAIL_MAX_ROWS 개(repo 제목 행은 세지 않는다, S-2).
+ * 심각도 순으로 정렬하므로 repo 제목은 repo 가 바뀔 때마다 출력한다(같은 repo 가 다시 나올 수 있다).
+ */
 export function renderFindings(findings: Finding[]): string {
   const sorted = [...findings].sort(compareFindings);
   const shown = sorted.slice(0, MAIL_MAX_ROWS);
@@ -115,7 +120,7 @@ export function renderFindings(findings: Finding[]): string {
       currentRepo = finding.repo;
     }
     lines.push(
-      `- ${finding.filePath}: ${finding.packageName}@${finding.version} (${typeLabel(finding)}) — 사유: ${finding.reason}`,
+      `- [${finding.severity}][${finding.ecosystem}] ${finding.filePath}: ${finding.packageName}@${finding.version} (${typeLabel(finding)}) — 사유: ${finding.reason}`,
       `  ${finding.htmlUrl}`,
     );
   }
@@ -152,7 +157,9 @@ export function createNotifier(deps: NotifierDeps): Notifier {
 
   return {
     async notifyNewFindings() {
-      const findings = repos.findings.listUnnotifiedOpen();
+      // 임계값 미만은 notifiedAt 이 null 로 남아서, 임계값을 낮추거나 항목의 심각도를 올리면 다음 스캔 메일에 들어간다.
+      const { notifyMinSeverity } = readStoredSettings(repos.settings);
+      const findings = repos.findings.listUnnotifiedOpen(SEVERITY_RANK[notifyMinSeverity]);
       if (findings.length === 0) return;
       const to = recipientsForMail("신규 검출");
       if (!to) return;

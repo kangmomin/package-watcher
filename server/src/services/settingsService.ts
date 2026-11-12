@@ -35,7 +35,7 @@ export function createSettingsService(deps: SettingsServiceDeps): SettingsServic
       recipients: stored.recipients,
       githubTokenSource,
       smtpConfigured,
-      notifyMinSeverity: "low", // v2-shim
+      notifyMinSeverity: stored.notifyMinSeverity,
     };
   }
 
@@ -53,6 +53,10 @@ export function createSettingsService(deps: SettingsServiceDeps): SettingsServic
         repos.settings.set("scan_interval_hours", String(data.scanIntervalHours));
         repos.settings.set("digest_time", data.digestTime);
         repos.settings.set("recipients", JSON.stringify(data.recipients));
+        // 생략하면 저장된 값을 유지한다(v1 클라이언트 호환).
+        if (data.notifyMinSeverity !== undefined) {
+          repos.settings.set("notify_min_severity", data.notifyMinSeverity);
+        }
         if (orgChanged) {
           repos.findings.resolveAllActive(toIso(now));
           repos.settings.set("listed_baseline", null);

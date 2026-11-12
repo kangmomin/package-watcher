@@ -1,6 +1,8 @@
 import {
+  isNamePattern,
   scansQuerySchema,
   type BlacklistEntry,
+  type Ecosystem,
   type DependencyType,
   type FailedRepo,
   type Page,
@@ -29,14 +31,17 @@ import {
   type LockPackage,
 } from "../lockfiles/index.ts";
 import type { Logger } from "../logger.ts";
-import { matchExact, matchRange } from "../matcher.ts";
+import { createEntryIndex, matchExact, matchRange, type EntryIndex } from "../matcher.ts";
 import type { FindingKey } from "../repositories/findings.ts";
 import type { Repositories } from "../repositories/index.ts";
 import type { ScanResult } from "../repositories/scans.ts";
 import { assignLockfiles, dirOf, readWorkspaceGlobs } from "../workspaces.ts";
 import { parseInput, toIso } from "./common.ts";
+import { isEntryActive, todayKst } from "./entryActivity.ts";
 import type { Notifier } from "./notifier.ts";
 
+/** 이 묶음에서 검사하는 종류는 npm 뿐이다 */
+const NPM: Ecosystem = "npm";
 /** repo 동시 처리 수 */
 export const REPO_CONCURRENCY = 5;
 /** repo 1개 안의 파일 동시 조회 수 */
@@ -222,7 +227,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     org: string,
     client: GitHubClient,
     repo: RepoInfo,
-    entriesByName: Map<string, BlacklistEntry[]>,
+    entryIndex: EntryIndex<BlacklistEntry>,
   ): Promise<{ packageJsonCount: number; matches: Match[] }> {
     const tree = await client.getTree(org, repo.name, repo.defaultBranch);
     if (tree.truncated) {
@@ -301,7 +306,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
         owners.flatMap((path) => manifests.get(path)?.dependencies.map((dep) => dep.name) ?? []),
       );
       for (const pkg of lockPackages.get(file.path) ?? []) {
-        for (const entry of entriesByName.get(pkg.name) ?? []) {
+        for (const entry of entryIndex.match(NPM, pkg.name)) {
           if (entry.versionRange !== null && !matchExact(pkg.version, entry.versionRange)) continue;
           matches.push({
             repo: repo.name,
@@ -319,11 +324,19 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     const lockedNames = new Map(
       [...lockPackages].map(([lockPath, pkgs]) => [lockPath, new Set(pkgs.map((pkg) => pkg.name))]),
     );
+    // lockfile 파서는 workspace 패키지를 빼므로, 같은 repo 의 다른 workspace 를 가리키는 직접 의존성은 항상 이 경로로 온다.
+    // 패턴 항목(`*-utils`)이 org 내부 패키지를 잡지 않도록 그 repo 의 package.json 들의 name 은 패턴 매칭에서 뺀다.
+    const internalNames = new Set(
+      [...manifests.values()].flatMap((manifest) =>
+        typeof manifest.raw.name === "string" ? [manifest.raw.name] : [],
+      ),
+    );
     for (const [path, manifest] of manifests) {
       const owners = assignment.byPackageJson.get(path) ?? [];
       for (const dep of manifest.dependencies) {
         if (owners.some((lockPath) => lockedNames.get(lockPath)?.has(dep.name))) continue;
-        for (const entry of entriesByName.get(dep.name) ?? []) {
+        for (const entry of entryIndex.match(NPM, dep.name)) {
+          if (isNamePattern(entry.name) && internalNames.has(dep.name)) continue;
           if (!matchRange(dep.spec, entry.versionRange)) continue;
           matches.push({
             repo: repo.name,
@@ -352,17 +365,14 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     const unique = [...new Map(listed.map((repo) => [repo.name, repo])).values()];
     const targets = unique.filter((repo) => !repo.archived && !repo.fork);
 
-    const entriesByName = new Map<string, BlacklistEntry[]>();
-    for (const entry of snapshot) {
-      entriesByName.set(entry.name, [...(entriesByName.get(entry.name) ?? []), entry]);
-    }
+    const entryIndex = createEntryIndex(snapshot);
 
     let rateLimited = false;
     const scanTarget = async (repo: RepoInfo): Promise<RepoOutcome> => {
       // primary rate limit 이 소진되면 기다리지 않고 남은 repo 를 모두 실패로 둔다.
       if (rateLimited) return { repo: repo.name, ok: false, error: RATE_LIMITED };
       try {
-        return { repo: repo.name, ok: true, ...(await scanRepo(org, client, repo, entriesByName)) };
+        return { repo: repo.name, ok: true, ...(await scanRepo(org, client, repo, entryIndex)) };
       } catch (error) {
         if (error instanceof RateLimitedError) rateLimited = true;
         return { repo: repo.name, ok: false, error: describeError(error) };
@@ -422,16 +432,21 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     };
   }
 
-  /** 스냅샷 이후 삭제·수정되지 않은 항목(현재 값). 그 외 항목의 결과는 버린다(다음 스캔이 평가). */
-  function unchangedEntries(snapshot: BlacklistEntry[]): Map<number, BlacklistEntry> {
+  /**
+   * 스냅샷 이후 삭제·수정되지 않았고 지금도 활성인 항목(현재 값). 그 외 항목의 결과는 버린다(다음 스캔이 평가).
+   * 활성 판정은 스냅샷 시각이 아니라 종료 트랜잭션의 `today` 로 한다(스캔 도중 자정을 넘겨 만료된 항목 제외).
+   */
+  function unchangedEntries(snapshot: BlacklistEntry[], today: string): Map<number, BlacklistEntry> {
     const valid = new Map<number, BlacklistEntry>();
     for (const snap of snapshot) {
-      const current = repos.blacklist.get(snap.id);
+      const current = repos.blacklist.get(snap.id, today);
       if (
         current &&
         current.updatedAt === snap.updatedAt &&
+        current.ecosystem === snap.ecosystem &&
         current.name === snap.name &&
-        current.versionRange === snap.versionRange
+        current.versionRange === snap.versionRange &&
+        isEntryActive(current, today)
       ) {
         valid.set(snap.id, current);
       }
@@ -450,12 +465,16 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       if (repos.settings.get("org") !== org) {
         return { scan: repos.scans.finish(scanId, failedResult(ORG_CHANGED)), sendMail: false };
       }
+      // today 는 1번만 구해서 두 판정에 같이 쓴다(두 번 구하면 자정에 판정이 갈린다).
+      const today = todayKst(clock);
+      // 비활성 항목의 활성 검출을 먼저 정리한다 — 이후 메일과 요약이 읽는 시점에 불변식이 성립한다.
+      repos.findings.resolveForInactiveEntries(today, toIso(clock.now()));
       if (collected.kind === "listFailed") {
         return { scan: repos.scans.finish(scanId, failedResult(collected.error)), sendMail: true };
       }
 
       const now = toIso(clock.now());
-      const entries = unchangedEntries(snapshot);
+      const entries = unchangedEntries(snapshot, today);
       const results = new Map<string, Match>();
       for (const outcome of collected.outcomes) {
         if (!outcome.ok) continue;
@@ -482,10 +501,13 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
           seen.add(existing.id);
           continue;
         }
+        const entry = entries.get(match.blacklistEntryId);
         repos.findings.insertOpen(
           {
             ...match,
-            reason: entries.get(match.blacklistEntryId)?.reason ?? "",
+            ecosystem: entry?.ecosystem ?? NPM,
+            severity: entry?.severity ?? "medium",
+            reason: entry?.reason ?? "",
             htmlUrl: htmlUrlOf(org, match.repo, match.filePath),
           },
           now,
@@ -584,7 +606,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       logger.warn(`running 으로 남은 스캔 ${abandoned}건을 failed(${ABANDONED})로 기록했습니다`);
     }
 
-    const snapshot = repos.blacklist.list();
+    const snapshot = repos.blacklist.listActive(todayKst(clock));
     const scan = repos.scans.insertRunning(trigger, now);
     // lock 은 메일 발송까지 끝난 뒤 finally 에서 푼다.
     const done = execute(scan, org, github, snapshot).finally(() => {

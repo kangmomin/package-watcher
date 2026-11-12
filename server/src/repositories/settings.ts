@@ -8,6 +8,7 @@ export type SettingKey =
   | "scan_interval_hours"
   | "digest_time"
   | "recipients"
+  | "notify_min_severity"
   | "next_scan_at"
   | "last_digest_date"
   | "listed_baseline";

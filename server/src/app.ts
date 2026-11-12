@@ -13,6 +13,7 @@ import type { z } from "zod";
 import type { Clock } from "./clock.ts";
 import type { InitialSettingsEnv, TokenSource } from "./config.ts";
 import { openDatabase, type Db } from "./db/index.ts";
+import { LATEST_VERSION } from "./db/schema.ts";
 import { AppError } from "./errors.ts";
 import type { GitHubClient } from "./github/client.ts";
 import { consoleLogger, type Logger } from "./logger.ts";
@@ -27,6 +28,7 @@ import { createSettingsRoutes } from "./routes/settings.ts";
 import { createScheduler, FIRST_SCAN_DELAY_MS, type Scheduler } from "./scheduler.ts";
 import { createBlacklistService } from "./services/blacklistService.ts";
 import { addMs, canScan, toIso } from "./services/common.ts";
+import { todayKst } from "./services/entryActivity.ts";
 import { createFindingService } from "./services/findingService.ts";
 import type { AppServices } from "./services/index.ts";
 import { createNotifier, type Mailer } from "./services/notifier.ts";
@@ -128,11 +130,18 @@ export function hasWebDist(dir: string | null | undefined): dir is string {
 export function createApp(deps: AppDeps): AppInstance {
   const { clock, githubTokenSource, smtpConfigured } = deps;
   const logger = deps.logger ?? consoleLogger;
-  const db = openDatabase(deps.dbPath);
+  // 백업·마이그레이션이 실패하거나 DB 가 더 새로운 버전이면 여기서 throw 해서 시작을 거부한다.
+  const { db, migratedFrom, backupPath } = openDatabase(deps.dbPath);
+  if (migratedFrom !== null) {
+    logger.info(`DB 를 v${migratedFrom} 에서 v${LATEST_VERSION} 로 마이그레이션했습니다. 백업: ${backupPath ?? "없음"}`);
+  }
   const repos = createRepositories(db);
 
   // ---- 시작 보정
   const startedAt = clock.now();
+  // 이전 버전 이미지로 내려 둔 동안 생긴 검출을 맞춘다: 꺼지거나 만료된 항목의 활성 검출은 resolved, severity 는 항목의 값으로.
+  repos.findings.resolveForInactiveEntries(todayKst(clock), toIso(startedAt));
+  repos.findings.syncSeverityFromEntries();
   const interrupted = repos.scans.failRunning(RESTART_ERROR, toIso(startedAt));
   if (interrupted > 0) logger.warn(`서버 재시작으로 중단된 스캔 ${interrupted}건을 failed 로 기록했습니다`);
   applyInitialSettings(repos, deps.initialSettings ?? {}, logger);

@@ -76,6 +76,49 @@ npm start          # node server/dist/index.js (http://127.0.0.1:3000)
 
 Docker 로 실행할 때는 `.env` 에 `PORT`, `HOST`, `DATA_DIR`, `WEB_DIST_DIR` 를 넣지 않는다(이미지의 값과 volume 경로가 바뀐다).
 
+## 블랙리스트 규칙
+
+항목의 필드:
+
+| 필드 | 설명 |
+|------|------|
+| `ecosystem` | 패키지 종류. 지금은 `npm` 만 검사한다(기본 `npm`). 같은 이름·버전 범위라도 종류가 다르면 다른 항목이다 |
+| `name` | 패키지 이름 또는 `*` 패턴 |
+| `versionRange` | semver range. 비우면 모든 버전 |
+| `severity` | `critical` > `high` > `medium` > `low`. 기본 `medium`. 대시보드는 심각도가 높은 검출부터 보여 준다 |
+| `enabled` | 끄면 검사에서 제외하고, 그 항목의 검출(무시한 것 포함)은 즉시 `resolved` 가 된다. 다시 켜면 다음 스캔에서 새 검출(과 메일)이 생긴다 |
+| `expiresAt` | 만료일(`YYYY-MM-DD`, KST). 만료일 당일까지 검사하고 다음 날 00:00(KST)부터 `만료`로 보고 끈 것과 같이 처리한다. 비우면 만료 없음 |
+| `reason` | 사유 |
+
+**이름 패턴:** `name` 에 `*` 가 있으면 패턴이다. `*` 는 `/` 를 포함한 임의의 문자열(0자 이상)과 일치하고, 패키지 이름 전체를 대소문자 구분해서 비교한다. 예: `@evil/*`, `@*/evil`, `*-malware`, `left-pad*`.
+영문자·숫자가 2자 이상 있어야 한다(`*`, `@*/*`, `a*` 는 거부). 연속한 `*` 는 1개로 저장한다. 한 패키지가 항목 여러 개와 일치하면 항목마다 검출이 생긴다.
+로컬 `file:` 의존성과 org 가 직접 배포한 패키지도 패턴에 걸릴 수 있다. lockfile 이 없는 `package.json` 을 range 로 검사할 때는, 같은 repo 안의 다른 `package.json` 의 `name`(내부 workspace 패키지)을 가리키는 의존성은 패턴과 비교하지 않는다. 정확한 이름 항목은 그대로 비교한다.
+
+**알림 임계값:** 설정의 "즉시 알림 최소 심각도"(`notifyMinSeverity`, 기본 `low`)보다 낮은 신규 검출은 스캔 직후 메일에서 빠지고 일일 요약에만 들어간다.
+임계값 이상인 검출이 없으면 즉시 메일을 보내지 않는다. 빠진 검출은 `notifiedAt` 이 비어 있어서, 임계값을 낮추거나 항목의 심각도를 올리면 다음 스캔 종료 메일에 들어간다.
+**업그레이드 직전에 만든 기존 항목은 모두 `medium` 이다.** 임계값을 `high` 이상으로 올리기 전에 항목마다 심각도를 지정하지 않으면 즉시 메일이 조용히 끊긴다(설정 화면이 이 항목 수를 경고로 알려 준다).
+메일 본문은 심각도 높은 순으로 정렬하고 각 행에 `[심각도][종류]` 를 붙인다.
+
+## 업그레이드와 백업
+
+새 버전을 처음 띄울 때 기존 DB 는 **자동으로 마이그레이션**된다(항목·검출·설정과 `id` 는 그대로, 새 필드는 `npm`/`medium`/켬/만료 없음). 마이그레이션 직전에 같은 폴더에 백업 파일을 만든다:
+
+- `package-watcher.db.v0-backup` — Docker 에서는 volume 의 `/data/package-watcher.db.v0-backup`. 파일 이름의 `v0` 은 이전 버전(v1) 이미지의 DB 라는 뜻이다. 이미 있으면 새 내용으로 덮어쓴다.
+- 마이그레이션을 했다는 로그 한 줄(`DB 를 v0 에서 v2 로 마이그레이션했습니다. 백업: …`)이 남는다.
+
+**시작 거부:** 백업이나 마이그레이션이 실패하거나, DB 가 이 서버보다 새로운 버전이면 서버가 시작하지 않는다(DB 는 바꾸지 않는다). Docker 에서는 컨테이너가 종료와 재시작을 반복하는 것으로 보인다. `docker compose logs` 로 원인을 확인한다. 백업 파일이 있는 디렉터리에 쓸 수 없는 경우가 대표적이다.
+
+**수동 백업:** 컨테이너를 멈춘 뒤 `package-watcher.db` 를 복사한다. SQLite 는 WAL 모드라서 실행 중에 복사하면 최근 변경이 빠진 불완전한 파일이 될 수 있다.
+
+**이전 버전(v1) 이미지로 되돌리기:** v1 이미지는 `enabled`·`expiresAt` 을 무시한다. 꺼진 항목과 만료된 항목도 검사하고 메일을 보낸다. 되돌리려면 이미지만 바꾸지 말고 아래 절차로 백업 파일을 복원한다.
+
+**복원 절차:**
+
+1. 컨테이너를 멈춘다(`docker compose stop`).
+2. `package-watcher.db-wal`, `package-watcher.db-shm` 을 삭제한다.
+3. 백업 파일을 `package-watcher.db` 로 복사한다.
+4. 이전 버전 이미지로 다시 띄운다. 백업 이후에 바뀐 항목·검출·설정은 사라진다.
+
 ## MCP 연결
 
 `/mcp` 는 Streamable HTTP(stateless) MCP 서버다. 인증이 없고 URL 은 `http://localhost:3000/mcp` 다.
@@ -101,11 +144,11 @@ HTTP 전송을 직접 지원하지 않는 클라이언트(예: Claude Desktop)�
 
 | tool | 동작 |
 |------|------|
-| `list_findings` | 검출 목록 (`status`, `repo`, `package`, `page`, `limit`) |
+| `list_findings` | 검출 목록 (`status`, `repo`, `package`, `ecosystem`, `severity`, `page`, `limit`). `severity` 는 정확히 일치하는 값만 거른다 |
 | `set_finding_status` | 검출을 `ignored` 또는 `open` 으로 변경 (`id`, `status`) |
-| `list_blacklist` | 블랙리스트 목록 |
-| `add_blacklist_entry` | 블랙리스트 항목 추가 (`name`, `versionRange?`, `reason`) |
-| `update_blacklist_entry` | 블랙리스트 항목 전체 교체 (`id`, `name`, `versionRange`, `reason`) |
+| `list_blacklist` | 블랙리스트 목록 (`ecosystem?`, `enabled?`, `q?`). `enabled=true` 는 사용자가 켠 항목이라서 만료된 항목도 포함된다. 만료 여부는 각 항목의 `isExpired` 로 본다 |
+| `add_blacklist_entry` | 블랙리스트 항목 추가 (`name`, `versionRange?`, `reason`, `ecosystem?`, `severity?`, `enabled?`, `expiresAt?`). `severity` 기본값은 `medium`, 즉시 메일 기준은 `get_settings` 의 `notifyMinSeverity` |
+| `update_blacklist_entry` | 블랙리스트 항목 수정 (`id`, `name`, `versionRange`, `reason`, `ecosystem?`, `severity?`, `enabled?`, `expiresAt?`). `name`·`versionRange`·`reason` 은 전체 교체, 나머지 필드는 생략하면 유지. `expiresAt: null` 은 만료 해제 |
 | `remove_blacklist_entry` | 블랙리스트 항목 삭제 (`id`). 그 항목의 검출은 `resolved` 가 된다 |
 | `trigger_scan` | 수동 스캔 시작 |
 | `list_scans` | 스캔 이력 (`page`, `limit`) |

@@ -6,7 +6,7 @@ import { parseId, readJsonBody } from "./errors.ts";
 export function createBlacklistRoutes(services: AppServices): Hono {
   const app = new Hono();
 
-  app.get("/blacklist", (c) => c.json(services.blacklist.list()));
+  app.get("/blacklist", (c) => c.json(services.blacklist.list(c.req.query())));
 
   app.post("/blacklist", async (c) => {
     const body = await readJsonBody(c);
