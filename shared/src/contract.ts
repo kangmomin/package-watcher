@@ -1,8 +1,8 @@
 // Integration Contract v1.3 + v2.2(블랙리스트 규칙 확장) 의 단일 정의.
 // BE(응답 생성·입력 검증)와 FE(응답 parse·제출 전 검증)가 같은 스키마를 쓴다.
 // 브라우저 번들에 들어가므로 Node 전용 모듈을 import 하지 않는다.
-import validRange from "semver/ranges/valid.js";
 import { z } from "zod";
+import { ECOSYSTEM_RULES, normalizeEntryName } from "./ecosystems.ts";
 
 // ---------------------------------------------------------------- enum
 
@@ -39,8 +39,9 @@ export const ERROR_CODES = [
 
 /** 값 7개를 지금 정의한다. DB 의 CHECK 와 같은 목록이다. */
 export const ECOSYSTEMS = ["npm", "go", "pypi", "nuget", "cargo", "pub", "maven"] as const;
-/** 입력으로 받는 종류. 검사기가 있는 종류만 넣는다. */
-export const SUPPORTED_ECOSYSTEMS = ["npm"] as const;
+/** 입력으로 받는 종류. 검사기가 있는 종류만 넣는다 (지금은 전부). */
+// 길이가 고정된 tuple 타입으로 내보내지 않는다 — 쓰는 쪽의 `length === 1` 같은 비교가 타입 오류가 된다.
+export const SUPPORTED_ECOSYSTEMS: readonly [Ecosystem, ...Ecosystem[]] = ECOSYSTEMS;
 /** 높은 순. 화면의 select 순서와 정렬이 이 순서를 쓴다. */
 export const SEVERITIES = ["critical", "high", "medium", "low"] as const;
 
@@ -262,42 +263,22 @@ export type ApiError = z.infer<typeof apiErrorSchema>;
 
 // ---------------------------------------------------------------- 요청
 
-// npm 패키지 이름. 브라우저에서도 같은 규칙을 쓰기 위해 정규식으로 검증한다.
-// 대문자는 과거에 등록된 패키지(예: JSONStream)에 있으므로 허용하고, 비교는 대소문자를 구분한다.
-const NPM_NAME = /^(?:@[A-Za-z0-9-~][A-Za-z0-9-._~]*\/)?[A-Za-z0-9-~][A-Za-z0-9-._~]*$/;
-
-// 패턴(`*` 포함)에는 이름의 모양 제한을 적용하지 않고 문자만 검사한다.
-const PATTERN_CHARS = /^[A-Za-z0-9\-._~@/*]+$/;
-const ALNUM = /[A-Za-z0-9]/g;
-
 /** 이름에 `*` 가 있으면 패턴이다. `*` 는 `/` 를 포함한 임의의 문자열과 일치한다. */
 export function isNamePattern(name: string): boolean {
   return name.includes("*");
 }
 
+/** 모든 종류의 공통 상한. 종류마다 더 짧은 상한(npm 214자 등)은 종류별 규칙이 검사한다. */
+const NAME_MAX_LENGTH = 255;
+
+// 이름의 모양과 범위의 문법은 종류를 알아야 하므로 객체 단위 검증(`entryRules`)이 한다.
 const nameSchema = z
   .string({ error: "패키지 이름을 입력하십시오" })
   .trim()
   .min(1, "패키지 이름을 입력하십시오")
-  .max(214, "패키지 이름은 214자 이하입니다")
+  .max(NAME_MAX_LENGTH, `패키지 이름은 ${NAME_MAX_LENGTH}자 이하입니다`)
   // 연속한 `*` 는 뜻이 같으므로 1개로 저장한다 (중복 키 비교가 문자열 비교다).
-  .transform((value) => value.replace(/\*{2,}/g, "*"))
-  .superRefine((value, ctx) => {
-    if (!isNamePattern(value)) {
-      if (!NPM_NAME.test(value)) {
-        ctx.addIssue({ code: "custom", message: "npm 패키지 이름 형식이 아닙니다" });
-      }
-      return;
-    }
-    if (!PATTERN_CHARS.test(value)) {
-      ctx.addIssue({ code: "custom", message: "패턴에 쓸 수 없는 문자가 있습니다" });
-      return;
-    }
-    // `*`, `@*/*` 처럼 거의 모든 패키지와 일치하는 패턴을 막는다.
-    if ((value.match(ALNUM)?.length ?? 0) < 2) {
-      ctx.addIssue({ code: "custom", message: "패턴에 영문자·숫자가 2자 이상 있어야 합니다" });
-    }
-  });
+  .transform((value) => value.replace(/\*{2,}/g, "*"));
 
 /** trim 후 빈 문자열과 null 은 "모든 버전"(null) 이다. */
 const versionRangeSchema = z
@@ -305,9 +286,6 @@ const versionRangeSchema = z
   .transform((value) => {
     const trimmed = value?.trim() ?? "";
     return trimmed === "" ? null : trimmed;
-  })
-  .refine((value) => value === null || validRange(value) !== null, {
-    message: "유효한 semver 범위가 아닙니다",
   });
 
 const reasonSchema = z
@@ -316,7 +294,7 @@ const reasonSchema = z
   .min(1, "사유를 입력하십시오")
   .max(500, "사유는 500자 이하입니다");
 
-const ecosystemInputSchema = z.enum(SUPPORTED_ECOSYSTEMS, { error: "지원하지 않는 종류입니다" });
+const ecosystemInputSchema = z.enum(ECOSYSTEMS, { error: "지원하지 않는 종류입니다" });
 const severityInputSchema = z.enum(SEVERITIES, {
   error: "심각도는 critical, high, medium, low 중 하나입니다",
 });
@@ -334,30 +312,72 @@ const expiresAtSchema = z
     message: "만료일은 YYYY-MM-DD 형식의 실제 날짜입니다",
   });
 
+const isEcosystem = (value: unknown): value is Ecosystem =>
+  (ECOSYSTEMS as readonly unknown[]).includes(value);
+
+/**
+ * 이름과 범위를 그 종류의 규칙으로 검증한다. 오류의 path 를 필드로 지정한다 (`toDetails` 는 path 없는 오류를 버린다).
+ * `when` 으로 항상 실행한다 — 기본 동작은 다른 필드(예: severity)의 타입 오류가 있으면 건너뛰어서
+ * 한 번의 응답에 이름·범위의 오류가 빠진다. 그래서 값의 타입을 직접 확인한다.
+ */
+const entryRules = z.superRefine<{ name?: unknown; versionRange?: unknown; ecosystem?: unknown }>(
+  (data, ctx) => {
+    // 종류가 없으면(PUT 의 생략) 서버가 저장된 종류와 병합한 뒤 `validateEntryFields` 로 검증한다.
+    if (!isEcosystem(data.ecosystem)) return;
+    // 비었거나 너무 긴 이름은 필드 스키마가 이미 오류를 냈다.
+    const name =
+      typeof data.name === "string" && data.name !== "" && data.name.length <= NAME_MAX_LENGTH
+        ? data.name
+        : null;
+    const range = typeof data.versionRange === "string" ? data.versionRange : null;
+    const rule = ECOSYSTEM_RULES[data.ecosystem];
+    const nameError = name === null ? null : rule.validateName(name);
+    const rangeError = range === null ? null : rule.validateRange(range);
+    if (nameError !== null) ctx.addIssue({ code: "custom", message: nameError, path: ["name"] });
+    if (rangeError !== null) {
+      ctx.addIssue({ code: "custom", message: rangeError, path: ["versionRange"] });
+    }
+  },
+  { when: () => true },
+);
+
+/** 검증을 통과한 이름을 그 종류의 저장 형태로 바꾼다 (pypi, nuget). 종류가 없으면 그대로 둔다. */
+function normalizeEntry<T extends { name: string; ecosystem?: Ecosystem | undefined }>(data: T): T {
+  if (data.ecosystem === undefined) return data;
+  return { ...data, name: normalizeEntryName(data.ecosystem, data.name) };
+}
+
 /** POST /api/blacklist — 생략한 필드는 기본값을 쓴다. 기본값은 이 스키마만 채운다. */
-export const blacklistCreateSchema = z.object({
-  name: nameSchema,
-  versionRange: versionRangeSchema.optional().transform((value) => value ?? null),
-  reason: reasonSchema,
-  ecosystem: ecosystemInputSchema.default("npm"),
-  severity: severityInputSchema.default("medium"),
-  enabled: enabledInputSchema.default(true),
-  expiresAt: expiresAtSchema.optional().transform((value) => value ?? null),
-});
+export const blacklistCreateSchema = z
+  .object({
+    name: nameSchema,
+    versionRange: versionRangeSchema.optional().transform((value) => value ?? null),
+    reason: reasonSchema,
+    ecosystem: ecosystemInputSchema.default("npm"),
+    severity: severityInputSchema.default("medium"),
+    enabled: enabledInputSchema.default(true),
+    expiresAt: expiresAtSchema.optional().transform((value) => value ?? null),
+  })
+  .check(entryRules)
+  .transform(normalizeEntry);
 /**
  * PUT /api/blacklist/:id — name·versionRange·reason 은 전체 교체 (versionRange 키 필수, A-12).
  * 새 필드 4개는 생략하면 undefined 이고 서버가 저장된 값을 유지한다 (v1 클라이언트 호환).
  * `expiresAt: null` 은 만료 해제다.
+ * `ecosystem` 이 있으면 create 와 같은 검증·정규화를 하고, 없으면 종류별 검증을 건너뛴다.
  */
-export const blacklistUpdateSchema = z.object({
-  name: nameSchema,
-  versionRange: versionRangeSchema,
-  reason: reasonSchema,
-  ecosystem: ecosystemInputSchema.optional(),
-  severity: severityInputSchema.optional(),
-  enabled: enabledInputSchema.optional(),
-  expiresAt: expiresAtSchema.optional(),
-});
+export const blacklistUpdateSchema = z
+  .object({
+    name: nameSchema,
+    versionRange: versionRangeSchema,
+    reason: reasonSchema,
+    ecosystem: ecosystemInputSchema.optional(),
+    severity: severityInputSchema.optional(),
+    enabled: enabledInputSchema.optional(),
+    expiresAt: expiresAtSchema.optional(),
+  })
+  .check(entryRules)
+  .transform(normalizeEntry);
 /** 검증을 통과한 생성·수정 입력. 새 필드 4개는 수정에서 생략할 수 있다. */
 export interface BlacklistInput {
   name: string;

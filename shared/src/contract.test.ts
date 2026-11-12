@@ -30,7 +30,9 @@ import {
   summarySchema,
   testEmailResultSchema,
   toDetails,
+  type Ecosystem,
 } from "./contract.ts";
+import { ECOSYSTEM_RULES, normalizeEntryName, validateEntryFields } from "./ecosystems.ts";
 import * as fx from "./fixtures.ts";
 
 describe("[CT-01] fixture 는 응답 스키마를 통과한다", () => {
@@ -257,9 +259,9 @@ describe("[CT-15] v2 fixture 와 상수", () => {
     expect(settingsSchema.safeParse(settingsWithoutMin).success).toBe(false);
   });
 
-  it("상수: 종류 7개, 입력은 npm 만, 심각도는 높은 순", () => {
+  it("상수: 종류 7개, 입력도 7개, 심각도는 높은 순", () => {
     expect(ECOSYSTEMS).toEqual(["npm", "go", "pypi", "nuget", "cargo", "pub", "maven"]);
-    expect(SUPPORTED_ECOSYSTEMS).toEqual(["npm"]);
+    expect(SUPPORTED_ECOSYSTEMS).toEqual([...ECOSYSTEMS]);
     expect(SEVERITIES).toEqual(["critical", "high", "medium", "low"]);
     const ranks = SEVERITIES.map((severity) => SEVERITY_RANK[severity]);
     expect(ranks).toEqual([...ranks].sort((a, b) => b - a));
@@ -347,7 +349,11 @@ describe("[CT-15] v2 입력 스키마", () => {
   });
 
   it("ecosystem: 입력은 지원하는 종류만 받는다", () => {
-    for (const ecosystem of ["go", "pypi", "maven", "unknown"]) {
+    for (const ecosystem of ["go", "pypi", "maven"]) {
+      const name = ecosystem === "maven" ? "com.evil:a-pkg" : base.name;
+      expect(blacklistCreateSchema.parse({ ...base, name, ecosystem }).ecosystem).toBe(ecosystem);
+    }
+    for (const ecosystem of ["unknown", "NPM", ""]) {
       const result = blacklistCreateSchema.safeParse({ ...base, ecosystem });
       expect(result.success).toBe(false);
       if (result.success) continue;
@@ -392,6 +398,237 @@ describe("[CT-15] v2 입력 스키마", () => {
     });
     expect(findingsQuerySchema.safeParse({ severity: "urgent" }).success).toBe(false);
     expect(findingsQuerySchema.safeParse({ ecosystem: "foo" }).success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------- 여러 종류 (묶음 2/3)
+
+describe("여러 종류의 입력 스키마", () => {
+  const reason = "x";
+  /** 종류마다 올바른 이름과 범위 1쌍. */
+  const VALID: [Ecosystem, string, string][] = [
+    ["npm", "lodash", "<4.17.21"],
+    ["go", "github.com/evil/mod", ">=v1.0.0 <v2.0.0"],
+    ["pypi", "requests", "<1.0,>=0.5"],
+    ["nuget", "newtonsoft.json", "[1.0,2.0)"],
+    ["cargo", "serde", ">=1, <2"],
+    ["pub", "http", ">=1.0.0 <2.0.0"],
+    ["maven", "com.google.guava:guava", "(,1.5]"],
+  ];
+
+  it.each(VALID)("[v2-AC-10] %s: 그 종류의 올바른 이름과 범위를 받는다", (ecosystem, name, versionRange) => {
+    expect(blacklistCreateSchema.parse({ name, versionRange, reason, ecosystem })).toEqual({
+      name,
+      versionRange,
+      reason,
+      ecosystem,
+      severity: "medium",
+      enabled: true,
+      expiresAt: null,
+    });
+    expect(blacklistUpdateSchema.parse({ name, versionRange, reason, ecosystem })).toEqual({
+      name,
+      versionRange,
+      reason,
+      ecosystem,
+    });
+    // 범위 없음(모든 버전)은 모든 종류에서 된다.
+    expect(blacklistCreateSchema.parse({ name, reason, ecosystem }).versionRange).toBeNull();
+  });
+
+  it("[v2-AC-11] pypi·nuget 의 이름은 정규화해서 출력한다 (create, update)", () => {
+    expect(blacklistCreateSchema.parse({ name: " Foo_Bar ", reason, ecosystem: "pypi" }).name).toBe(
+      "foo-bar",
+    );
+    expect(
+      blacklistCreateSchema.parse({ name: "Newtonsoft.Json", reason, ecosystem: "nuget" }).name,
+    ).toBe("newtonsoft.json");
+    expect(
+      blacklistUpdateSchema.parse({ name: "Foo_Bar", versionRange: null, reason, ecosystem: "pypi" })
+        .name,
+    ).toBe("foo-bar");
+    expect(
+      blacklistUpdateSchema.parse({
+        name: "Newtonsoft.Json",
+        versionRange: "[13.0.1]",
+        reason,
+        ecosystem: "nuget",
+      }),
+    ).toEqual({ name: "newtonsoft.json", versionRange: "[13.0.1]", reason, ecosystem: "nuget" });
+    // 패턴: 연속한 * 를 줄인 뒤 정규화한다.
+    expect(blacklistCreateSchema.parse({ name: "Evil_**", reason, ecosystem: "pypi" }).name).toBe(
+      "evil-*",
+    );
+  });
+
+  it("[v2-AC-11] 그 외 종류의 이름은 그대로다", () => {
+    expect(blacklistCreateSchema.parse({ name: "JSONStream", reason }).name).toBe("JSONStream");
+    expect(
+      blacklistCreateSchema.parse({ name: "github.com/BurntSushi/toml", reason, ecosystem: "go" }).name,
+    ).toBe("github.com/BurntSushi/toml");
+  });
+
+  it.each([
+    ["pypi", "requests", "[1.0,2.0)"],
+    ["nuget", "newtonsoft.json", "<1.0"],
+    ["nuget", "newtonsoft.json", "1.2.3"],
+    ["go", "github.com/evil/mod", "<1.0.0"],
+    ["cargo", "serde", ">=1 <2"],
+    ["pub", "http", "[1.0,2.0)"],
+    ["maven", "com.google.guava:guava", "<1.0"],
+    ["npm", "lodash", "[1.0,2.0)"],
+  ] as [Ecosystem, string, string][])(
+    "[v2-EC-02] %s: 그 종류의 문법이 아닌 범위 %s → details.versionRange",
+    (ecosystem, name, versionRange) => {
+      for (const schema of [blacklistCreateSchema, blacklistUpdateSchema]) {
+        const result = schema.safeParse({ name, versionRange, reason, ecosystem });
+        expect(result.success).toBe(false);
+        if (result.success) continue;
+        expect(toDetails(result.error)).toEqual({
+          versionRange: ECOSYSTEM_RULES[ecosystem].validateRange(versionRange),
+        });
+      }
+    },
+  );
+
+  it("[v2-EC-02] nuget·maven 의 괄호 없는 값은 [1.2.3] 형식을 안내한다", () => {
+    for (const [ecosystem, name] of [
+      ["nuget", "newtonsoft.json"],
+      ["maven", "com.google.guava:guava"],
+    ] as const) {
+      const result = blacklistCreateSchema.safeParse({ name, versionRange: "1.2.3", reason, ecosystem });
+      expect(result.success).toBe(false);
+      if (result.success) continue;
+      expect(toDetails(result.error).versionRange).toContain(
+        "정확한 버전은 [1.2.3] 형식으로 적으십시오",
+      );
+    }
+  });
+
+  it("[v2-EC-03] 이름·범위가 같아도 종류가 다르면 다른 항목이고, 정규화하면 같은 이름은 같은 키다", () => {
+    const asNpm = blacklistCreateSchema.parse({ name: "evil", versionRange: "1.2.3", reason });
+    const asPub = blacklistCreateSchema.parse({
+      name: "evil",
+      versionRange: "1.2.3",
+      reason,
+      ecosystem: "pub",
+    });
+    expect([asNpm.name, asNpm.versionRange]).toEqual([asPub.name, asPub.versionRange]);
+    expect(asNpm.ecosystem).not.toBe(asPub.ecosystem);
+
+    const key = (name: string, ecosystem: Ecosystem) =>
+      blacklistCreateSchema.parse({ name, reason, ecosystem }).name;
+    expect(key("Foo_Bar", "pypi")).toBe(key("foo.bar", "pypi"));
+    expect(key("Newtonsoft.Json", "nuget")).toBe(key("NEWTONSOFT.JSON", "nuget"));
+    expect(key("Evil", "cargo")).not.toBe(key("evil", "cargo"));
+  });
+
+  it.each([
+    ["go", "has space"],
+    ["go", "/github.com/a/b"],
+    ["pypi", "-requests"],
+    ["nuget", "a/b"],
+    ["cargo", "serde.json"],
+    ["pub", "Http"],
+    ["maven", "guava"],
+    ["maven", "*:*"],
+    ["pypi", "a*"],
+  ] as [Ecosystem, string][])("[ME-05] %s: 이름 %s → details.name", (ecosystem, name) => {
+    for (const schema of [blacklistCreateSchema, blacklistUpdateSchema]) {
+      const result = schema.safeParse({ name, versionRange: null, reason, ecosystem });
+      expect(result.success).toBe(false);
+      if (result.success) continue;
+      expect(toDetails(result.error)).toEqual({
+        name: ECOSYSTEM_RULES[ecosystem].validateName(name),
+      });
+    }
+  });
+
+  it("[ME-05] 이름과 범위의 오류를 함께, 다른 필드의 오류와도 함께 돌려준다", () => {
+    const result = blacklistCreateSchema.safeParse({
+      name: "Http",
+      versionRange: "[1.0,2.0)",
+      reason: "",
+      ecosystem: "pub",
+      severity: "urgent",
+    });
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(Object.keys(toDetails(result.error)).sort()).toEqual([
+      "name",
+      "reason",
+      "severity",
+      "versionRange",
+    ]);
+  });
+
+  it("[ME-05] 종류가 틀리면 이름·범위를 검증하지 않는다 (어느 규칙인지 알 수 없다)", () => {
+    const result = blacklistCreateSchema.safeParse({
+      name: "has space",
+      versionRange: "!!",
+      reason,
+      ecosystem: "unknown",
+    });
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(Object.keys(toDetails(result.error))).toEqual(["ecosystem"]);
+  });
+
+  it("[ME-05] create 는 종류를 생략하면 npm 규칙으로 검증한다", () => {
+    expect(blacklistCreateSchema.safeParse({ name: "github.com/evil/mod", reason }).success).toBe(false);
+    expect(blacklistCreateSchema.safeParse({ name: "a", versionRange: "<v1.0.0", reason }).success).toBe(
+      true, // semver 는 v 접두를 허용한다 (v1 그대로)
+    );
+    expect(blacklistCreateSchema.safeParse({ name: "a", versionRange: "[1.0,2.0)", reason }).success).toBe(
+      false,
+    );
+  });
+
+  it("[ME-05] update 는 종류를 생략하면 종류별 검증을 건너뛴다 (서버가 병합 후 검증한다)", () => {
+    const parsed = blacklistUpdateSchema.parse({
+      name: " Foo_Bar ",
+      versionRange: " [1.0,2.0) ",
+      reason,
+    });
+    // 정규화도 하지 않는다. 공통 규칙(trim, 연속 * 줄이기, 빈 범위 → null)만 적용한다.
+    expect(parsed).toEqual({ name: "Foo_Bar", versionRange: "[1.0,2.0)", reason });
+    expect("ecosystem" in parsed).toBe(false);
+    expect(
+      blacklistUpdateSchema.parse({ name: "com.evil:**", versionRange: "  ", reason }),
+    ).toEqual({ name: "com.evil:*", versionRange: null, reason });
+    // 서버가 저장된 종류로 다시 검증하는 방법
+    expect(Object.keys(validateEntryFields("npm", parsed.name, parsed.versionRange))).toEqual([
+      "versionRange",
+    ]);
+    expect(normalizeEntryName("pypi", parsed.name)).toBe("foo-bar");
+  });
+
+  it("[ME-05] 공통 길이 제한은 255자이고 npm 은 214자다", () => {
+    const long = (length: number) => `github.com/${"a".repeat(length - 11)}`;
+    expect(
+      blacklistCreateSchema.safeParse({ name: long(255), reason, ecosystem: "go" }).success,
+    ).toBe(true);
+    for (const input of [
+      { name: long(256), reason, ecosystem: "go" },
+      { name: "a".repeat(215), reason },
+    ]) {
+      const result = blacklistCreateSchema.safeParse(input);
+      expect(result.success).toBe(false);
+      if (result.success) continue;
+      expect(Object.keys(toDetails(result.error))).toEqual(["name"]);
+    }
+    expect(blacklistUpdateSchema.safeParse({ name: "a".repeat(255), versionRange: null, reason }).success).toBe(true);
+    expect(blacklistUpdateSchema.safeParse({ name: "a".repeat(256), versionRange: null, reason }).success).toBe(false);
+  });
+
+  it("[ME-05] update 에 종류가 있어도 생략한 새 필드는 출력에 키가 없다", () => {
+    const parsed = blacklistUpdateSchema.parse({
+      name: "Foo_Bar",
+      versionRange: null,
+      reason,
+      ecosystem: "pypi",
+    });
+    expect(Object.keys(parsed).sort()).toEqual(["ecosystem", "name", "reason", "versionRange"]);
   });
 });
 
