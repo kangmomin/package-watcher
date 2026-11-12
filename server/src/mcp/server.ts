@@ -2,7 +2,14 @@ import { StreamableHTTPTransport } from "@hono/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
+  BLACKLIST_FILE_FORMATS,
+  BLACKLIST_FILE_VERSION,
+  BULK_ACTIONS,
+  BULK_MAX_IDS,
   ECOSYSTEMS,
+  ENTRY_STATUSES,
+  IMPORT_MAX_BYTES,
+  IMPORT_MAX_ROWS,
   ECOSYSTEM_RULES,
   FINDING_STATUSES,
   FINDINGS_DEFAULT_LIMIT,
@@ -91,7 +98,51 @@ const BLACKLIST_QUERY = loose({
   ecosystem: field({ type: "string", enum: ECOSYSTEMS, description: "정확히 일치하는 종류만" }),
   enabled: field({ type: "boolean", description: "사용자가 정한 켜기 값으로 거른다" }),
   q: field({ type: "string", description: "이름 부분 일치(대소문자 무시)" }),
+  status: field({
+    type: "string",
+    enum: ENTRY_STATUSES,
+    description: "active(켜짐 + 만료 안 됨) / disabled(꺼짐 + 만료 안 됨) / expired(만료, 꺼짐 여부와 무관)",
+  }),
 });
+const FILE_FORMAT = field({ type: "string", enum: BLACKLIST_FILE_FORMATS, description: "파일 형식" });
+const BULK_UPDATE = loose(
+  {
+    action: field({ type: "string", enum: BULK_ACTIONS, description: "enable(켜기) / disable(끄기) / delete(삭제)" }),
+    ids: field({
+      type: "array",
+      items: { type: "integer", minimum: 1 },
+      minItems: 1,
+      maxItems: BULK_MAX_IDS,
+      description: `대상 항목 ID (1~${BULK_MAX_IDS}개, 중복은 1개로 센다)`,
+    }),
+  },
+  ["action", "ids"],
+);
+const BLACKLIST_IMPORT = loose({
+  items: field({
+    type: "array",
+    items: { type: "object" },
+    description:
+      "항목 배열 ({ version: 1, items } JSON 파일의 items 와 같다). name·reason 만 필수이고 나머지는 생략하면 기본값. " +
+      "format + content 와 함께 쓸 수 없다",
+  }),
+  format: FILE_FORMAT,
+  content: field({
+    type: "string",
+    description: "파일 내용 (format 과 함께). items 와 함께 쓸 수 없다",
+  }),
+  dryRun: field({ type: "boolean", description: "기본 true = 미리 보기(저장하지 않는다). 적용하려면 false" }),
+});
+const BLACKLIST_EXPORT = loose(
+  {
+    format: FILE_FORMAT,
+    ecosystem: field({ type: "string", enum: ECOSYSTEMS, description: "정확히 일치하는 종류만" }),
+    enabled: field({ type: "boolean", description: "사용자가 정한 켜기 값으로 거른다" }),
+    q: field({ type: "string", description: "이름 부분 일치(대소문자 무시)" }),
+    status: field({ type: "string", enum: ENTRY_STATUSES, description: "list_blacklist 의 status 와 같다" }),
+  },
+  ["format"],
+);
 const NO_INPUT = loose({});
 const ID_ONLY = loose({ id: ID }, ["id"]);
 const FINDING_STATUS_INPUT = loose(
@@ -110,7 +161,13 @@ const BLACKLIST_UPDATE = loose(
 
 type ToolArgs = Record<string, unknown>;
 
+/** JSON 으로 다시 감싸지 않고 그대로 돌려줄 파일 내용 */
+class FileText {
+  constructor(readonly text: string) {}
+}
+
 function jsonResult(value: unknown): CallToolResult {
+  if (value instanceof FileText) return { content: [{ type: "text", text: value.text }] };
   return { content: [{ type: "text", text: JSON.stringify(value) }] };
 }
 
@@ -129,8 +186,9 @@ function toId(value: unknown): number {
 }
 
 /**
- * tool 10개(`list_findings`, `set_finding_status`, `list_blacklist`, `add_blacklist_entry`,
- * `update_blacklist_entry`, `remove_blacklist_entry`, `trigger_scan`, `list_scans`, `get_scan`, `get_settings`)를 등록한다.
+ * tool 13개(`list_findings`, `set_finding_status`, `list_blacklist`, `add_blacklist_entry`,
+ * `update_blacklist_entry`, `remove_blacklist_entry`, `trigger_scan`, `list_scans`, `get_scan`, `get_settings`,
+ * `bulk_update_blacklist`, `import_blacklist`, `export_blacklist`)를 등록한다.
  * 각 tool 은 대응 REST 와 같은 서비스 함수를 호출하고 결과 JSON 을 text content 로 반환한다.
  * 오류(검증 실패 포함)는 `isError: true` + `{code, message, details?}` JSON.
  * 주의: SDK 의 inputSchema 검증 실패는 JSON 이 아닌 문장으로 나가므로 검증은 서비스에서 한다.
@@ -168,7 +226,7 @@ export function createMcpServer(services: AppServices, logger: Logger = consoleL
   );
   register(
     "list_blacklist",
-    "블랙리스트 항목 목록을 조회한다 (GET /api/blacklist). ecosystem·enabled·q 로 거른다. " +
+    "블랙리스트 항목 목록을 조회한다 (GET /api/blacklist). ecosystem·enabled·q·status 로 거른다. " +
       "enabled=true 에는 만료된 항목도 포함된다(사용자가 켠 항목 전부). 결과: { items: BlacklistEntry[] }",
     BLACKLIST_QUERY,
     (args) => services.blacklist.list(args),
@@ -200,6 +258,44 @@ export function createMcpServer(services: AppServices, logger: Logger = consoleL
       services.blacklist.remove(id);
       return { ok: true, id };
     },
+  );
+  register(
+    "bulk_update_blacklist",
+    "블랙리스트 항목 여러 개를 한 번에 켜거나(enable) 끄거나(disable) 삭제한다(delete) (POST /api/blacklist/bulk). " +
+      "없는 id 가 1개라도 있으면 NOT_FOUND 이고 아무것도 바꾸지 않는다. 끄기·삭제는 그 항목의 활성 검출을 resolved 로 바꾼다. " +
+      "결과: { action, count }",
+    BULK_UPDATE,
+    (args) => services.blacklist.bulk(args),
+  );
+  register(
+    "import_blacklist",
+    "블랙리스트를 파일 형식으로 가져온다 (POST /api/blacklist/import). items 배열 또는 format + content 중 하나를 준다. " +
+      "dryRun 을 생략하면 미리 보기(저장하지 않음)이고, 적용하려면 dryRun: false 를 준다. " +
+      "같은 키(종류·이름·버전 범위)의 기존 항목은 갱신하고 파일에 없는 항목은 그대로 둔다. 행 오류가 1건이라도 있으면 저장하지 않는다. " +
+      `최대 ${IMPORT_MAX_BYTES / (1024 * 1024)} MB·${IMPORT_MAX_ROWS}행. 결과: { applied, created, updated, unchanged, errors: [{ row, field, message }] }`,
+    BLACKLIST_IMPORT,
+    (args) => {
+      const { items, format, content, dryRun } = args;
+      const hasFile = format !== undefined || content !== undefined;
+      if ((items !== undefined) === hasFile) {
+        throw new AppError("VALIDATION_ERROR", "items 또는 format + content 중 하나만 지정하십시오");
+      }
+      if (items === undefined) return services.blacklist.importEntries({ format, content, dryRun });
+      if (!Array.isArray(items)) throw new AppError("VALIDATION_ERROR", "items 는 배열입니다");
+      // 파일(JSON)과 같은 경로로 처리해서 검증·한도·결과가 같다.
+      return services.blacklist.importEntries({
+        format: "json",
+        content: JSON.stringify({ version: BLACKLIST_FILE_VERSION, items }),
+        dryRun,
+      });
+    },
+  );
+  register(
+    "export_blacklist",
+    "블랙리스트를 파일 형식으로 내보낸다 (GET /api/blacklist/export). format 은 json 또는 csv, 필터는 list_blacklist 와 같다. " +
+      "결과: 파일 내용 문자열 (JSON 으로 감싸지 않는다. CSV 는 BOM 으로 시작한다)",
+    BLACKLIST_EXPORT,
+    (args) => new FileText(services.blacklist.exportEntries(args).content),
   );
   register(
     "trigger_scan",

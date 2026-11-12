@@ -29,14 +29,18 @@ export function toErrorResponse(c: Context, error: unknown): Response {
 }
 
 /** JSON 본문. 깨진 JSON 또는 JSON 이 아닌 Content-Type → AppError(VALIDATION_ERROR, details 없음) */
-export async function readJsonBody(c: Context): Promise<unknown> {
+export async function readJsonBody(c: Context, maxBytes?: number): Promise<unknown> {
   const contentType = c.req.header("content-type") ?? "";
   const mediaType = contentType.split(";")[0]?.trim().toLowerCase() ?? "";
   // `+json` 접미사 미디어 타입(RFC 6839)도 JSON 으로 받는다 — 근거: 계약은 "JSON 이 아닌 Content-Type" 만 400 으로 정한다.
   if (mediaType !== "application/json" && !mediaType.endsWith("+json")) {
     throw new AppError("VALIDATION_ERROR", "요청 본문은 Content-Type: application/json 이어야 합니다");
   }
+  // 한도를 넘는 본문은 413 이 아니라 계약의 400 VALIDATION_ERROR 로 거절한다. 길이를 아는 요청은 읽기 전에 거절한다.
+  const tooLarge = () => new AppError("VALIDATION_ERROR", "요청 본문이 너무 큽니다");
+  if (maxBytes !== undefined && Number(c.req.header("content-length") ?? 0) > maxBytes) throw tooLarge();
   const text = await c.req.text();
+  if (maxBytes !== undefined && Buffer.byteLength(text, "utf8") > maxBytes) throw tooLarge();
   try {
     return JSON.parse(text) as unknown;
   } catch {
