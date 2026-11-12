@@ -180,10 +180,8 @@ describe("POST /api/blacklist — 새 필드 (ecosystem, severity, enabled, expi
     expect(today).toMatchObject({ expiresAt: "2026-11-13", isExpired: false });
   });
 
-  it("[v2-EC-05][CT-16] 지원하지 않는 ecosystem(go 포함)·잘못된 severity·문자열 enabled 는 저장하지 않고 400 VALIDATION_ERROR", async () => {
+  it("[v2-EC-05][CT-16] 지원하지 않는 ecosystem·잘못된 severity·문자열 enabled 는 저장하지 않고 400 VALIDATION_ERROR (go·pypi 는 올바른 이름이면 201)", async () => {
     const cases: [Record<string, unknown>, string][] = [
-      [{ ...EVIL, ecosystem: "go" }, "ecosystem"],
-      [{ ...EVIL, ecosystem: "pypi" }, "ecosystem"],
       [{ ...EVIL, ecosystem: "cobol" }, "ecosystem"],
       [{ ...EVIL, severity: "urgent" }, "severity"],
       [{ ...EVIL, severity: "HIGH" }, "severity"],
@@ -202,7 +200,15 @@ describe("POST /api/blacklist — 새 필드 (ecosystem, severity, enabled, expi
       const res = await t.request("PUT", `/api/blacklist/${entry.id}`, body);
       expect(expectApiError(res, 400, "VALIDATION_ERROR").details, JSON.stringify(body)).toHaveProperty(field);
     }
+    // go·pypi 는 PUT 으로 종류를 바꿀 수 없고(400 details.ecosystem), POST 는 올바른 이름이면 받는다.
+    for (const ecosystem of ["go", "pypi"]) {
+      const res = await t.request("PUT", `/api/blacklist/${entry.id}`, { ...EVIL, ecosystem });
+      expect(expectApiError(res, 400, "VALIDATION_ERROR").details).toHaveProperty("ecosystem");
+    }
     expect(await listEntries(t)).toEqual([entry]);
+    for (const ecosystem of ["go", "pypi"]) {
+      expect((await t.request("POST", "/api/blacklist", { ...EVIL, ecosystem })).status).toBe(201);
+    }
   });
 });
 

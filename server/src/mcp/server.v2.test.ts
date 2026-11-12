@@ -119,7 +119,7 @@ describe("/mcp — 묶음 1/3 의 새 필드와 필터", () => {
       name: "other-pkg",
       reason: "x",
       severity: "urgent",
-      ecosystem: "go",
+      ecosystem: "cobol",
     });
     expect(invalid.isError).toBe(true);
     const error = toolErrorSchema.parse(invalid.json);

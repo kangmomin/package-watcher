@@ -1,3 +1,4 @@
+import { ECOSYSTEM_RULES, type Ecosystem } from "@pw/shared";
 import { intersects, satisfies, validRange } from "semver";
 import { unwrapNpmAlias } from "./lockfiles/common.ts";
 
@@ -69,24 +70,39 @@ export interface EntryIndex<E extends { name: string; ecosystem: string }> {
   match(ecosystem: string, name: string): E[];
 }
 
-/** 정확한 이름은 Map 조회, 패턴 항목은 목록 순회. lockfile 경로와 range 폴백 경로가 함께 쓴다. */
+/** 종류의 이름 규칙(pypi = PEP 503, nuget = 소문자)으로 정규화한다. 모르는 종류는 그대로 둔다. */
+function normalizeFor(ecosystem: string, name: string): string {
+  const rule = (ECOSYSTEM_RULES as Record<string, (typeof ECOSYSTEM_RULES)[Ecosystem] | undefined>)[ecosystem];
+  return rule ? rule.normalizeName(name) : name;
+}
+
+/**
+ * 정확한 이름은 Map 조회, 패턴 항목은 목록 순회. lockfile 경로와 range 폴백 경로가 함께 쓴다.
+ * 양쪽 이름을 그 종류의 규칙으로 정규화해서 비교한다 (검출의 packageName 은 파일의 실제 이름을 쓰는 호출 쪽 몫).
+ */
 export function createEntryIndex<E extends { name: string; ecosystem: string }>(
   entries: E[],
 ): EntryIndex<E> {
   const exact = new Map<string, E[]>();
-  const patterns: E[] = [];
+  const patterns: { entry: E; pattern: string }[] = [];
   for (const entry of entries) {
+    const name = normalizeFor(entry.ecosystem, entry.name);
     if (entry.name.includes("*")) {
-      patterns.push(entry);
+      patterns.push({ entry, pattern: name });
       continue;
     }
-    const key = `${entry.ecosystem}:${entry.name}`;
+    const key = `${entry.ecosystem}:${name}`;
     exact.set(key, [...(exact.get(key) ?? []), entry]);
   }
   return {
-    match: (ecosystem, name) => [
-      ...(exact.get(`${ecosystem}:${name}`) ?? []),
-      ...patterns.filter((entry) => entry.ecosystem === ecosystem && matchName(entry.name, name)),
-    ],
+    match(ecosystem, name) {
+      const normalized = normalizeFor(ecosystem, name);
+      return [
+        ...(exact.get(`${ecosystem}:${normalized}`) ?? []),
+        ...patterns
+          .filter((item) => item.entry.ecosystem === ecosystem && matchName(item.pattern, normalized))
+          .map((item) => item.entry),
+      ];
+    },
   };
 }

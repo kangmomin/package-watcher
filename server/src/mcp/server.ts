@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
   ECOSYSTEMS,
+  ECOSYSTEM_RULES,
   FINDING_STATUSES,
   FINDINGS_DEFAULT_LIMIT,
   FINDINGS_MAX_LIMIT,
@@ -10,6 +11,7 @@ import {
   SCANS_MAX_LIMIT,
   SEVERITIES,
   SUPPORTED_ECOSYSTEMS,
+  type EcosystemRule,
 } from "@pw/shared";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -57,16 +59,27 @@ const SCANS_QUERY = loose({
     description: `기본 ${SCANS_DEFAULT_LIMIT}, 최대 ${SCANS_MAX_LIMIT}`,
   }),
 });
-const NAME = field({ type: "string", description: "npm 패키지 이름(스코프 포함, 대소문자 구분)" });
+const perEcosystem = (pick: (rule: EcosystemRule) => string): string =>
+  SUPPORTED_ECOSYSTEMS.map((ecosystem) => `${ecosystem}: ${pick(ECOSYSTEM_RULES[ecosystem])}`).join(" / ");
+const NAME = field({
+  type: "string",
+  description:
+    "패키지 이름. 종류의 규칙을 따른다 (예: " +
+    perEcosystem((rule) => rule.nameExample) +
+    "). `*` 가 있으면 패턴. pypi 는 PEP 503, nuget 은 소문자로 정규화해서 저장·비교하고 그 외는 대소문자를 구분한다",
+});
 const REASON = field({ type: "string", description: "사유 (1~500자)" });
 const VERSION_RANGE = field({
   type: ["string", "null"],
-  description: "semver range. null 또는 빈 문자열 = 모든 버전",
+  description:
+    "종류의 버전 범위 문법 (예: " +
+    perEcosystem((rule) => rule.rangeExample) +
+    "). null 또는 빈 문자열 = 모든 버전",
 });
 const ECOSYSTEM = field({
   type: "string",
   enum: SUPPORTED_ECOSYSTEMS,
-  description: "패키지 종류. 기본 npm",
+  description: "패키지 종류. 기본 npm. 등록한 뒤에는 바꿀 수 없다 (바꾸려면 새 항목으로 등록)",
 });
 const SEVERITY = field({ type: "string", enum: SEVERITIES, description: "심각도. 기본 medium" });
 const ENABLED = field({ type: "boolean", description: "켜기. 기본 true" });
