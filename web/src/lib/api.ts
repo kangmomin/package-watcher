@@ -7,6 +7,7 @@ import {
   blacklistListSchema,
   findingSchema,
   findingsPageSchema,
+  scanReposPageSchema,
   scanSchema,
   scansPageSchema,
   settingsSchema,
@@ -22,6 +23,8 @@ import {
   type FindingStatusInput,
   type Page,
   type Scan,
+  type ScanRepo,
+  type ScanRepoStatus,
   type Settings,
   type SettingsInput,
   type Severity,
@@ -65,6 +68,16 @@ export interface FindingsParams extends FindingsFilter {
 }
 
 export interface ScansParams {
+  page: number;
+  limit: number;
+}
+
+export interface ScanReposFilter {
+  status?: ScanRepoStatus;
+  q?: string;
+}
+
+export interface ScanReposParams extends ScanReposFilter {
   page: number;
   limit: number;
 }
@@ -153,6 +166,8 @@ export const api = {
   },
   listScans: ({ page, limit }: ScansParams): Promise<Page<Scan>> =>
     request(scansPageSchema, "GET", withQuery("/api/scans", { page, limit })),
+  listScanRepos: (scanId: number, { status, q, page, limit }: ScanReposParams): Promise<Page<ScanRepo>> =>
+    request(scanReposPageSchema, "GET", withQuery(`/api/scans/${scanId}/repos`, { status, q, page, limit })),
   triggerScan: (): Promise<Scan> => request(scanSchema, "POST", "/api/scans"),
   getSettings: (): Promise<Settings> => request(settingsSchema, "GET", "/api/settings"),
   saveSettings: (input: SettingsInput): Promise<Settings> => request(settingsSchema, "PUT", "/api/settings", input),

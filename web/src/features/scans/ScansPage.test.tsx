@@ -132,7 +132,8 @@ describe("스캔 이력 — 표", () => {
     const running = await findRowWith("11-13 09:00");
     expect(within(running).getByText(TEXT.manual)).toBeInTheDocument();
     expect(within(running).getByText("running")).toBeInTheDocument();
-    expect(within(running).getAllByText("-")).toHaveLength(3);
+    // 진행·통과·이슈·실패·건너뜀·신규
+    expect(within(running).getAllByText("-")).toHaveLength(6);
     expect(within(running).queryByText("0")).not.toBeInTheDocument();
   });
 
