@@ -444,3 +444,25 @@ Spec의 Assumption 12건(D-11, D-20, D-26~D-35)은 그대로 유지한다. 아�
 | Docker | `GITHUB_TOKEN=$(gh auth token) docker compose up` 후: `GET /api/settings` 200이고 `githubTokenSource === "env"`, `/`가 HTML, `/mcp`의 `tools/list`가 10개(SDK 클라이언트 스크립트). 블랙리스트 항목 추가 → `docker compose down && up` → 항목이 남아 있다 |
 | GUI 4화면 (체크리스트, 모두 확인. 새 volume + `GITHUB_ORG` 미설정에서 시작하고, `ORG_NOT_SET` 확인을 org 저장보다 먼저 한다) | `/`: 카드 4개 + 빈 표 문구. `/blacklist`: 항목 추가 → 표에 표시, 같은 항목 재추가 → `name` 아래 중복 메시지, 삭제. `/settings`: org 저장 → "다음 스캔" 카드 갱신, 잘못된 interval → 필드 오류. `/scans`: org 미설정 상태에서 [지금 스캔] → `ORG_NOT_SET` toast, org 설정 후 [지금 스캔] → running 행 + 버튼 비활성 → 종료 상태로 바뀜 |
 | 실제 org 스캔·실제 메일 | 사용자 토큰/SMTP가 있을 때만. 없으면 "미검증"으로 보고 |
+
+---
+
+## 계약 보충 (Phase 6.1 Red 에서 나온 모호한 조항의 확정 — 의미 변경 없음)
+
+Red 에이전트가 "모호함"으로 보고한 조항을 오케스트레이터가 확정한다. 기존 CT 조항의 의미는 바꾸지 않는다.
+
+| # | 조항 | 확정 |
+|---|------|------|
+| S-1 | `nextScanAt` 격자 공식의 경계 | 결과는 항상 `now`보다 뒤의 시각이다. 공식의 결과가 `now` 이하이면 `interval`을 1번 더 더한다 |
+| S-2 | 메일 본문 최대 200행 | 200은 검출 행의 수다(repo 제목 행은 세지 않는다). 넘으면 "외 N건, GUI에서 확인"이고 N = 전체 − 200 |
+| S-3 | lockfile 형식 표지 | npm·pnpm·bun = 최상위 `lockfileVersion` 키. yarn = `# yarn lockfile v1` 주석(classic) 또는 `__metadata` 키(berry). 표지가 없으면 예외 |
+| S-4 | resolve ② 재확인이 "그 외 오류"일 때 | 검출을 유지하고 그 repo를 `failedRepos`에 넣는다(스캔은 `partial`) |
+| S-5 | 테스트 메일의 판정 순서 | `NO_RECIPIENTS` → `SMTP_NOT_CONFIGURED` → 발송 |
+| S-6 | 본문이 깨졌고 `:id`도 없는 요청 | `:id` 형식·존재 확인(404)이 본문 검증(400)보다 먼저다 |
+| S-7 | `TOKEN_MISSING`의 `message` | "GitHub 토큰이 없습니다. GITHUB_TOKEN 환경 변수를 설정하거나 gh auth login 을 실행한 뒤 서버를 다시 시작하십시오" |
+| S-8 | 오류 toast 문구 | 서버 `ApiError.message`를 그대로 표시한다. `INTERNAL_ERROR` = "서버 오류가 발생했습니다", `NETWORK_ERROR` = "서버에 연결할 수 없습니다"(고정) |
+| S-9 | 2xx 응답의 parse 실패 | `ApiRequestError.status` = 받은 HTTP status, `code` = `INTERNAL_ERROR` |
+| S-10 | "GitHub에서 보기" | `htmlUrl`을 새 탭으로 여는 링크다(`target="_blank"`, `rel="noreferrer"`) |
+| S-11 | 설정 화면 첫 로드 실패의 문구 | 공통 GET 오류 문구 "데이터를 불러오지 못했습니다" + [다시 시도] |
+| S-12 | 수신자 이메일 형식 검증 시점 | [추가]를 누를 때 검증한다. 잘못된 값은 chip으로 추가하지 않고 필드 오류로 표시한다 |
+| S-13 | pnpm v9 의 git 항목, npm v2/v3 의 workspace 디렉터리 항목 | 이름과 버전을 확실히 알 수 없는 항목은 건너뛴다(예외 아님) |
