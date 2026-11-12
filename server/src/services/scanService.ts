@@ -151,7 +151,7 @@ function isSameRepo(fullName: string, org: string, repo: string): boolean {
   );
 }
 
-// [Assumption] org·repo·경로 조각을 percent-encoding 한다 — 근거: 공백·`#` 이 든 경로도 유효한 URL 이 되게 한다(일반 이름은 계약 형식과 같다).
+// org·repo·경로 조각을 percent-encoding 한다 — 근거: 공백·`#` 이 든 경로도 유효한 URL 이 되게 한다(일반 이름은 계약 형식과 같다).
 function htmlUrlOf(org: string, repo: string, filePath: string): string {
   const path = filePath.split("/").map(encodeURIComponent).join("/");
   return `https://github.com/${encodeURIComponent(org)}/${encodeURIComponent(repo)}/blob/HEAD/${path}`;

@@ -32,7 +32,7 @@ export function toErrorResponse(c: Context, error: unknown): Response {
 export async function readJsonBody(c: Context): Promise<unknown> {
   const contentType = c.req.header("content-type") ?? "";
   const mediaType = contentType.split(";")[0]?.trim().toLowerCase() ?? "";
-  // [Assumption] `+json` 접미사 미디어 타입(RFC 6839)도 JSON 으로 받는다 — 근거: 계약은 "JSON 이 아닌 Content-Type" 만 400 으로 정한다.
+  // `+json` 접미사 미디어 타입(RFC 6839)도 JSON 으로 받는다 — 근거: 계약은 "JSON 이 아닌 Content-Type" 만 400 으로 정한다.
   if (mediaType !== "application/json" && !mediaType.endsWith("+json")) {
     throw new AppError("VALIDATION_ERROR", "요청 본문은 Content-Type: application/json 이어야 합니다");
   }

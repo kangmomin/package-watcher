@@ -39,7 +39,7 @@ function main(): void {
   );
   instance.scheduler.start();
 
-  // [Assumption] 종료 신호는 SIGTERM/SIGINT 이고 SHUTDOWN_TIMEOUT_MS 만큼만 기다린다 — 근거: Spec 에 종료 처리 규칙이 없다(A-7 은 재시작 보정만 정한다).
+  // 종료 신호는 SIGTERM/SIGINT 이고 SHUTDOWN_TIMEOUT_MS 만큼만 기다린다 — 근거: Spec 에 종료 처리 규칙이 없다(A-7 은 재시작 보정만 정한다).
   let shuttingDown = false;
   const shutdown = (signal: string): void => {
     if (shuttingDown) return;

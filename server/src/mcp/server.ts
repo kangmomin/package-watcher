@@ -85,7 +85,7 @@ function errorResult(error: unknown): CallToolResult {
 
 /**
  * REST 의 `:id` 와 같은 규칙(`parseId`): 양의 정수가 아니면 NOT_FOUND.
- * [Assumption] 숫자 문자열("5")도 id 로 받는다 — 근거: 계약은 형식 오류를 NOT_FOUND 로만 정하고 REST 경로 값도 문자열이다.
+ * 숫자 문자열("5")도 id 로 받는다 — 근거: 계약은 형식 오류를 NOT_FOUND 로만 정하고 REST 경로 값도 문자열이다.
  */
 function toId(value: unknown): number {
   return parseId(typeof value === "number" || typeof value === "string" ? String(value).trim() : "");
@@ -208,7 +208,7 @@ export function createMcpRoutes(services: AppServices, logger: Logger = consoleL
   });
 
   // stateless 라서 SSE 스트림(GET)과 세션 종료(DELETE)를 지원하지 않는다.
-  // [Assumption] POST 가 아닌 모든 메서드에 405 — 근거: 계약은 `GET /mcp` 405 만 정한다.
+  // POST 가 아닌 모든 메서드에 405 — 근거: 계약은 `GET /mcp` 405 만 정한다.
   app.all("/mcp", (c) =>
     c.json(
       { jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed." }, id: null },

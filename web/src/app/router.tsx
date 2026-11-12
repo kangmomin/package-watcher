@@ -15,7 +15,7 @@ export function AppRoutes() {
         <Route path="blacklist" element={<BlacklistPage />} />
         <Route path="scans" element={<ScansPage />} />
         <Route path="settings" element={<SettingsPage />} />
-        {/* [Assumption] 알 수 없는 경로는 대시보드로 보낸다 — 근거: Spec 에 404 화면이 없다(라우트 4개만 정의) */}
+        {/* 알 수 없는 경로는 대시보드로 보낸다 — 근거: Spec 에 404 화면이 없다(라우트 4개만 정의) */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

@@ -184,7 +184,7 @@ export function createApp(deps: AppDeps): AppInstance {
     app.use("*", serveStatic({ root }));
     app.get("*", serveStatic({ root, path: "index.html" }));
   }
-  // [Assumption] /api·/mcp 밖에서 처리되지 않은 요청(web 빌드 없음, GET 이 아닌 요청)도 404 ApiError(JSON) — 근거: 계약은 /api/* 404 와 SPA 폴백만 정한다.
+  // /api·/mcp 밖에서 처리되지 않은 요청(web 빌드 없음, GET 이 아닌 요청)도 404 ApiError(JSON) — 근거: 계약은 /api/* 404 와 SPA 폴백만 정한다.
   app.notFound((c) => toErrorResponse(c, new AppError("NOT_FOUND", "요청한 경로가 없습니다")));
 
   let closing: Promise<void> | null = null;

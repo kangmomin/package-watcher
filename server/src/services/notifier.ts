@@ -91,7 +91,7 @@ const SUBJECT_PREFIX = "[package-watcher]";
 const typeLabel = (finding: Finding): string =>
   finding.dependencyType === "direct" ? "직접" : "전이";
 
-// [Assumption] repo 안의 행은 파일 경로 → 패키지 → 버전 → id 순이다 — 근거: Spec 은 "repo 별로 묶음" 만 정한다.
+// repo 안의 행은 파일 경로 → 패키지 → 버전 → id 순이다 — 근거: Spec 은 "repo 별로 묶음" 만 정한다.
 function compareFindings(a: Finding, b: Finding): number {
   return (
     a.repo.localeCompare(b.repo) ||
