@@ -1,12 +1,14 @@
 import type { Clock } from "./clock.ts";
 import type { TokenSource } from "./config.ts";
 import type { Logger } from "./logger.ts";
-import { notImplemented } from "./notImplemented.ts";
 import type { Repositories } from "./repositories/index.ts";
+import { addMs, canScan, HOUR_MS, readStoredSettings, toIso } from "./services/common.ts";
 import type { Notifier } from "./services/notifier.ts";
 import type { ScanService } from "./services/scanService.ts";
 
 export const TICK_INTERVAL_MS = 30_000;
+/** `next_scan_at` 이 없을 때 첫 자동 스캔까지의 지연 (A-7) */
+export const FIRST_SCAN_DELAY_MS = 60_000;
 
 export interface Scheduler {
   /** TICK_INTERVAL_MS 마다 tick() */
@@ -32,6 +34,101 @@ export interface SchedulerDeps {
   logger: Logger;
 }
 
+// 서버 TZ 와 무관하게 Asia/Seoul 기준의 날짜와 시각을 얻는다.
+const KST_PARTS = new Intl.DateTimeFormat("en-US", {
+  timeZone: "Asia/Seoul",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
+
+export function toKst(date: Date): { date: string; time: string } {
+  const parts = Object.fromEntries(KST_PARTS.formatToParts(date).map((part) => [part.type, part.value]));
+  return {
+    date: `${parts.year}-${parts.month}-${parts.day}`,
+    time: `${parts.hour}:${parts.minute}`,
+  };
+}
+
+/**
+ * 원래 격자의 다음 미래 시각: `next + ceil((now − next) / interval) × interval`.
+ * 결과는 항상 `now` 보다 뒤다(같거나 이르면 interval 을 1번 더 더한다, S-1).
+ */
+export function nextOnGrid(next: Date, now: Date, intervalMs: number): Date {
+  const steps = Math.max(1, Math.ceil((now.getTime() - next.getTime()) / intervalMs));
+  let candidate = next.getTime() + steps * intervalMs;
+  if (candidate <= now.getTime()) candidate += intervalMs;
+  return new Date(candidate);
+}
+
 export function createScheduler(deps: SchedulerDeps): Scheduler {
-  return notImplemented(deps);
+  const { repos, scans, notifier, clock, githubTokenSource, logger } = deps;
+  let timer: ReturnType<typeof setInterval> | null = null;
+  let ticking = false;
+
+  function runAutoScan(now: Date): void {
+    const settings = readStoredSettings(repos.settings);
+    if (!canScan(settings.org, githubTokenSource)) return;
+
+    const stored = repos.settings.get("next_scan_at");
+    const next = stored === null ? Number.NaN : Date.parse(stored);
+    if (Number.isNaN(next)) {
+      repos.settings.set("next_scan_at", toIso(addMs(now, FIRST_SCAN_DELAY_MS)));
+      return;
+    }
+    if (now.getTime() < next) return;
+
+    // 서버가 오래 꺼져 있었어도 1회만 실행하고, 실행 중이면 그 회차를 건너뛴다. 두 경우 모두 격자를 옮긴다.
+    const intervalMs = settings.scanIntervalHours * HOUR_MS;
+    repos.settings.set("next_scan_at", toIso(nextOnGrid(new Date(next), now, intervalMs)));
+    if (scans.isRunning()) {
+      logger.info("예정된 자동 스캔 시각이지만 스캔이 실행 중이라 이번 회차를 건너뜁니다");
+      return;
+    }
+    scans.start("scheduled");
+  }
+
+  async function runDigest(now: Date): Promise<void> {
+    const { digestTime } = readStoredSettings(repos.settings);
+    const kst = toKst(now);
+    if (repos.settings.get("last_digest_date") === kst.date || kst.time < digestTime) return;
+    // 발송 전에 기록한다. 실패해도 그날은 다시 시도하지 않는다.
+    repos.settings.set("last_digest_date", kst.date);
+    await notifier.sendDigest();
+  }
+
+  async function tick(): Promise<void> {
+    if (ticking) return;
+    ticking = true;
+    try {
+      const now = clock.now();
+      try {
+        runAutoScan(now);
+      } catch (error) {
+        logger.error("자동 스캔 판정 중 오류", error);
+      }
+      try {
+        await runDigest(now);
+      } catch (error) {
+        logger.error("일일 요약 처리 중 오류", error);
+      }
+    } finally {
+      ticking = false;
+    }
+  }
+
+  return {
+    start() {
+      if (timer) return;
+      timer = setInterval(() => void tick(), TICK_INTERVAL_MS);
+    },
+    stop() {
+      if (timer) clearInterval(timer);
+      timer = null;
+    },
+    tick,
+  };
 }

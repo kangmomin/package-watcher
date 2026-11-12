@@ -1,5 +1,7 @@
+import picomatch from "picomatch";
+import { parse as parseYaml } from "yaml";
+import { isPlainObject } from "./lockfiles/common.ts";
 import type { LockfileKind } from "./lockfiles/index.ts";
-import { notImplemented } from "./notImplemented.ts";
 
 /**
  * lockfile 디렉터리의 workspace glob.
@@ -16,7 +18,25 @@ export function readWorkspaceGlobs(
     pnpmWorkspaceYaml?: string | null;
   },
 ): string[] {
-  return notImplemented(kind, sources);
+  if (kind === "pnpm") {
+    if (!sources.pnpmWorkspaceYaml) return [];
+    let data: unknown;
+    try {
+      data = parseYaml(sources.pnpmWorkspaceYaml);
+    } catch {
+      return [];
+    }
+    return isPlainObject(data) ? stringArray(data.packages) : [];
+  }
+  if (!isPlainObject(sources.packageJson)) return [];
+  const workspaces = sources.packageJson.workspaces;
+  if (Array.isArray(workspaces)) return stringArray(workspaces);
+  if (isPlainObject(workspaces)) return stringArray(workspaces.packages);
+  return [];
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
 export interface LockfileInput {
@@ -33,6 +53,18 @@ export interface LockfileAssignment {
   byPackageJson: Map<string, string[]>;
 }
 
+/** repo 루트 기준 디렉터리. 루트는 "" */
+export function dirOf(path: string): string {
+  const slash = path.lastIndexOf("/");
+  return slash === -1 ? "" : path.slice(0, slash);
+}
+
+interface LockfileScope {
+  path: string;
+  dir: string;
+  matches: (relativeDir: string) => boolean;
+}
+
 /**
  * lockfile 귀속 (A-1).
  * - 담당 = 같은 디렉터리의 `package.json` + 그 디렉터리의 workspace glob(디렉터리에 매칭, `./` 접두와 끝 `/` 정규화)에 맞는 것.
@@ -43,5 +75,63 @@ export function assignLockfiles(
   packageJsonPaths: string[],
   lockfiles: LockfileInput[],
 ): LockfileAssignment {
-  return notImplemented(packageJsonPaths, lockfiles);
+  const scopes = lockfiles.map(toScope);
+  const byLockfile = new Map<string, string[]>(lockfiles.map((lockfile) => [lockfile.path, []]));
+  const byPackageJson = new Map<string, string[]>();
+
+  for (const packageJson of packageJsonPaths) {
+    const dir = dirOf(packageJson);
+    const sameDir = scopes.filter((scope) => scope.dir === dir);
+    let owners = sameDir;
+    if (owners.length === 0) {
+      const declared = scopes.filter((scope) => {
+        const relative = relativeDir(scope.dir, dir);
+        return relative !== null && scope.matches(relative);
+      });
+      // 가장 가까운(가장 깊은) 디렉터리 1곳에만 귀속한다.
+      const closest = Math.max(-1, ...declared.map((scope) => depthOf(scope.dir)));
+      owners = declared.filter((scope) => depthOf(scope.dir) === closest);
+    }
+    byPackageJson.set(
+      packageJson,
+      owners.map((scope) => scope.path),
+    );
+    for (const scope of owners) byLockfile.get(scope.path)?.push(packageJson);
+  }
+  return { byLockfile, byPackageJson };
+}
+
+function toScope(lockfile: LockfileInput): LockfileScope {
+  const positive: string[] = [];
+  const negative: string[] = [];
+  for (const raw of lockfile.globs) {
+    const negated = raw.trim().startsWith("!");
+    const pattern = normalizeGlob(negated ? raw.trim().slice(1) : raw);
+    if (pattern === "") continue;
+    (negated ? negative : positive).push(pattern);
+  }
+  const include = positive.length > 0 ? picomatch(positive) : () => false;
+  const exclude = negative.length > 0 ? picomatch(negative) : () => false;
+  return {
+    path: lockfile.path,
+    dir: dirOf(lockfile.path),
+    matches: (relative) => include(relative) && !exclude(relative),
+  };
+}
+
+function normalizeGlob(glob: string): string {
+  let pattern = glob.trim();
+  while (pattern.startsWith("./")) pattern = pattern.slice(2);
+  while (pattern.endsWith("/")) pattern = pattern.slice(0, -1);
+  return pattern === "." ? "" : pattern;
+}
+
+/** `base` 아래에 있는 `dir` 의 상대 경로. 아래가 아니거나 같은 디렉터리면 null */
+function relativeDir(base: string, dir: string): string | null {
+  if (base === "") return dir === "" ? null : dir;
+  return dir.startsWith(`${base}/`) ? dir.slice(base.length + 1) : null;
+}
+
+function depthOf(dir: string): number {
+  return dir === "" ? 0 : dir.split("/").length;
 }

@@ -1,8 +1,8 @@
-import type { Settings } from "@pw/shared";
+import { DIGEST_TIMEZONE, settingsInputSchema, type Settings } from "@pw/shared";
 import type { Clock } from "../clock.ts";
 import type { TokenSource } from "../config.ts";
-import { notImplemented } from "../notImplemented.ts";
 import type { Repositories } from "../repositories/index.ts";
+import { addMs, HOUR_MS, parseInput, readStoredSettings, toIso } from "./common.ts";
 
 /** REST(`GET/PUT /api/settings`)와 MCP(`get_settings`)가 함께 쓴다. */
 export interface SettingsService {
@@ -23,5 +23,47 @@ export interface SettingsServiceDeps {
 }
 
 export function createSettingsService(deps: SettingsServiceDeps): SettingsService {
-  return notImplemented(deps);
+  const { repos, clock, githubTokenSource, smtpConfigured } = deps;
+
+  function get(): Settings {
+    const stored = readStoredSettings(repos.settings);
+    return {
+      org: stored.org,
+      scanIntervalHours: stored.scanIntervalHours,
+      digestTime: stored.digestTime,
+      digestTimezone: DIGEST_TIMEZONE,
+      recipients: stored.recipients,
+      githubTokenSource,
+      smtpConfigured,
+    };
+  }
+
+  return {
+    get,
+    update(input) {
+      const data = parseInput(settingsInputSchema, input);
+      const now = clock.now();
+      repos.transaction(() => {
+        const previous = readStoredSettings(repos.settings);
+        const orgChanged = previous.org !== data.org;
+        const intervalChanged = previous.scanIntervalHours !== data.scanIntervalHours;
+
+        repos.settings.set("org", data.org);
+        repos.settings.set("scan_interval_hours", String(data.scanIntervalHours));
+        repos.settings.set("digest_time", data.digestTime);
+        repos.settings.set("recipients", JSON.stringify(data.recipients));
+        if (orgChanged) {
+          repos.findings.resolveAllActive(toIso(now));
+          repos.settings.set("listed_baseline", null);
+        }
+        if (orgChanged || intervalChanged) {
+          repos.settings.set(
+            "next_scan_at",
+            toIso(addMs(now, data.scanIntervalHours * HOUR_MS)),
+          );
+        }
+      });
+      return get();
+    },
+  };
 }

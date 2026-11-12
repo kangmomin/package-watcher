@@ -1,9 +1,8 @@
 import type { Db } from "../db/index.ts";
-import { notImplemented } from "../notImplemented.ts";
-import type { BlacklistRepository } from "./blacklist.ts";
-import type { FindingsRepository } from "./findings.ts";
-import type { ScansRepository } from "./scans.ts";
-import type { SettingsRepository } from "./settings.ts";
+import { createBlacklistRepository, type BlacklistRepository } from "./blacklist.ts";
+import { createFindingsRepository, type FindingsRepository } from "./findings.ts";
+import { createScansRepository, type ScansRepository } from "./scans.ts";
+import { createSettingsRepository, type SettingsRepository } from "./settings.ts";
 
 export interface Repositories {
   blacklist: BlacklistRepository;
@@ -15,5 +14,11 @@ export interface Repositories {
 }
 
 export function createRepositories(db: Db): Repositories {
-  return notImplemented(db);
+  return {
+    blacklist: createBlacklistRepository(db),
+    findings: createFindingsRepository(db),
+    scans: createScansRepository(db),
+    settings: createSettingsRepository(db),
+    transaction: (fn) => db.transaction(fn)(),
+  };
 }

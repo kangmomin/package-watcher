@@ -1,4 +1,5 @@
-import { notImplemented } from "./notImplemented.ts";
+import { intersects, satisfies, validRange } from "semver";
+import { splitNameAndRest } from "./lockfiles/common.ts";
 
 /**
  * lockfile 의 정확한 버전이 블랙리스트 range 를 만족하는가.
@@ -6,7 +7,11 @@ import { notImplemented } from "./notImplemented.ts";
  * 블랙리스트 range 가 null 인 경우는 호출 쪽이 이름만으로 판정한다.
  */
 export function matchExact(version: string, range: string): boolean {
-  return notImplemented(version, range);
+  try {
+    return satisfies(version, range, { includePrerelease: true });
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -15,5 +20,18 @@ export function matchExact(version: string, range: string): boolean {
  * 블랙리스트 range 가 null 일 때만 일치한다(A-13). 그 외는 `semver.intersects`. 절대 throw 하지 않는다.
  */
 export function matchRange(spec: string, range: string | null): boolean {
-  return notImplemented(spec, range);
+  if (range === null) return true;
+  try {
+    const actual = unwrapAliasSpec(spec.trim());
+    if (validRange(actual) === null) return false;
+    return intersects(actual, range);
+  } catch {
+    return false;
+  }
+}
+
+/** `npm:lodash@^4` → `^4`. 버전이 없으면 "" (모든 버전) */
+function unwrapAliasSpec(spec: string): string {
+  if (!spec.startsWith("npm:")) return spec;
+  return splitNameAndRest(spec.slice("npm:".length)).rest ?? "";
 }

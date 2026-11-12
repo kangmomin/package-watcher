@@ -1,5 +1,7 @@
-import type Database from "better-sqlite3";
-import { notImplemented } from "../notImplemented.ts";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+import Database from "better-sqlite3";
+import { applySchema } from "./schema.ts";
 
 export type Db = Database.Database;
 
@@ -8,5 +10,10 @@ export type Db = Database.Database;
  * 같은 경로로 다시 열면 서버 재시작과 같다.
  */
 export function openDatabase(path: string): Db {
-  return notImplemented(path);
+  mkdirSync(dirname(path), { recursive: true });
+  const db = new Database(path);
+  db.pragma("journal_mode = WAL");
+  db.pragma("busy_timeout = 5000");
+  applySchema(db);
+  return db;
 }

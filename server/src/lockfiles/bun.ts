@@ -1,4 +1,11 @@
-import { notImplemented } from "../notImplemented.ts";
+import { parse as parseJsonc, printParseErrorCode, type ParseError } from "jsonc-parser";
+import {
+  isPlainObject,
+  LockfileParseError,
+  requireContent,
+  splitNameAndRest,
+  unwrapNpmAlias,
+} from "./common.ts";
 import type { LockPackage } from "./index.ts";
 
 /**
@@ -7,5 +14,30 @@ import type { LockPackage } from "./index.ts";
  * 공통: UTF-8 BOM 제거, CRLF → LF. 파싱 실패·빈 입력은 예외. `bun.lockb` 는 다루지 않는다(EC-12).
  */
 export function parseBunLock(content: string): LockPackage[] {
-  return notImplemented(content);
+  const text = requireContent(content, "bun.lock");
+  const errors: ParseError[] = [];
+  const data: unknown = parseJsonc(text, errors, { allowTrailingComma: true });
+  const [first] = errors;
+  if (first) {
+    throw new LockfileParseError(
+      `bun.lock 을 해석할 수 없습니다: ${printParseErrorCode(first.error)} (offset ${first.offset})`,
+    );
+  }
+  if (!isPlainObject(data) || !("lockfileVersion" in data)) {
+    throw new LockfileParseError("bun.lock 에 형식 표지(lockfileVersion)가 없습니다");
+  }
+  if (data.packages === undefined || data.packages === null) return [];
+  if (!isPlainObject(data.packages)) {
+    throw new LockfileParseError("bun.lock 의 packages 형식이 올바르지 않습니다");
+  }
+
+  const packages: LockPackage[] = [];
+  for (const value of Object.values(data.packages)) {
+    if (!Array.isArray(value) || typeof value[0] !== "string") continue;
+    const split = splitNameAndRest(value[0]);
+    if (split.rest === null || split.rest === "" || split.rest.startsWith("workspace:")) continue;
+    const { name, rest } = unwrapNpmAlias(split.name, split.rest);
+    packages.push({ name, version: rest });
+  }
+  return packages;
 }
