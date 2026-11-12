@@ -76,6 +76,48 @@ describe("parseCsv (RFC 4180)", () => {
   });
 });
 
+describe("CSV 엄격함과 관대함 (BK-16)", () => {
+  it("[BK-16] 닫는 따옴표 뒤에 ,·CR·LF·입력 끝이 아닌 문자가 오면 VALIDATION_ERROR (줄 번호 포함)", () => {
+    for (const text of ['"npm-pkg"x,"사유"', 'a,b\n"a"b"c', '"a" ,b', '"a" ,b']) {
+      const error = expectValidationError(() => parseCsv(text));
+      expect(error.message).toContain("따옴표 뒤");
+    }
+    expect(expectValidationError(() => parseCsv('a,b\n"x"y,z')).message).toContain("2번째 줄");
+    expectValidationError(() => parseImportContent("csv", 'name,reason\r\n"npm-pkg"x,"사유"\r\n'));
+  });
+
+  it("[BK-16] 정상적인 이스케이프(\"a\"\"b\")와 \"a\",b, 입력 끝의 닫는 따옴표는 그대로 읽는다", () => {
+    expect(parseCsv('"a""b"')).toEqual([['a"b']]);
+    expect(parseCsv('"a",b\r\n"c"')).toEqual([["a", "b"], ["c"]]);
+    expect(parseCsv('"a"\r\n"b"\n')).toEqual([["a"], ["b"]]);
+  });
+
+  it("[BK-16] 머리글 셀은 앞뒤 공백을 지우고 비교한다 (대소문자는 구분한다)", () => {
+    expect(parseImportContent("csv", " name , reason \r\na,b\r\n")).toEqual([
+      { row: 1, raw: { name: "a", reason: "b" } },
+    ]);
+    expectValidationError(() => parseImportContent("csv", " Name , reason \r\na,b\r\n"));
+  });
+
+  it("[BK-16] CSV 의 enabled 는 trim + 소문자로 true/false 를 읽고, 그 외는 문자열 그대로 넘긴다", () => {
+    const rows = parseImportContent(
+      "csv",
+      "name,reason,enabled\r\na,r,TRUE\r\nb,r,False\r\nc,r, true \r\nd,r,yes\r\n",
+    );
+    expect(rows.map((row) => ("raw" in row ? row.raw.enabled : "error"))).toEqual([true, false, true, "yes"]);
+  });
+
+  it("[BK-16] CSV 의 ecosystem·severity 는 trim + 소문자로 넘긴다. JSON 은 그대로다", () => {
+    const [csv] = parseImportContent("csv", "name,reason,ecosystem,severity\r\na,r, NPM ,High\r\n");
+    expect(csv).toEqual({ row: 1, raw: { name: "a", reason: "r", ecosystem: "npm", severity: "high" } });
+    const [json] = parseImportContent(
+      "json",
+      JSON.stringify({ version: 1, items: [{ name: "a", reason: "r", ecosystem: "NPM", enabled: "TRUE" }] }),
+    );
+    expect(json).toEqual({ row: 1, raw: { name: "a", reason: "r", ecosystem: "NPM", enabled: "TRUE" } });
+  });
+});
+
 describe("toCsv", () => {
   it("[BK-10] 쉼표·줄바꿈·큰따옴표가 있는 값만 인용하고, 모든 레코드는 CRLF 로 끝난다", () => {
     expect(

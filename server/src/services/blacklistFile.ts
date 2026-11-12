@@ -33,6 +33,7 @@ export function parseCsv(input: string): string[][] {
   let field = "";
   let wasQuoted = false; // 인용된 빈 값("")을 빈 줄과 구분한다
   let inQuotes = false;
+  let line = 1; // 오류 메시지용 물리적 줄 번호
 
   const endField = (): void => {
     record.push(field);
@@ -52,12 +53,20 @@ export function parseCsv(input: string): string[][] {
 
   for (let i = 0; i < text.length; i += 1) {
     const ch = text.charAt(i);
+    if (ch === "\n" || (ch === "\r" && text.charAt(i + 1) !== "\n")) line += 1;
     if (inQuotes) {
       if (ch !== '"') field += ch;
       else if (text.charAt(i + 1) === '"') {
         field += '"';
         i += 1;
-      } else inQuotes = false;
+      } else {
+        // 닫는 따옴표 뒤에는 구분자나 입력 끝만 올 수 있다 (RFC 4180). 이어 붙이면 값이 조용히 바뀐다.
+        const next = text.charAt(i + 1);
+        if (next !== "" && next !== "," && next !== "\r" && next !== "\n") {
+          throw fileError(`CSV 의 따옴표 뒤에 잘못된 문자가 있습니다 (${line}번째 줄)`);
+        }
+        inQuotes = false;
+      }
     } else if (ch === '"' && field === "" && !wasQuoted) {
       inQuotes = true;
       wasQuoted = true;
@@ -80,19 +89,26 @@ export function toCsv(rows: string[][]): string {
   return rows.map((row) => `${row.map(quoteCell).join(",")}\r\n`).join("");
 }
 
+/**
+ * 스프레드시트가 저장한 값(`TRUE`, ` NPM `)을 받기 위해 enabled·ecosystem·severity 는 trim + 소문자로 읽는다.
+ * 그 외의 값은 그대로 넘겨 스키마가 행 오류로 거부하게 한다. JSON 은 바꾸지 않는다.
+ */
 function csvValue(column: string, value: string): unknown {
   if (column === "versionRange" || column === "expiresAt") return value === "" ? null : value;
-  if (column === "enabled") {
-    if (value === "") return undefined;
-    return value === "true" ? true : value === "false" ? false : value;
+  if (column === "enabled" || column === "ecosystem" || column === "severity") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "") return undefined;
+    if (column !== "enabled") return normalized;
+    return normalized === "true" ? true : normalized === "false" ? false : normalized;
   }
-  if (column === "ecosystem" || column === "severity") return value === "" ? undefined : value;
   return value;
 }
 
 function parseCsvRows(content: string): ParsedRow[] {
-  const [header, ...records] = parseCsv(content);
-  if (!header) throw fileError("CSV 에 머리글이 없습니다");
+  const [rawHeader, ...records] = parseCsv(content);
+  if (!rawHeader) throw fileError("CSV 에 머리글이 없습니다");
+  // 스프레드시트가 붙이는 앞뒤 공백을 지운다. 대소문자는 구분한다(camelCase 열 이름).
+  const header = rawHeader.map((cell) => cell.trim());
   const missing = BLACKLIST_FILE_REQUIRED_COLUMNS.filter((column) => !header.includes(column));
   if (missing.length > 0) throw fileError(`CSV 머리글에 필수 열이 없습니다 (${missing.join(", ")})`);
   if (records.length > IMPORT_MAX_ROWS) throw fileError(`행은 ${IMPORT_MAX_ROWS}개 이하입니다`);

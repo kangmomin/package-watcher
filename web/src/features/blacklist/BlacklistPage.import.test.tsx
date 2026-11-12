@@ -376,3 +376,83 @@ describe("블랙리스트 — 가져오기: 오류 응답", () => {
     expect(applyButton(dialog)).toBeDisabled();
   });
 });
+
+describe("블랙리스트 — 가져오기 보완 (코드 리뷰)", () => {
+  it("[BK-25] 같은 파일을 두 번 연속으로 올리면 미리 보기 요청이 2번 나가고 두 번째 결과가 표시된다", async () => {
+    const server = setupServer()
+      .once("POST", IMPORT, reply.json(importPreviewWithErrors))
+      .on("POST", IMPORT, reply.json(importPreviewClean));
+    const { user } = await renderBlacklist();
+    const dialog = await openImport(user);
+
+    await user.upload(fileInput(dialog), csvFile());
+    await within(dialog).findByRole("list", { name: "오류 목록" });
+    // 브라우저는 같은 파일을 다시 고르면 value 가 남아 있을 때 change 를 내지 않는다.
+    expect(fileInput(dialog).value).toBe("");
+    expect(within(dialog).getByText("선택한 파일: list.csv")).toBeInTheDocument();
+
+    await user.upload(fileInput(dialog), csvFile());
+    await within(dialog).findByText(/추가 2건, 갱신 1건, 변경 없음 3건, 오류 0건/);
+    expect(importCalls(server)).toHaveLength(2);
+  });
+
+  it("[BK-25] 적용 요청 중에는 [취소] 가 비활성이고 ESC 로 닫히지 않으며, 응답 후 정상 처리된다", async () => {
+    const pending = deferredReply();
+    setupServer().once("POST", IMPORT, reply.json(importPreviewClean)).on("POST", IMPORT, pending.reply);
+    const { user } = await renderBlacklist();
+    const dialog = await openImport(user);
+
+    await user.upload(fileInput(dialog), csvFile());
+    await within(dialog).findByText(/추가 2건/);
+    await user.click(applyButton(dialog));
+
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "취소" })).toBeDisabled());
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+
+    pending.resolve(reply.json(importApplied));
+    await findToast("가져오기를 적용했습니다 (추가 2건, 갱신 1건)");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("[BK-25] 미리 보기 중에는 ESC 로 닫을 수 있다", async () => {
+    const pending = deferredReply();
+    setupServer().on("POST", IMPORT, pending.reply);
+    const { user } = await renderBlacklist();
+    const dialog = await openImport(user);
+
+    await user.upload(fileInput(dialog), csvFile());
+    await within(dialog).findByText("미리 보기 중…");
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("[BK-25] 오류가 200건을 넘으면 앞의 200건만 그리고 '외 n건' 을 표시한다(요약은 전체 수)", async () => {
+    const errors = Array.from({ length: 250 }, (_, index) => ({
+      row: index + 1,
+      field: "name",
+      message: `오류 ${index + 1}`,
+    }));
+    setupServer().on("POST", IMPORT, reply.json({ ...importPreviewWithErrors, errors }));
+    const { user } = await renderBlacklist();
+    const dialog = await openImport(user);
+
+    await user.upload(fileInput(dialog), csvFile());
+
+    const list = await within(dialog).findByRole("list", { name: "오류 목록" });
+    expect(within(list).getAllByRole("listitem")).toHaveLength(200);
+    expect(list).toHaveAttribute("tabindex", "0");
+    expect(within(dialog).getByText("외 50건")).toBeInTheDocument();
+    expect(within(dialog).getByRole("status")).toHaveTextContent("오류 250건");
+  });
+
+  it("[BK-25] 오류가 200건 이하이면 '외 n건' 이 없다", async () => {
+    setupServer().on("POST", IMPORT, reply.json(importPreviewWithErrors));
+    const { user } = await renderBlacklist();
+    const dialog = await openImport(user);
+
+    await user.upload(fileInput(dialog), csvFile());
+    await within(dialog).findByRole("list", { name: "오류 목록" });
+    expect(within(dialog).queryByText(/^외 \d+건$/)).not.toBeInTheDocument();
+  });
+});

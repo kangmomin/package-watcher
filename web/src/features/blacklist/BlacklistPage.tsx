@@ -13,7 +13,7 @@ import { BulkActions } from "@/features/blacklist/BulkActions";
 import { DeleteConfirm } from "@/features/blacklist/DeleteConfirm";
 import { ExportMenu } from "@/features/blacklist/ExportMenu";
 import { ImportDialog } from "@/features/blacklist/ImportDialog";
-import { useBlacklist } from "@/features/blacklist/hooks";
+import { useBlacklist, useBulkBlacklist } from "@/features/blacklist/hooks";
 import type { BlacklistFilter } from "@/lib/api";
 import { firstLoadState } from "@/lib/queryState";
 
@@ -21,6 +21,7 @@ export function BlacklistPage() {
   const [filter, setFilter] = useState<BlacklistFilter>({});
   const blacklist = useBlacklist(filter);
   const data = blacklist.data;
+  const bulk = useBulkBlacklist();
   const hasFilter =
     filter.ecosystem !== undefined || filter.status !== undefined || filter.q !== undefined;
 
@@ -54,6 +55,8 @@ export function BlacklistPage() {
     else next.delete(id);
     setSelected(next);
   };
+  const clearSelected = (removed: number[]) =>
+    setSelected((prev) => new Set([...prev].filter((id) => !removed.includes(id))));
   const toggleAll = (checked: boolean) =>
     setSelected(checked ? new Set(items.map((entry) => entry.id)) : new Set());
 
@@ -74,7 +77,12 @@ export function BlacklistPage() {
           </Button>
         </div>
       </div>
-      <BulkActions ids={selectedIds} onClear={() => setSelected(new Set())} />
+      <BulkActions
+        ids={selectedIds}
+        onClear={clearSelected}
+        disabled={blacklist.isPlaceholderData}
+        bulk={bulk}
+      />
       <DataState
         {...firstLoadState(blacklist)}
         isEmpty={data?.items.length === 0}
@@ -89,6 +97,8 @@ export function BlacklistPage() {
             selectedIds={visibleSelected}
             onToggle={toggle}
             onToggleAll={toggleAll}
+            selectionDisabled={blacklist.isPlaceholderData || bulk.isPending}
+            busy={blacklist.isPlaceholderData}
           />
         )}
       </DataState>

@@ -274,6 +274,32 @@ describe("POST /api/blacklist/import — 행 오류", () => {
     ]);
   });
 
+  it("[BK-16] 스프레드시트가 저장한 CSV(머리글 공백, TRUE/False, High)는 정상으로 가져오고 enabled 가 yes 면 그 행의 오류다", async () => {
+    const ok = await importOk(
+      t,
+      "csv",
+      " ecosystem , name ,reason, enabled ,severity\r\n NPM ,a-pkg,r,TRUE,High\r\nnpm,b-pkg,r, False ,low\r\n",
+      false,
+    );
+    expect(ok).toMatchObject({ applied: true, created: 2, errors: [] });
+    expect(await listEntries(t)).toEqual([
+      expect.objectContaining({ name: "a-pkg", enabled: true, severity: "high" }),
+      expect.objectContaining({ name: "b-pkg", enabled: false, severity: "low" }),
+    ]);
+
+    const bad = await importOk(t, "csv", "name,reason,enabled\r\nc-pkg,r,yes\r\n", false);
+    expect(bad.applied).toBe(false);
+    expect(bad.errors).toEqual([{ row: 1, field: "enabled", message: expect.stringMatching(/.+/) }]);
+  });
+
+  it("[BK-16] 닫는 따옴표 뒤에 잘못된 문자가 있으면 400 이다", async () => {
+    expectApiError(
+      await importRequest(t, "csv", 'name,reason\r\n"npm-pkg"x,"사유"\r\n', false),
+      400,
+      "VALIDATION_ERROR",
+    );
+  });
+
   it("[BK-13] CSV 의 열 수가 머리글과 다른 행은 그 행의 오류다", async () => {
     const result = await importOk(t, "csv", "name,reason\r\na,b\r\nonly-name\r\nc,d\r\n", false);
 

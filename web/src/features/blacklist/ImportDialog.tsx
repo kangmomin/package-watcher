@@ -29,6 +29,8 @@ interface Loaded {
   content: string;
 }
 
+// 오류가 아주 많아도 화면이 느려지지 않게 앞의 일부만 그린다(요약의 건수는 전체).
+const MAX_SHOWN_ERRORS = 200;
 const MAX_SIZE_MESSAGE = "파일이 너무 큽니다 (최대 1 MB)";
 const UNSUPPORTED_MESSAGE = "JSON 또는 CSV 파일을 선택하십시오";
 
@@ -45,6 +47,7 @@ export function ImportDialog({ open, onOpenChange }: ImportDialogProps) {
   const [loaded, setLoaded] = useState<Loaded>();
   const [result, setResult] = useState<ImportResult>();
   const [error, setError] = useState<string>();
+  const [fileName, setFileName] = useState<string>();
   const [phase, setPhase] = useState<"idle" | "previewing" | "applying">("idle");
 
   const reset = () => {
@@ -52,19 +55,30 @@ export function ImportDialog({ open, onOpenChange }: ImportDialogProps) {
     setLoaded(undefined);
     setResult(undefined);
     setError(undefined);
+    setFileName(undefined);
     setPhase("idle");
   };
 
-  const handleOpenChange = (next: boolean) => {
-    // 닫을 때와 열 때 모두 초기 상태로 되돌린다.
+  // 닫을 때와 열 때 모두 초기 상태로 되돌린다.
+  const close = (next: boolean) => {
     reset();
     onOpenChange(next);
   };
 
+  const handleOpenChange = (next: boolean) => {
+    // 적용 요청 중에는 Esc·바깥 클릭·[취소] 로 닫지 않는다(미리 보기는 저장하지 않으므로 닫아도 된다).
+    if (!next && phase === "applying") return;
+    close(next);
+  };
+
   const handleFile = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
+    const input = event.target;
+    const file = input.files?.[0];
+    // 같은 파일을 다시 고를 때도 change 가 나도록 바로 비운다(오류를 고친 같은 파일의 재선택).
+    input.value = "";
     reset();
     if (!file) return;
+    setFileName(file.name);
     const mine = session.current;
 
     const format = formatOf(file.name);
@@ -123,7 +137,7 @@ export function ImportDialog({ open, onOpenChange }: ImportDialogProps) {
             toast.success(
               `가져오기를 적용했습니다 (추가 ${data.created}건, 갱신 ${data.updated}건)`,
             );
-            handleOpenChange(false);
+            close(false);
           } else {
             // 미리 본 뒤에 목록이 바뀌어 적용되지 않았다. 새 결과를 보여 준다.
             setResult(data);
@@ -167,6 +181,7 @@ export function ImportDialog({ open, onOpenChange }: ImportDialogProps) {
             onChange={(event) => void handleFile(event)}
           />
         </div>
+        {fileName && <p className="text-sm text-muted-foreground">선택한 파일: {fileName}</p>}
         <div role="status" className="text-sm" aria-busy={busy}>
           {phase === "previewing" && "미리 보기 중…"}
           {phase === "applying" && "적용 중…"}
@@ -175,18 +190,28 @@ export function ImportDialog({ open, onOpenChange }: ImportDialogProps) {
             `추가 ${result.created}건, 갱신 ${result.updated}건, 변경 없음 ${result.unchanged}건, 오류 ${result.errors.length}건`}
         </div>
         {phase === "idle" && result && result.errors.length > 0 && (
-          <ul
-            aria-label="오류 목록"
-            className="max-h-48 overflow-y-auto rounded-md border p-2 text-sm"
-          >
-            {result.errors.map((item, index) => (
-              <li key={index} className="flex gap-2 py-0.5">
-                <span className="shrink-0 font-medium">{item.row}행</span>
-                <span className="shrink-0 font-mono text-xs">{item.field ?? "-"}</span>
-                <span>{item.message}</span>
-              </li>
-            ))}
-          </ul>
+          <div className="flex flex-col gap-1">
+            {/* 스크롤되는 영역이라 키보드로 포커스해 스크롤할 수 있어야 한다. */}
+            <ul
+              aria-label="오류 목록"
+              // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex
+              tabIndex={0}
+              className="max-h-48 overflow-y-auto rounded-md border p-2 text-sm"
+            >
+              {result.errors.slice(0, MAX_SHOWN_ERRORS).map((item, index) => (
+                <li key={index} className="flex gap-2 py-0.5">
+                  <span className="shrink-0 font-medium">{item.row}행</span>
+                  <span className="shrink-0 font-mono text-xs">{item.field ?? "-"}</span>
+                  <span>{item.message}</span>
+                </li>
+              ))}
+            </ul>
+            {result.errors.length > MAX_SHOWN_ERRORS && (
+              <p className="text-sm text-muted-foreground">
+                외 {result.errors.length - MAX_SHOWN_ERRORS}건
+              </p>
+            )}
+          </div>
         )}
         {error && (
           <p role="alert" className="text-sm text-destructive">
@@ -194,7 +219,11 @@ export function ImportDialog({ open, onOpenChange }: ImportDialogProps) {
           </p>
         )}
         <DialogFooter>
-          <Button variant="outline" onClick={() => handleOpenChange(false)}>
+          <Button
+            variant="outline"
+            disabled={phase === "applying"}
+            onClick={() => handleOpenChange(false)}
+          >
             취소
           </Button>
           <Button disabled={!canApply} onClick={apply}>

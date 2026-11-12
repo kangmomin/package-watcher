@@ -22,6 +22,10 @@ export interface BlacklistTableProps {
   onToggle: (id: number, checked: boolean) => void;
   /** 머리글의 "모두 선택": true = 보이는 행 전체 선택, false = 해제 */
   onToggleAll: (checked: boolean) => void;
+  /** 체크박스 비활성 (일괄 요청 중, 목록 미확인) */
+  selectionDisabled?: boolean;
+  /** 목록이 아직 지금의 필터 응답이 아니다 */
+  busy?: boolean;
 }
 
 const ENTRY_STATUS_CLASSES: Record<EntryStatus, string> = {
@@ -37,18 +41,21 @@ export function BlacklistTable({
   selectedIds,
   onToggle,
   onToggleAll,
+  selectionDisabled = false,
+  busy = false,
 }: BlacklistTableProps) {
   const id = useId();
   const selectedCount = items.filter((entry) => selectedIds.has(entry.id)).length;
   const allChecked = items.length > 0 && selectedCount === items.length;
   return (
     <div className="rounded-lg border">
-      <Table aria-label="블랙리스트">
+      <Table aria-label="블랙리스트" aria-busy={busy || undefined}>
         <TableHeader>
           <TableRow>
             <TableHead scope="col" className="w-10">
               <Checkbox
                 aria-label="모두 선택"
+                disabled={selectionDisabled}
                 checked={allChecked ? true : selectedCount > 0 ? "indeterminate" : false}
                 onCheckedChange={() => onToggleAll(!allChecked)}
               />
@@ -77,6 +84,7 @@ export function BlacklistTable({
                 <TableCell>
                   <Checkbox
                     aria-label={`${entry.name} 선택`}
+                    disabled={selectionDisabled}
                     checked={selectedIds.has(entry.id)}
                     onCheckedChange={(checked) => onToggle(entry.id, checked === true)}
                   />

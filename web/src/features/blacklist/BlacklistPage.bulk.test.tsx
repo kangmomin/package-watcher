@@ -269,3 +269,88 @@ describe("블랙리스트 — 일괄 삭제", () => {
     await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
   });
 });
+
+describe("블랙리스트 — 일괄 작업 보완 (코드 리뷰)", () => {
+  it("[BK-25] 삭제 확인 Dialog 를 연 뒤 목록이 바뀌어 선택이 바뀌면 Dialog 를 닫고 요청하지 않는다", async () => {
+    let items = ALL_ITEMS;
+    const server = setupServer().on("GET", BLACKLIST, (request) => reply.json({ items })(request));
+    server.on("POST", BULK, bulkOk("delete", 2));
+    const { user, queryClient } = await renderBlacklist();
+
+    await selectRows(user, "lodash", "evil-pkg");
+    await user.click(bulkButton("삭제"));
+    await screen.findByRole("alertdialog");
+
+    items = ALL_ITEMS.filter((item) => item.name !== "lodash");
+    await queryClient.invalidateQueries({ queryKey: ["blacklist"] });
+
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    expect(server.count("POST", BULK)).toBe(0);
+    expect(screen.getByText("선택 1건:")).toBeInTheDocument();
+  });
+
+  it("[BK-25] 필터 변경 직후 이전 목록이 보이는 동안에는 일괄 버튼과 체크박스가 비활성이고 표가 aria-busy 다", async () => {
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    setupServer().on("GET", BLACKLIST, async (request) => {
+      if (request.query.status) await released;
+      return reply.json({ items: ALL_ITEMS })(request);
+    });
+    const { user } = await renderBlacklist();
+    await selectRows(user, "lodash");
+
+    await chooseOption(user, screen.getByRole("combobox", { name: "상태" }), "끔");
+    await waitFor(() => expect(bulkButton("끄기")).toBeDisabled());
+    expect(bulkButton("켜기")).toBeDisabled();
+    expect(bulkButton("삭제")).toBeDisabled();
+    expect(rowCheckbox("lodash")).toBeDisabled();
+    expect(selectAllCheckbox()).toBeDisabled();
+    expect(screen.getByRole("table", { name: "블랙리스트" })).toHaveAttribute("aria-busy", "true");
+
+    release();
+    await waitFor(() => expect(bulkButton("끄기")).toBeEnabled());
+    expect(rowCheckbox("lodash")).toBeEnabled();
+    expect(screen.getByRole("table", { name: "블랙리스트" })).not.toHaveAttribute("aria-busy", "true");
+  });
+
+  it("[BK-25] 일괄 요청 중에는 체크박스가 비활성이다", async () => {
+    const pending = deferredReply();
+    setupServer().on("POST", BULK, pending.reply);
+    const { user } = await renderBlacklist();
+
+    await selectRows(user, "lodash");
+    await user.click(bulkButton("끄기"));
+    await waitFor(() => expect(rowCheckbox("lodash")).toBeDisabled());
+    expect(rowCheckbox("evil-pkg")).toBeDisabled();
+    expect(selectAllCheckbox()).toBeDisabled();
+
+    pending.resolve(bulkOk("disable", 1));
+    await findToast("1건을 껐습니다");
+    await waitFor(() => expect(rowCheckbox("lodash")).toBeEnabled());
+  });
+
+  it("[BK-25] 선택이 1000건을 넘으면 일괄 버튼 3개가 비활성이고 안내를 보인다", async () => {
+    const many = Array.from({ length: 1001 }, (_, index) => ({
+      ...ALL_ITEMS[0]!,
+      id: 100 + index,
+      name: index === 0 ? "lodash" : `pkg-${index}`,
+    }));
+    setupServer(many);
+    const { user } = await renderBlacklist();
+
+    await user.click(selectAllCheckbox());
+    expect(screen.getByText("선택 1001건:")).toBeInTheDocument();
+    expect(bulkButton("켜기")).toBeDisabled();
+    expect(bulkButton("끄기")).toBeDisabled();
+    expect(bulkButton("삭제")).toBeDisabled();
+    expect(within(bulkBar()).getByText("한 번에 1000건까지 처리할 수 있습니다")).toBeInTheDocument();
+
+    await user.click(selectAllCheckbox());
+    await user.click(rowCheckbox("lodash"));
+    expect(bulkButton("끄기")).toBeEnabled();
+    expect(screen.queryByText("한 번에 1000건까지 처리할 수 있습니다")).not.toBeInTheDocument();
+    // 1001행을 그리므로 느린 환경에서도 시간 초과가 나지 않게 한다.
+  }, 30_000);
+});
