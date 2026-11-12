@@ -26,7 +26,7 @@ export function useBlacklist(): UseQueryResult<BlacklistList, ApiRequestError> {
 const CREATE_KEYS: readonly QueryKey[] = [queryKeys.blacklist(), queryKeys.findingsAll()];
 // 항목을 끄거나 만료일을 바꾸면 검출이 resolved 가 되므로 요약도 다시 읽는다.
 const UPDATE_KEYS: readonly QueryKey[] = [queryKeys.blacklist(), queryKeys.findingsAll(), queryKeys.summary()];
-const DELETE_KEYS: readonly QueryKey[] = [queryKeys.blacklist(), queryKeys.findingsAll(), queryKeys.summary()];
+const DELETE_KEYS = UPDATE_KEYS;
 
 function invalidateAfterError(queryClient: QueryClient, error: ApiRequestError, successKeys: readonly QueryKey[]) {
   if (isUnknownOutcome(error)) {

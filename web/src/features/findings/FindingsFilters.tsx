@@ -1,6 +1,6 @@
 // 대시보드 필터.
 // 상태 select = open(기본)/ignored/resolved/전체(파라미터 생략). repo·패키지 입력 = trim + 300ms debounce, 비면 생략.
-import { SEVERITIES, SUPPORTED_ECOSYSTEMS, type Ecosystem, type FindingStatus, type Severity } from "@pw/shared";
+import { SEVERITIES, SUPPORTED_ECOSYSTEMS, type FindingStatus } from "@pw/shared";
 import { useEffect, useId, useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -12,9 +12,18 @@ export interface FindingsFiltersProps {
   onFilterChange: (filter: FindingsFilter) => void;
 }
 
+interface FilterSelectProps<T extends string> {
+  id: string;
+  label: string;
+  /** undefined = 전체 */
+  value: T | undefined;
+  options: readonly T[];
+  onChange: (value: T | undefined) => void;
+}
+
 const FILTER_DEBOUNCE_MS = 300;
 // Radix Select 는 빈 문자열 값을 쓸 수 없다. "전체" = 그 필터 파라미터 생략.
-const ALL_STATUSES = "all";
+const ALL_OPTION = "all";
 const STATUS_OPTIONS: readonly FindingStatus[] = ["open", "ignored", "resolved"];
 
 function toTextFilter(value: string): string | undefined {
@@ -39,71 +48,29 @@ export function FindingsFilters({ filter, onFilterChange }: FindingsFiltersProps
     return () => clearTimeout(timer);
   }, [repoDraft, packageDraft, filter, onFilterChange]);
 
-  const handleStatusChange = (value: string) => {
-    const status = value === ALL_STATUSES ? undefined : (value as FindingStatus);
-    onFilterChange({ ...filter, status });
-  };
-
-  const handleEcosystemChange = (value: string) => {
-    const ecosystem = value === ALL_STATUSES ? undefined : (value as Ecosystem);
-    onFilterChange({ ...filter, ecosystem });
-  };
-
-  const handleSeverityChange = (value: string) => {
-    const severity = value === ALL_STATUSES ? undefined : (value as Severity);
-    onFilterChange({ ...filter, severity });
-  };
-
   return (
     <div className="flex flex-wrap items-end gap-3">
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor={`${id}-status`}>상태</Label>
-        <Select value={filter.status ?? ALL_STATUSES} onValueChange={handleStatusChange}>
-          <SelectTrigger id={`${id}-status`} className="w-32">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {STATUS_OPTIONS.map((status) => (
-              <SelectItem key={status} value={status}>
-                {status}
-              </SelectItem>
-            ))}
-            <SelectItem value={ALL_STATUSES}>전체</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor={`${id}-ecosystem`}>종류</Label>
-        <Select value={filter.ecosystem ?? ALL_STATUSES} onValueChange={handleEcosystemChange}>
-          <SelectTrigger id={`${id}-ecosystem`} className="w-32">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {SUPPORTED_ECOSYSTEMS.map((ecosystem) => (
-              <SelectItem key={ecosystem} value={ecosystem}>
-                {ecosystem}
-              </SelectItem>
-            ))}
-            <SelectItem value={ALL_STATUSES}>전체</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor={`${id}-severity`}>심각도</Label>
-        <Select value={filter.severity ?? ALL_STATUSES} onValueChange={handleSeverityChange}>
-          <SelectTrigger id={`${id}-severity`} className="w-32">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {SEVERITIES.map((severity) => (
-              <SelectItem key={severity} value={severity}>
-                {severity}
-              </SelectItem>
-            ))}
-            <SelectItem value={ALL_STATUSES}>전체</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
+      <FilterSelect
+        id={`${id}-status`}
+        label="상태"
+        value={filter.status}
+        options={STATUS_OPTIONS}
+        onChange={(status) => onFilterChange({ ...filter, status })}
+      />
+      <FilterSelect
+        id={`${id}-ecosystem`}
+        label="종류"
+        value={filter.ecosystem}
+        options={SUPPORTED_ECOSYSTEMS}
+        onChange={(ecosystem) => onFilterChange({ ...filter, ecosystem })}
+      />
+      <FilterSelect
+        id={`${id}-severity`}
+        label="심각도"
+        value={filter.severity}
+        options={SEVERITIES}
+        onChange={(severity) => onFilterChange({ ...filter, severity })}
+      />
       <div className="flex flex-col gap-1.5">
         <Label htmlFor={`${id}-repo`}>repo</Label>
         <Input
@@ -126,6 +93,28 @@ export function FindingsFilters({ filter, onFilterChange }: FindingsFiltersProps
           onChange={(event) => setPackageDraft(event.target.value)}
         />
       </div>
+    </div>
+  );
+}
+
+function FilterSelect<T extends string>({ id, label, value, options, onChange }: FilterSelectProps<T>) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Label htmlFor={id}>{label}</Label>
+      {/* 선택한 값을 options 에서 찾는다: "전체"는 목록에 없으므로 undefined 가 된다. */}
+      <Select value={value ?? ALL_OPTION} onValueChange={(next) => onChange(options.find((option) => option === next))}>
+        <SelectTrigger id={id} className="w-32">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {options.map((option) => (
+            <SelectItem key={option} value={option}>
+              {option}
+            </SelectItem>
+          ))}
+          <SelectItem value={ALL_OPTION}>전체</SelectItem>
+        </SelectContent>
+      </Select>
     </div>
   );
 }

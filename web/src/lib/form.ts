@@ -53,7 +53,7 @@ export function joinIds(...ids: (string | false | undefined)[]): string | undefi
 export function fieldErrorAria(
   error: unknown,
   errorElementId: string,
-  ...describedBy: string[]
+  ...describedBy: (string | false | undefined)[]
 ): { "aria-invalid": true | undefined; "aria-describedby": string | undefined } {
   return {
     "aria-invalid": error ? true : undefined,

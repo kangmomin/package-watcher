@@ -180,7 +180,7 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
     enabled: `${id}-enabled-hint`,
     expiresAt: `${id}-expires-at-hint`,
   };
-  const errorAria = (field: keyof FormValues, ...describedBy: string[]) =>
+  const errorAria = (field: keyof FormValues, ...describedBy: (string | false | undefined)[]) =>
     fieldErrorAria(errors[field], errorId(fieldIds[field]), ...describedBy);
 
   const expiresAtField = form.register("expiresAt", {
@@ -226,7 +226,12 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
                 onValueChange={field.onChange}
                 disabled={SUPPORTED_ECOSYSTEMS.length === 1}
               >
-                <SelectTrigger id={fieldIds.ecosystem} className="w-40" {...errorAria("ecosystem")}>
+                <SelectTrigger
+                  id={fieldIds.ecosystem}
+                  className="w-40"
+                  aria-required="true"
+                  {...errorAria("ecosystem")}
+                >
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -280,7 +285,8 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
                 <SelectTrigger
                   id={fieldIds.severity}
                   className="w-40"
-                  {...errorAria("severity", ...(showSeverityHint ? [hintIds.severity] : []))}
+                  aria-required="true"
+                  {...errorAria("severity", showSeverityHint && hintIds.severity)}
                 >
                   <SelectValue />
                 </SelectTrigger>
@@ -308,7 +314,7 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
             type="date"
             min={minDate}
             className="w-44"
-            {...errorAria("expiresAt", ...(entry?.isExpired ? [hintIds.expiresAt] : []))}
+            {...errorAria("expiresAt", entry?.isExpired && hintIds.expiresAt)}
             {...expiresAtField}
             ref={(element) => {
               expiresAtField.ref(element);

@@ -107,7 +107,7 @@ export function SettingsForm({ settings, isFetchedAfterMount = true }: SettingsF
   };
   const showThresholdWarning = belowThresholdCount !== undefined && belowThresholdCount > 0;
   const errorIdOf = (field: keyof FormValues) => errorId(`${id}-${field}`);
-  const errorAria = (field: keyof FormValues, ...describedBy: string[]) =>
+  const errorAria = (field: keyof FormValues, ...describedBy: (string | false | undefined)[]) =>
     fieldErrorAria(errors[field], errorIdOf(field), ...describedBy);
 
   /** 입력란에 [추가] 하지 않은 주소가 있으면 recipients 필드 오류로 표시하고 true (저장하지 않는다). */
@@ -205,7 +205,7 @@ export function SettingsForm({ settings, isFetchedAfterMount = true }: SettingsF
                   {...errorAria(
                     "notifyMinSeverity",
                     ids.notifyMinSeverityHint,
-                    ...(showThresholdWarning ? [ids.notifyMinSeverityWarning] : []),
+                    showThresholdWarning && ids.notifyMinSeverityWarning,
                   )}
                 >
                   <SelectValue />

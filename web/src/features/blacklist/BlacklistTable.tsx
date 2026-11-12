@@ -49,6 +49,7 @@ export function BlacklistTable({ items, onEdit, onDelete }: BlacklistTableProps)
         <TableBody>
           {items.map((entry) => {
             const nameId = `${id}-${entry.id}-name`;
+            const status = entryStatusOf(entry);
             return (
               <TableRow key={entry.id}>
                 <TableCell>{entry.ecosystem}</TableCell>
@@ -64,8 +65,8 @@ export function BlacklistTable({ items, onEdit, onDelete }: BlacklistTableProps)
                   <SeverityBadge severity={entry.severity} />
                 </TableCell>
                 <TableCell>
-                  <Badge variant="secondary" className={ENTRY_STATUS_CLASSES[entryStatusOf(entry)]}>
-                    {entryStatusLabel(entry)}
+                  <Badge variant="secondary" className={ENTRY_STATUS_CLASSES[status]}>
+                    {entryStatusLabel(status)}
                   </Badge>
                 </TableCell>
                 <TableCell className="font-mono text-xs">{entry.expiresAt ?? "-"}</TableCell>
