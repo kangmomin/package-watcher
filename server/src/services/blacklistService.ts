@@ -1,8 +1,11 @@
 import {
   kstDateOf,
+  normalizeEntryName,
+  validateEntryFields,
   blacklistCreateSchema,
   blacklistQuerySchema,
   blacklistUpdateSchema,
+  ecosystemSchema,
   type BlacklistEntry,
   type BlacklistList,
 } from "@pw/shared";
@@ -91,14 +94,33 @@ export function createBlacklistService(deps: BlacklistServiceDeps): BlacklistSer
     }
   }
 
-  /** parse → 저장값과 병합 → 병합한 값 검증(과거 날짜, 중복 키). 쓰기는 하지 않는다. */
+  /**
+   * parse → 종류 변경 거부 → 저장된 종류로 이름·범위 검증과 이름 정규화 → 병합한 값 검증(과거 날짜, 중복 키).
+   * 쓰기는 하지 않는다. 스키마는 본문에 ecosystem 이 없으면 종류별 검증을 못 하므로 여기서 한다.
+   */
   function prepareUpdate(current: BlacklistEntry, input: unknown, today: string): BlacklistWrite {
+    // 종류가 바뀌면 그 항목의 기존 검출(다른 종류의 파일)이 틀린 종류로 남는다.
+    // 스키마는 본문의 종류로 이름·범위를 검증하므로, 다른 오류에 가려지지 않게 먼저 거부한다.
+    const requested = (input as { ecosystem?: unknown } | null)?.ecosystem;
+    if (ecosystemSchema.safeParse(requested).success && requested !== current.ecosystem) {
+      throw new AppError("VALIDATION_ERROR", "입력값이 올바르지 않습니다 (ecosystem)", {
+        ecosystem: "종류는 바꿀 수 없습니다. 새 항목으로 등록하십시오",
+      });
+    }
     const data = parseInput(blacklistUpdateSchema, input);
+    const invalid = validateEntryFields(current.ecosystem, data.name, data.versionRange);
+    if (Object.keys(invalid).length > 0) {
+      throw new AppError(
+        "VALIDATION_ERROR",
+        `입력값이 올바르지 않습니다 (${Object.keys(invalid).join(", ")})`,
+        invalid,
+      );
+    }
     const merged: BlacklistWrite = {
-      name: data.name,
+      name: normalizeEntryName(current.ecosystem, data.name),
       versionRange: data.versionRange,
       reason: data.reason,
-      ecosystem: data.ecosystem ?? current.ecosystem,
+      ecosystem: current.ecosystem,
       severity: data.severity ?? current.severity,
       enabled: data.enabled ?? current.enabled,
       expiresAt: data.expiresAt === undefined ? current.expiresAt : data.expiresAt,

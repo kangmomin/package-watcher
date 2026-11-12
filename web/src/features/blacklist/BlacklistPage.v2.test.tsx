@@ -207,14 +207,14 @@ describe("블랙리스트 v2 — 표", () => {
 });
 
 describe("블랙리스트 v2 — 추가 Dialog", () => {
-  it("[CT-16][v2-AC-01] 추가 Dialog 의 기본값: 종류 npm(옵션 1개라 비활성), 심각도 medium, 켜기 체크, 만료일 빈 값", async () => {
+  it("[CT-16][v2-AC-01] 추가 Dialog 의 기본값: 종류 npm(활성, 옵션 7개), 심각도 medium, 켜기 체크, 만료일 빈 값", async () => {
     setupServer();
     const { user } = await renderBlacklist();
 
     const dialog = await openAddDialog(user);
     expect(dialog.ecosystem).toHaveTextContent("npm");
-    expect(SUPPORTED_ECOSYSTEMS).toHaveLength(1);
-    expect(dialog.ecosystem).toBeDisabled();
+    expect(SUPPORTED_ECOSYSTEMS).toHaveLength(7);
+    expect(dialog.ecosystem).toBeEnabled();
     expect(dialog.severity).toHaveTextContent("medium");
     expect(dialog.enabled).toBeChecked();
     expect(dialog.expiresAt).toHaveAttribute("type", "date");
@@ -236,8 +236,8 @@ describe("블랙리스트 v2 — 추가 Dialog", () => {
     const { user } = await renderBlacklist();
 
     const dialog = await openAddDialog(user);
-    // 종류 select 가 비활성이어도 값은 보낸다
-    expect(dialog.ecosystem).toBeDisabled();
+    // 종류를 고르지 않아도 기본값 npm 을 보낸다
+    expect(dialog.ecosystem).toBeEnabled();
     await user.type(dialog.name, "left-pad");
     await user.type(dialog.reason, "테스트 사유");
     await user.click(dialog.save);

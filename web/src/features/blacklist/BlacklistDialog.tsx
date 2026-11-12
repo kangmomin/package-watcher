@@ -8,6 +8,7 @@
 import {
   blacklistCreateSchema,
   blacklistUpdateSchema,
+  ECOSYSTEM_RULES,
   kstDateOf,
   SEVERITIES,
   SEVERITY_RANK,
@@ -134,7 +135,19 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
 
   // 설정을 아직 못 읽었거나 실패했으면 안내만 생략한다(이 Dialog 의 오류가 아니다).
   const notifyMinSeverity = useSettings().data?.notifyMinSeverity;
-  const [severity, enabled] = useWatch({ control: form.control, name: ["severity", "enabled"] });
+  const [severity, enabled, ecosystem] = useWatch({
+    control: form.control,
+    name: ["severity", "enabled", "ecosystem"],
+  });
+  const rule = ECOSYSTEM_RULES[ecosystem];
+  const normalizesName = ecosystem === "pypi" || ecosystem === "nuget";
+
+  // 종류가 바뀌면 이미 오류가 표시된 이름·범위만 새 종류의 규칙으로 다시 검증한다.
+  // (제출 전에는 재검증이 돌지 않아 오류가 이전 종류의 것으로 남는다. 입력하지 않은 필드에는 오류를 새로 띄우지 않는다.)
+  const revalidateAfterEcosystemChange = () => {
+    const fields = (["name", "versionRange"] as const).filter((field) => form.getFieldState(field).error);
+    if (fields.length > 0) void form.trigger(fields);
+  };
   const showSeverityHint =
     notifyMinSeverity !== undefined && enabled && SEVERITY_RANK[severity] < SEVERITY_RANK[notifyMinSeverity];
 
@@ -176,6 +189,8 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
   };
   const hintIds = {
     name: `${id}-name-hint`,
+    ecosystem: `${id}-ecosystem-hint`,
+    versionRange: `${id}-range-hint`,
     severity: `${id}-severity-hint`,
     enabled: `${id}-enabled-hint`,
     expiresAt: `${id}-expires-at-hint`,
@@ -223,14 +238,18 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
               // react-hook-form 의 disabled 옵션은 값을 undefined 로 만들어 본문에서 빠뜨린다. Select 의 prop 으로만 끈다.
               <Select
                 value={field.value}
-                onValueChange={field.onChange}
-                disabled={SUPPORTED_ECOSYSTEMS.length === 1}
+                onValueChange={(value) => {
+                  field.onChange(value);
+                  revalidateAfterEcosystemChange();
+                }}
+                // 종류는 수정할 수 없다(서버도 400). 저장된 값은 계속 본문에 보낸다.
+                disabled={entry !== null}
               >
                 <SelectTrigger
                   id={fieldIds.ecosystem}
                   className="w-40"
                   aria-required="true"
-                  {...errorAria("ecosystem")}
+                  {...errorAria("ecosystem", entry !== null && hintIds.ecosystem)}
                 >
                   <SelectValue />
                 </SelectTrigger>
@@ -244,6 +263,7 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
               </Select>
             )}
           />
+          {entry && <FieldDescription id={hintIds.ecosystem}>종류는 바꿀 수 없습니다. 새 항목으로 등록하십시오</FieldDescription>}
           <FieldError id={errorId(fieldIds.ecosystem)} errors={[errors.ecosystem]} />
         </Field>
         <Field data-invalid={errors.name ? true : undefined}>
@@ -258,7 +278,11 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
             {...form.register("name")}
           />
           <FieldDescription id={hintIds.name}>
-            <code>*</code> 로 패턴을 쓸 수 있습니다
+            <span className="block">
+              <code>*</code> 로 패턴을 쓸 수 있습니다
+            </span>
+            <span className="block">{`예: ${rule.nameExample}`}</span>
+            {normalizesName && <span className="block">저장할 때 이름을 소문자 표준 형태로 바꿉니다</span>}
           </FieldDescription>
           <FieldError id={errorId(fieldIds.name)} errors={[errors.name]} />
         </Field>
@@ -268,9 +292,10 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
             id={fieldIds.versionRange}
             autoComplete="off"
             placeholder="비우면 모든 버전"
-            {...errorAria("versionRange")}
+            {...errorAria("versionRange", hintIds.versionRange)}
             {...form.register("versionRange")}
           />
+          <FieldDescription id={hintIds.versionRange}>{`예: ${rule.rangeExample}`}</FieldDescription>
           <FieldError id={errorId(fieldIds.versionRange)} errors={[errors.versionRange]} />
         </Field>
         <Field data-invalid={errors.severity ? true : undefined}>
