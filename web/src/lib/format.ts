@@ -1,22 +1,52 @@
-// 표시 형식 (Phase 6.1 스텁 — Phase 6.2 에서 구현).
+// 표시 형식.
 // 계약: 모든 시각은 Asia/Seoul 로 표시한다(실행 환경의 TZ 와 무관). 표 = MM-dd HH:mm, 카드 = yyyy-MM-dd HH:mm.
 // 라벨: direct/transitive = 직접/전이, scheduled/manual = 자동/수동.
-import type { DependencyType, ScanTrigger } from "@pw/shared";
+import { DIGEST_TIMEZONE, type DependencyType, type ScanTrigger } from "@pw/shared";
+
+// hourCycle h23: 자정을 "24" 가 아니라 "00" 으로 쓴다.
+const kstFormatter = new Intl.DateTimeFormat("en-US", {
+  timeZone: DIGEST_TIMEZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
+
+function kstParts(iso: string) {
+  const parts: Partial<Record<Intl.DateTimeFormatPartTypes, string>> = {};
+  for (const part of kstFormatter.formatToParts(new Date(iso))) {
+    parts[part.type] = part.value;
+  }
+  return {
+    year: parts.year ?? "",
+    month: parts.month ?? "",
+    day: parts.day ?? "",
+    hour: parts.hour ?? "",
+    minute: parts.minute ?? "",
+  };
+}
 
 /** ISO 8601 UTC → `MM-dd HH:mm` (Asia/Seoul) */
-export function formatTableTime(_iso: string): string {
-  throw new Error("not implemented");
+export function formatTableTime(iso: string): string {
+  const { month, day, hour, minute } = kstParts(iso);
+  return `${month}-${day} ${hour}:${minute}`;
 }
 
 /** ISO 8601 UTC → `yyyy-MM-dd HH:mm` (Asia/Seoul) */
-export function formatCardTime(_iso: string): string {
-  throw new Error("not implemented");
+export function formatCardTime(iso: string): string {
+  const { year, month, day, hour, minute } = kstParts(iso);
+  return `${year}-${month}-${day} ${hour}:${minute}`;
 }
 
-export function dependencyTypeLabel(_type: DependencyType): string {
-  throw new Error("not implemented");
+const DEPENDENCY_TYPE_LABELS: Record<DependencyType, string> = { direct: "직접", transitive: "전이" };
+const SCAN_TRIGGER_LABELS: Record<ScanTrigger, string> = { scheduled: "자동", manual: "수동" };
+
+export function dependencyTypeLabel(type: DependencyType): string {
+  return DEPENDENCY_TYPE_LABELS[type];
 }
 
-export function scanTriggerLabel(_trigger: ScanTrigger): string {
-  throw new Error("not implemented");
+export function scanTriggerLabel(trigger: ScanTrigger): string {
+  return SCAN_TRIGGER_LABELS[trigger];
 }

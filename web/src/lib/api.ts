@@ -1,24 +1,38 @@
-// REST 클라이언트 (Phase 6.1 스텁 — Phase 6.2 에서 구현).
+// REST 클라이언트.
 // 계약: 응답은 shared 스키마로 parse 한다(실패 → INTERNAL_ERROR). 비-2xx → ApiRequestError.
 // 본문이 ApiError 가 아니거나 fetch 실패 → NETWORK_ERROR("서버에 연결할 수 없습니다"). 204 → undefined.
-import type {
-  BlacklistEntry,
-  BlacklistInput,
-  BlacklistList,
-  ErrorCode,
-  Finding,
-  FindingStatus,
-  FindingStatusInput,
-  Page,
-  Scan,
-  Settings,
-  SettingsInput,
-  Summary,
-  TestEmailResult,
+import {
+  apiErrorSchema,
+  blacklistEntrySchema,
+  blacklistListSchema,
+  findingSchema,
+  findingsPageSchema,
+  scanSchema,
+  scansPageSchema,
+  settingsSchema,
+  summarySchema,
+  testEmailResultSchema,
+  type BlacklistEntry,
+  type BlacklistInput,
+  type BlacklistList,
+  type ErrorCode,
+  type Finding,
+  type FindingStatus,
+  type FindingStatusInput,
+  type Page,
+  type Scan,
+  type Settings,
+  type SettingsInput,
+  type Summary,
+  type TestEmailResult,
 } from "@pw/shared";
+import type { ZodType } from "zod";
 
 /** shared `ErrorCode` + FE 전용 `NETWORK_ERROR` */
 export type ClientErrorCode = ErrorCode | "NETWORK_ERROR";
+
+export const NETWORK_ERROR_MESSAGE = "서버에 연결할 수 없습니다";
+export const INTERNAL_ERROR_MESSAGE = "서버 오류가 발생했습니다";
 
 /** status = HTTP status (fetch 실패 = 0). retry 판정은 status 를 쓴다. */
 export class ApiRequestError extends Error {
@@ -51,22 +65,85 @@ export interface ScansParams {
   limit: number;
 }
 
-function notImplemented(): never {
-  throw new Error("not implemented");
+type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+
+async function send(method: Method, path: string, body?: unknown): Promise<Response> {
+  const init: RequestInit = { method };
+  if (body !== undefined) {
+    init.headers = { "Content-Type": "application/json" };
+    init.body = JSON.stringify(body);
+  }
+  try {
+    const response = await fetch(path, init);
+    if (!response.ok) throw await toRequestError(response);
+    return response;
+  } catch (error) {
+    if (error instanceof ApiRequestError) throw error;
+    throw new ApiRequestError(0, "NETWORK_ERROR", NETWORK_ERROR_MESSAGE);
+  }
+}
+
+async function readJson(response: Response): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    return undefined;
+  }
+}
+
+/** 비-2xx: 본문이 ApiError 이면 그 값을, 아니면(프록시 HTML 등) NETWORK_ERROR 를 쓴다. */
+async function toRequestError(response: Response): Promise<ApiRequestError> {
+  const parsed = apiErrorSchema.safeParse(await readJson(response));
+  if (!parsed.success) {
+    return new ApiRequestError(response.status, "NETWORK_ERROR", NETWORK_ERROR_MESSAGE);
+  }
+  const { code, message, details } = parsed.data.error;
+  return new ApiRequestError(response.status, code, message, details);
+}
+
+async function request<T>(schema: ZodType<T>, method: Method, path: string, body?: unknown): Promise<T> {
+  const response = await send(method, path, body);
+  const parsed = schema.safeParse(await readJson(response));
+  if (!parsed.success) {
+    // 2xx 인데 계약과 다른 응답 = 서버 상태를 알 수 없다 (S-9)
+    throw new ApiRequestError(response.status, "INTERNAL_ERROR", INTERNAL_ERROR_MESSAGE);
+  }
+  return parsed.data;
+}
+
+function withQuery(path: string, params: Record<string, string | number | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) search.set(key, String(value));
+  }
+  const query = search.toString();
+  return query === "" ? path : `${path}?${query}`;
 }
 
 export const api = {
-  getSummary: (): Promise<Summary> => notImplemented(),
-  listFindings: (_params: FindingsParams): Promise<Page<Finding>> => notImplemented(),
-  setFindingStatus: (_id: number, _input: FindingStatusInput): Promise<Finding> => notImplemented(),
-  listBlacklist: (): Promise<BlacklistList> => notImplemented(),
-  createBlacklistEntry: (_input: BlacklistInput): Promise<BlacklistEntry> => notImplemented(),
+  getSummary: (): Promise<Summary> => request(summarySchema, "GET", "/api/summary"),
+  listFindings: ({ status, repo, package: pkg, page, limit }: FindingsParams): Promise<Page<Finding>> =>
+    request(findingsPageSchema, "GET", withQuery("/api/findings", { status, repo, package: pkg, page, limit })),
+  setFindingStatus: (id: number, input: FindingStatusInput): Promise<Finding> =>
+    request(findingSchema, "PATCH", `/api/findings/${id}`, input),
+  listBlacklist: (): Promise<BlacklistList> => request(blacklistListSchema, "GET", "/api/blacklist"),
+  createBlacklistEntry: (input: BlacklistInput): Promise<BlacklistEntry> =>
+    request(blacklistEntrySchema, "POST", "/api/blacklist", input),
   /** PUT 은 전체 교체다. versionRange 키를 항상 보낸다 (A-12). */
-  updateBlacklistEntry: (_id: number, _input: BlacklistInput): Promise<BlacklistEntry> => notImplemented(),
-  deleteBlacklistEntry: (_id: number): Promise<void> => notImplemented(),
-  listScans: (_params: ScansParams): Promise<Page<Scan>> => notImplemented(),
-  triggerScan: (): Promise<Scan> => notImplemented(),
-  getSettings: (): Promise<Settings> => notImplemented(),
-  saveSettings: (_input: SettingsInput): Promise<Settings> => notImplemented(),
-  sendTestEmail: (): Promise<TestEmailResult> => notImplemented(),
+  updateBlacklistEntry: (id: number, input: BlacklistInput): Promise<BlacklistEntry> =>
+    request(blacklistEntrySchema, "PUT", `/api/blacklist/${id}`, {
+      name: input.name,
+      versionRange: input.versionRange,
+      reason: input.reason,
+    }),
+  deleteBlacklistEntry: async (id: number): Promise<void> => {
+    await send("DELETE", `/api/blacklist/${id}`);
+  },
+  listScans: ({ page, limit }: ScansParams): Promise<Page<Scan>> =>
+    request(scansPageSchema, "GET", withQuery("/api/scans", { page, limit })),
+  triggerScan: (): Promise<Scan> => request(scanSchema, "POST", "/api/scans"),
+  getSettings: (): Promise<Settings> => request(settingsSchema, "GET", "/api/settings"),
+  saveSettings: (input: SettingsInput): Promise<Settings> => request(settingsSchema, "PUT", "/api/settings", input),
+  sendTestEmail: (): Promise<TestEmailResult> =>
+    request(testEmailResultSchema, "POST", "/api/settings/test-email"),
 };

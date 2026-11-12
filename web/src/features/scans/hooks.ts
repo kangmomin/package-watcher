@@ -1,17 +1,58 @@
-// 스캔 이력·수동 실행 hooks (Phase 6.1 스텁 — Phase 6.2 에서 구현).
+// 스캔 이력·수동 실행 hooks.
 // 계약: GET /api/scans?page&limit (limit 20). isScanRunning(summary) && page === 1 이면 refetchInterval 5000.
 // POST 202·SCAN_RUNNING·INTERNAL_ERROR·NETWORK_ERROR·parse 실패 → scans·summary 무효화.
 // FE 는 GET /api/scans/:id 를 호출하지 않는다.
 import type { Page, Scan } from "@pw/shared";
-import type { UseMutationResult, UseQueryResult } from "@tanstack/react-query";
-import type { ApiRequestError } from "@/lib/api";
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type UseMutationResult,
+  type UseQueryResult,
+} from "@tanstack/react-query";
+import { useNavigate } from "react-router";
+import { toast } from "sonner";
+import { isScanRunning, SCAN_POLL_INTERVAL_MS, useSummary } from "@/features/summary/useSummary";
+import { api, type ApiRequestError } from "@/lib/api";
+import { errorToastMessage, hasErrorCode, invalidateKeys, isUnknownOutcome } from "@/lib/errors";
+import { queryKeys } from "@/lib/queryKeys";
 
 export const SCANS_PAGE_LIMIT = 20;
 
-export function useScans(_page: number): UseQueryResult<Page<Scan>, ApiRequestError> {
-  throw new Error("not implemented");
+export function useScans(page: number): UseQueryResult<Page<Scan>, ApiRequestError> {
+  const summary = useSummary();
+  const poll = isScanRunning(summary.data) && page === 1;
+  return useQuery<Page<Scan>, ApiRequestError>({
+    queryKey: queryKeys.scans(page),
+    queryFn: () => api.listScans({ page, limit: SCANS_PAGE_LIMIT }),
+    placeholderData: keepPreviousData,
+    refetchInterval: poll ? SCAN_POLL_INTERVAL_MS : false,
+  });
 }
 
 export function useTriggerScan(): UseMutationResult<Scan, ApiRequestError, void> {
-  throw new Error("not implemented");
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const refresh = () => invalidateKeys(queryClient, [queryKeys.scansAll(), queryKeys.summary()]);
+
+  // 무효화 promise 를 돌려줘서 summary 가 running 으로 갱신될 때까지 "요청 중" 으로 둔다
+  // (그 사이에 버튼이 잠깐 활성화되어 409 를 부르지 않게).
+  return useMutation<Scan, ApiRequestError, void>({
+    mutationFn: () => api.triggerScan(),
+    onSuccess: () => {
+      toast.success("스캔을 시작했습니다");
+      return refresh();
+    },
+    onError: (error) => {
+      if (hasErrorCode(error, "ORG_NOT_SET", "TOKEN_MISSING")) {
+        toast.error(error.message, {
+          action: { label: "설정으로 이동", onClick: () => void navigate("/settings") },
+        });
+        return;
+      }
+      toast.error(errorToastMessage(error));
+      if (hasErrorCode(error, "SCAN_RUNNING") || isUnknownOutcome(error)) return refresh();
+    },
+  });
 }
