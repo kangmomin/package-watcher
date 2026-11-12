@@ -30,3 +30,11 @@ export function matchRange(spec: string, range: string | null): boolean {
     return false;
   }
 }
+
+/**
+ * 블랙리스트 항목의 이름(또는 `*` 패턴)이 패키지 이름 전체와 일치하는가.
+ * Red 단계의 스텁이다. Green 에서 구현한다: `*` 가 없으면 `===`, 있으면 2-포인터 와일드카드 매칭(정규식 금지).
+ */
+export function matchName(_pattern: string, _name: string): boolean {
+  throw new Error("not implemented");
+}

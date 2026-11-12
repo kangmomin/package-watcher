@@ -60,3 +60,12 @@ export function fieldErrorAria(
     "aria-describedby": joinIds(...describedBy, error ? errorElementId : undefined),
   };
 }
+
+/**
+ * date 입력이 불완전한지(날짜 칸 일부만 채운 상태 = `validity.badInput`).
+ * 불완전한 입력의 값은 `""` 라서 그대로 보내면 만료가 조용히 해제된다.
+ * v2 Red 스텁: 아직 판정하지 않는다(Green 에서 구현).
+ */
+export function isIncompleteDate(_input: Pick<HTMLInputElement, "validity">): boolean {
+  return false;
+}
