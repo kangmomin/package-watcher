@@ -1,9 +1,12 @@
 // 스캔 이력 표.
 // 열: 시작 시각, 종류(자동/수동), 상태, repo 수, 신규, 실패(failedRepos.length). running 행은 repo 수·신규·실패 = "-".
 // 행 펼침 = 목록 데이터의 error(null 아니면) + failedRepos. 둘 다 비면 펼칠 수 없다.
+// 펼칠 수 있는 행은 행을 클릭해도 펼친다(S-19). `상세 보기` 버튼은 키보드 조작용이다.
+// 접근성: 시작 시각 셀이 행 헤더다. `상세 보기` 버튼은 이름을 바꾸지 않고 시작 시각 셀을 설명으로 연결한다.
 import type { Scan } from "@pw/shared";
 import { ChevronRightIcon } from "lucide-react";
 import { Fragment, useId, useState } from "react";
+import { RowHeaderCell } from "@/components/RowHeaderCell";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -39,18 +42,24 @@ export function ScansTable({ items }: ScansTableProps) {
 
   return (
     <div className="rounded-lg border">
-      <Table>
+      <Table aria-label="스캔 이력">
         <TableHeader>
           <TableRow>
-            <TableHead className="w-10">
+            <TableHead scope="col" className="w-10">
               <span className="sr-only">펼치기</span>
             </TableHead>
-            <TableHead>시작 시각</TableHead>
-            <TableHead>종류</TableHead>
-            <TableHead>상태</TableHead>
-            <TableHead className="text-right">repo 수</TableHead>
-            <TableHead className="text-right">신규</TableHead>
-            <TableHead className="text-right">실패</TableHead>
+            <TableHead scope="col">시작 시각</TableHead>
+            <TableHead scope="col">종류</TableHead>
+            <TableHead scope="col">상태</TableHead>
+            <TableHead scope="col" className="text-right">
+              repo 수
+            </TableHead>
+            <TableHead scope="col" className="text-right">
+              신규
+            </TableHead>
+            <TableHead scope="col" className="text-right">
+              실패
+            </TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -59,19 +68,26 @@ export function ScansTable({ items }: ScansTableProps) {
             const expandable = canExpand(scan);
             const isOpen = expandable && expanded.has(scan.id);
             const detailId = `${id}-scan-${scan.id}`;
+            const startedAtId = `${id}-scan-${scan.id}-started`;
             const count = (value: number) => (running ? "-" : value);
             return (
               <Fragment key={scan.id}>
-                <TableRow data-state={isOpen ? "selected" : undefined}>
+                <TableRow
+                  data-state={isOpen ? "selected" : undefined}
+                  className={cn(expandable && "cursor-pointer")}
+                  onClick={expandable ? () => toggle(scan.id) : undefined}
+                >
                   <TableCell>
                     {expandable && (
+                      // onClick 을 두지 않는다: 버튼 클릭(Enter·Space 포함)은 행으로 전파되어 행의 onClick 이
+                      // 한 번만 토글한다. 버튼은 키보드·스크린 리더 사용자를 위한 조작 지점이다.
                       <Button
                         variant="ghost"
                         size="icon-xs"
                         aria-label="상세 보기"
+                        aria-describedby={startedAtId}
                         aria-expanded={isOpen}
                         aria-controls={isOpen ? detailId : undefined}
-                        onClick={() => toggle(scan.id)}
                       >
                         <ChevronRightIcon
                           aria-hidden="true"
@@ -80,7 +96,9 @@ export function ScansTable({ items }: ScansTableProps) {
                       </Button>
                     )}
                   </TableCell>
-                  <TableCell className="tabular-nums">{formatTableTime(scan.startedAt)}</TableCell>
+                  <RowHeaderCell id={startedAtId} className="tabular-nums">
+                    {formatTableTime(scan.startedAt)}
+                  </RowHeaderCell>
                   <TableCell>{scanTriggerLabel(scan.trigger)}</TableCell>
                   <TableCell>
                     <StatusBadge status={scan.status} />

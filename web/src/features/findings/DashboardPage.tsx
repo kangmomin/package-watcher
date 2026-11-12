@@ -9,13 +9,15 @@ import { FindingsTable } from "@/features/findings/FindingsTable";
 import { useFindings } from "@/features/findings/hooks";
 import { SummaryCards } from "@/features/findings/SummaryCards";
 import type { FindingsFilter } from "@/lib/api";
-import { emptyPageFallback, firstLoadState } from "@/lib/queryState";
+import { emptyPageFallback, firstLoadState, isUnconfirmedPage } from "@/lib/queryState";
+import { cn } from "@/lib/utils";
 
 export function DashboardPage() {
   const [filter, setFilter] = useState<FindingsFilter>({ status: "open" });
   const [page, setPage] = useState(1);
   const findings = useFindings(filter, page);
   const data = findings.data;
+  const isUnconfirmed = isUnconfirmedPage(findings);
 
   const handleFilterChange = useCallback((next: FindingsFilter) => {
     setFilter(next);
@@ -30,7 +32,7 @@ export function DashboardPage() {
     <div className="flex flex-col gap-6">
       <h1 className="text-xl font-semibold">대시보드</h1>
       <SummaryCards />
-      <section aria-label="검출 목록" className="flex flex-col gap-3">
+      <div className="flex flex-col gap-3">
         <FindingsFilters filter={filter} onFilterChange={handleFilterChange} />
         <DataState
           {...firstLoadState(findings)}
@@ -40,12 +42,23 @@ export function DashboardPage() {
         >
           {data && (
             <div className="flex flex-col gap-3">
-              <FindingsTable items={data.items} />
-              <Pager page={data.page} limit={data.limit} total={data.total} onPageChange={setPage} />
+              <div
+                aria-busy={isUnconfirmed || undefined}
+                className={cn("transition-opacity", isUnconfirmed && "opacity-60")}
+              >
+                <FindingsTable items={data.items} />
+              </div>
+              <Pager
+                page={data.page}
+                limit={data.limit}
+                total={data.total}
+                onPageChange={setPage}
+                isDisabled={isUnconfirmed}
+              />
             </div>
           )}
         </DataState>
-      </section>
+      </div>
     </div>
   );
 }

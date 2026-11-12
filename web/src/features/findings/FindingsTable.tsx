@@ -1,8 +1,11 @@
 // 검출 표 + 행 메뉴.
 // 행 메뉴: open = 무시 + GitHub에서 보기 / ignored = 다시 열기 + GitHub에서 보기 / resolved = GitHub에서 보기만.
 // PATCH 중 그 행 메뉴 비활성.
+// 접근성: repo 셀이 행 헤더다. 행 메뉴 버튼은 이름("행 메뉴")을 바꾸지 않고 repo + 패키지 셀을 설명으로 연결한다.
 import type { Finding } from "@pw/shared";
 import { EllipsisVerticalIcon, EyeOffIcon, ExternalLinkIcon, RotateCcwIcon } from "lucide-react";
+import { useId } from "react";
+import { RowHeaderCell } from "@/components/RowHeaderCell";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import {
@@ -22,60 +25,73 @@ export interface FindingsTableProps {
 interface RowMenuProps {
   finding: Finding;
   isDisabled: boolean;
+  /** 행을 식별하는 셀 id 들 (aria-describedby) */
+  describedBy: string;
   onChangeStatus: (status: SetFindingStatusVariables["status"]) => void;
 }
 
 export function FindingsTable({ items }: FindingsTableProps) {
+  const id = useId();
   const setStatus = useSetFindingStatus();
   const pendingIds = usePendingFindingIds();
 
   return (
     <div className="rounded-lg border">
-      <Table>
+      <Table aria-label="검출 목록">
         <TableHeader>
           <TableRow>
-            <TableHead>repo</TableHead>
-            <TableHead>파일 경로</TableHead>
-            <TableHead>패키지@버전</TableHead>
-            <TableHead>종류</TableHead>
-            <TableHead>상태</TableHead>
-            <TableHead className="w-12">
+            <TableHead scope="col">repo</TableHead>
+            <TableHead scope="col">파일 경로</TableHead>
+            <TableHead scope="col">패키지@버전</TableHead>
+            <TableHead scope="col">종류</TableHead>
+            <TableHead scope="col">상태</TableHead>
+            <TableHead scope="col" className="w-12">
               <span className="sr-only">메뉴</span>
             </TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          {items.map((finding) => (
-            <TableRow key={finding.id}>
-              <TableCell className="font-medium">{finding.repo}</TableCell>
-              <TableCell className="max-w-64 truncate" title={finding.filePath}>
-                {finding.filePath}
-              </TableCell>
-              <TableCell className="font-mono text-xs">{`${finding.packageName}@${finding.version}`}</TableCell>
-              <TableCell>{dependencyTypeLabel(finding.dependencyType)}</TableCell>
-              <TableCell>
-                <StatusBadge status={finding.status} />
-              </TableCell>
-              <TableCell>
-                <RowMenu
-                  finding={finding}
-                  isDisabled={pendingIds.has(finding.id)}
-                  onChangeStatus={(status) => setStatus.mutate({ id: finding.id, status })}
-                />
-              </TableCell>
-            </TableRow>
-          ))}
+          {items.map((finding) => {
+            const repoId = `${id}-${finding.id}-repo`;
+            const packageId = `${id}-${finding.id}-package`;
+            return (
+              <TableRow key={finding.id}>
+                <RowHeaderCell id={repoId} className="font-medium">
+                  {finding.repo}
+                </RowHeaderCell>
+                <TableCell className="max-w-64 truncate" title={finding.filePath}>
+                  {finding.filePath}
+                </TableCell>
+                <TableCell id={packageId} className="font-mono text-xs">
+                  {`${finding.packageName}@${finding.version}`}
+                </TableCell>
+                <TableCell>{dependencyTypeLabel(finding.dependencyType)}</TableCell>
+                <TableCell>
+                  <StatusBadge status={finding.status} />
+                </TableCell>
+                <TableCell>
+                  <RowMenu
+                    finding={finding}
+                    isDisabled={pendingIds.has(finding.id)}
+                    describedBy={`${repoId} ${packageId}`}
+                    onChangeStatus={(status) => setStatus.mutate({ id: finding.id, status })}
+                  />
+                </TableCell>
+              </TableRow>
+            );
+          })}
         </TableBody>
       </Table>
     </div>
   );
 }
 
-function RowMenu({ finding, isDisabled, onChangeStatus }: RowMenuProps) {
+function RowMenu({ finding, isDisabled, describedBy, onChangeStatus }: RowMenuProps) {
+  const newTabHintId = useId();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild disabled={isDisabled}>
-        <Button variant="ghost" size="icon-sm" aria-label="행 메뉴">
+        <Button variant="ghost" size="icon-sm" aria-label="행 메뉴" aria-describedby={describedBy}>
           <EllipsisVerticalIcon aria-hidden="true" />
         </Button>
       </DropdownMenuTrigger>
@@ -93,11 +109,15 @@ function RowMenu({ finding, isDisabled, onChangeStatus }: RowMenuProps) {
           </DropdownMenuItem>
         )}
         <DropdownMenuItem asChild>
-          <a href={finding.htmlUrl} target="_blank" rel="noreferrer">
+          {/* 새 탭 안내는 이름(텍스트)을 바꾸지 않도록 설명(aria-describedby)으로 연결한다. */}
+          <a href={finding.htmlUrl} target="_blank" rel="noreferrer" aria-describedby={newTabHintId}>
             <ExternalLinkIcon aria-hidden="true" />
             GitHub에서 보기
           </a>
         </DropdownMenuItem>
+        <span id={newTabHintId} hidden>
+          새 탭에서 열림
+        </span>
       </DropdownMenuContent>
     </DropdownMenu>
   );

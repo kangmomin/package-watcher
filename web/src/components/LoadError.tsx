@@ -10,7 +10,9 @@ const LOAD_ERROR_MESSAGE = "데이터를 불러오지 못했습니다";
 export function LoadError({ onRetry }: LoadErrorProps) {
   return (
     <div className="flex flex-col items-center gap-3 rounded-lg border px-4 py-10 text-center text-sm">
-      <p className="text-muted-foreground">{LOAD_ERROR_MESSAGE}</p>
+      <p role="alert" className="text-muted-foreground">
+        {LOAD_ERROR_MESSAGE}
+      </p>
       <Button variant="outline" size="sm" onClick={onRetry}>
         다시 시도
       </Button>

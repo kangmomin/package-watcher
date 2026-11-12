@@ -376,6 +376,28 @@ describe("블랙리스트 — 추가/수정 Dialog", () => {
       });
     },
   );
+
+  it("[CT-05][CT-10] Dialog 를 열어 둔 오류는 toast 에 더해 Dialog 안에도 role=alert 로 표시하고, 다음 제출 시도에 지운다", async () => {
+    const retry = deferredReply();
+    setupServer()
+      .once("POST", BLACKLIST, reply.error(apiErrorOf("INTERNAL_ERROR", "예상하지 못한 오류")))
+      .on("POST", BLACKLIST, retry.reply);
+    const { user } = await renderBlacklist();
+
+    const dialog = await openAddDialog(user);
+    await fillAndSave(user, dialog, { name: "left-pad", reason: "테스트 사유" });
+
+    await findToast(TEXT.serverError);
+    expect(within(dialog.dialog).getByRole("alert")).toHaveTextContent(TEXT.serverError);
+
+    // 다시 [저장] → 요청 중에는 이전 오류를 보이지 않는다
+    await user.click(dialog.save);
+    await waitFor(() => expect(dialog.save).toBeDisabled());
+    expect(within(dialog.dialog).queryByRole("alert")).not.toBeInTheDocument();
+
+    await act(async () => retry.resolve(reply.json(newEntry, 201)));
+    await waitForDialogClosed();
+  });
 });
 
 describe("블랙리스트 — 삭제", () => {
@@ -460,5 +482,22 @@ describe("블랙리스트 — 삭제", () => {
       expect(server.count("GET", FINDINGS)).toBeGreaterThan(before.findings);
       expect(server.count("GET", SUMMARY)).toBeGreaterThan(before.summary);
     });
+  });
+
+  it("[CT-05][CT-10] 확인 Dialog 를 열어 둔 오류는 Dialog 안에도 role=alert 로 표시하고, 닫았다 다시 열면 지워져 있다", async () => {
+    setupServer().on("DELETE", "/api/blacklist/1", reply.networkError());
+    const { user } = await renderBlacklist();
+
+    const { confirm, button } = await openDeleteConfirm(user, "lodash");
+    await user.click(button);
+
+    await findToast(TEXT.networkError);
+    expect(within(confirm).getByRole("alert")).toHaveTextContent(TEXT.networkError);
+
+    await user.click(within(confirm).getByRole("button", { name: UI.cancel }));
+    await waitForDialogClosed("alertdialog");
+
+    const reopened = await openDeleteConfirm(user, "lodash");
+    expect(within(reopened.confirm).queryByRole("alert")).not.toBeInTheDocument();
   });
 });

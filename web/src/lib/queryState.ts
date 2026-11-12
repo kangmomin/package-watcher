@@ -15,14 +15,32 @@ export function firstLoadState(query: { data: unknown; isError: boolean; isFetch
 
 /**
  * 보던 페이지가 비었으면(항목이 줄어듦) 옮겨 갈 마지막 페이지 = ceil(total/limit). 아니면 undefined.
- * placeholder(이전 page 의 데이터)로는 판정하지 않는다.
+ * 방금 받은 응답으로만 판정한다(S-17). 조회 중이면 data 가 캐시에 남은 예전 응답일 수 있고,
+ * placeholder 는 이전 page 의 데이터이며, 재조회가 실패했으면 data 는 예전 응답이다.
  */
 export function emptyPageFallback(query: {
   data: Page<unknown> | undefined;
   isPlaceholderData: boolean;
+  isFetching: boolean;
+  isError: boolean;
 }): number | undefined {
   const { data } = query;
-  if (!data || query.isPlaceholderData) return undefined;
+  if (!data || query.isPlaceholderData || query.isFetching || query.isError) return undefined;
   if (data.items.length === 0 && data.total > 0 && data.page > 1) return Math.ceil(data.total / data.limit);
   return undefined;
+}
+
+/**
+ * 보이는 목록이 아직 지금의 page·필터 응답으로 확인되지 않았는지 (S-17).
+ * - placeholder: 필터·페이지를 바꾼 직후 이전 응답을 보여 주는 중
+ * - 이 key 로 바꾼 뒤 아직 응답이 오지 않아 캐시의 예전 값을 보여 주는 중
+ * 이 동안 페이저는 이전 응답 기준으로 계산되므로 비활성으로 두고 표를 busy 로 표시한다.
+ * 이미 확인한 page 의 백그라운드 재조회(polling, focus)는 넣지 않는다(5초마다 버튼이 깜박이고 포커스를 잃지 않게).
+ */
+export function isUnconfirmedPage(query: {
+  isPlaceholderData: boolean;
+  isFetching: boolean;
+  isFetchedAfterMount: boolean;
+}): boolean {
+  return query.isPlaceholderData || (query.isFetching && !query.isFetchedAfterMount);
 }

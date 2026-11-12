@@ -265,6 +265,81 @@ describe("대시보드 — 검출 표·필터·페이저", () => {
     expect(screen.queryByText(TEXT.empty)).not.toBeInTheDocument();
   });
 
+  it("[CT-02] 캐시에 남은 빈 페이지로 [다음] 을 누르면 그 페이지를 다시 조회하고, 응답에 행이 있으면 그 페이지에 머문다 (S-17)", async () => {
+    // open 51건. total 이 바뀌면 각 페이지의 응답도 바뀐다.
+    let total = 51;
+    const server = setupFetchMock()
+      .on("GET", SUMMARY, reply.json(summaryDefault))
+      .on("GET", FINDINGS, (request) => {
+        const page = Number(request.query.page ?? "1");
+        const count = Math.max(0, Math.min(50, total - (page - 1) * 50));
+        return reply.json(pageOf(makeFindings(count, (page - 1) * 50 + 1), { total, page, limit: 50 }))(request);
+      })
+      .on("PATCH", "/api/findings/51", (request) => {
+        total = 50;
+        return reply.json({ ...findingOpenDirect, id: 51, status: "ignored" })(request);
+      });
+    const page2Requests = () => findingsQueries(server).filter((query) => query.page === "2").length;
+    const { user, queryClient } = renderWithProviders(<DashboardPage />);
+
+    await screen.findByText("1–50 / 51");
+    await user.click(screen.getByRole("button", { name: TEXT.next }));
+    await screen.findByText("51–51 / 51");
+
+    // 2페이지의 1건을 무시 → 2페이지가 비어 1페이지로 이동 (2페이지 캐시 = items [] / total 50)
+    const menu = await openRowMenu(user, "repo-51");
+    await user.click(within(menu).getByRole("menuitem", { name: TEXT.ignore }));
+    await screen.findByText("1–50 / 50");
+
+    // 그 건을 다시 열어 51건이 됨
+    total = 51;
+    await act(() => queryClient.invalidateQueries({ queryKey: ["findings"] }));
+    await screen.findByText("1–50 / 51");
+    const before = page2Requests();
+
+    await user.click(screen.getByRole("button", { name: TEXT.next }));
+
+    // 캐시의 빈 2페이지로 판정해서 1페이지로 되돌아가지 않고, 2페이지를 다시 조회한다
+    await findRowWith("repo-51");
+    expect(page2Requests()).toBeGreaterThan(before);
+    await settle();
+    expect(screen.getByText("51–51 / 51")).toBeInTheDocument();
+    expect(findingsQueries(server).at(-1)).toMatchObject({ page: "2" });
+  });
+
+  it("[CT-02] 필터를 바꾼 직후 이전 데이터를 보여 주는 동안 [이전]/[다음] 은 비활성이고 표는 aria-busy 다 (S-17)", async () => {
+    const pending = deferredReply();
+    setupFetchMock()
+      .on("GET", SUMMARY, reply.json(summaryDefault))
+      .on("GET", FINDINGS, (request) =>
+        request.query.status === "ignored" ? pending.reply(request) : threePages(request),
+      );
+    const { user } = renderWithProviders(<DashboardPage />);
+    const busyTableArea = () => screen.getByRole("table", { name: "검출 목록" }).closest('[aria-busy="true"]');
+
+    await screen.findByText("1–50 / 120");
+    await user.click(screen.getByRole("button", { name: TEXT.next }));
+    await screen.findByText("51–100 / 120");
+    expect(busyTableArea()).toBeNull();
+
+    await chooseOption(user, screen.getByRole("combobox", { name: UI.statusFilter }), "ignored");
+
+    // 응답 전: 2페이지(이전 응답)를 보여 주는 중 → 이전 응답 기준의 [이전]/[다음] 을 막는다
+    await waitFor(() => expect(screen.getByRole("button", { name: TEXT.next })).toBeDisabled());
+    expect(screen.getByRole("button", { name: TEXT.prev })).toBeDisabled();
+    expect(screen.getByText("51–100 / 120")).toBeInTheDocument();
+    expect(busyTableArea()).not.toBeNull();
+
+    // 응답 후: 새 응답(1페이지, total 70) 기준으로 다시 계산한다
+    await act(async () =>
+      pending.resolve(reply.json(pageOf(makeFindings(50, 1), { total: 70, page: 1, limit: 50 }))),
+    );
+    await screen.findByText("1–50 / 70");
+    expect(screen.getByRole("button", { name: TEXT.prev })).toBeDisabled();
+    expect(screen.getByRole("button", { name: TEXT.next })).toBeEnabled();
+    expect(busyTableArea()).toBeNull();
+  });
+
   it("[CT-02] 표 첫 로드 중에는 Skeleton 을 표시한다 (카드와 독립)", async () => {
     const pending = deferredReply();
     setupFetchMock().on("GET", SUMMARY, reply.json(summaryDefault)).on("GET", FINDINGS, pending.reply);
@@ -372,6 +447,23 @@ describe("대시보드 — 행 메뉴와 상태 변경", () => {
     expect(await menuItems("api")).toEqual([TEXT.ignore, TEXT.viewOnGitHub]);
     expect(await menuItems("legacy")).toEqual([TEXT.reopen, TEXT.viewOnGitHub]);
     expect(await menuItems("tools")).toEqual([TEXT.viewOnGitHub]);
+  });
+
+  it("[CT-03] 표 이름 '검출 목록', repo 셀은 행 헤더이고, 행 메뉴 버튼은 이름을 유지한 채 repo·패키지를 설명으로 읽는다", async () => {
+    setupServer();
+    const { user } = renderWithProviders(<DashboardPage />);
+
+    const table = await screen.findByRole("table", { name: "검출 목록" });
+    expect(within(table).getByRole("rowheader", { name: "api" })).toBeInTheDocument();
+    expect(within(table).getAllByRole("columnheader").length).toBeGreaterThan(0);
+    expect(rowMenuButton("api")).toHaveAccessibleName(UI.rowMenu);
+    expect(rowMenuButton("api")).toHaveAccessibleDescription("api lodash@4.17.20");
+
+    // "GitHub에서 보기" 는 이름을 바꾸지 않고 새 탭에서 열린다는 설명을 가진다
+    const menu = await openRowMenu(user, "api");
+    const viewOnGitHub = within(menu).getByRole("menuitem", { name: TEXT.viewOnGitHub });
+    expect(viewOnGitHub).toHaveAttribute("target", "_blank");
+    expect(viewOnGitHub).toHaveAccessibleDescription("새 탭에서 열림");
   });
 
   it("[CT-03][AC-08] [무시] → PATCH /api/findings/:id {status:'ignored'}, 성공 toast, findings·summary 재조회", async () => {

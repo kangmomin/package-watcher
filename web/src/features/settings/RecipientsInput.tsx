@@ -1,6 +1,7 @@
 // 이메일 수신자 chip 입력.
 // chip 마다 제거 버튼(aria-label), 새 주소 입력 + [추가].
 // 형식 검증은 [추가] 를 누를 때 한다(S-12). 잘못된 값은 chip 으로 넣지 않고 입력 아래에 오류를 표시한다.
+// 입력란에 남은 주소(아직 [추가] 하지 않음)는 onDraftChange 로 알린다. 폼은 이것으로 저장을 막는다(S-20).
 import { recipientsSchema } from "@pw/shared";
 import { PlusIcon, XIcon } from "lucide-react";
 import { useId, useRef, useState, type KeyboardEvent } from "react";
@@ -14,6 +15,8 @@ export interface RecipientsInputProps {
   id?: string;
   value: string[];
   onChange: (value: string[]) => void;
+  /** 입력란의 값(아직 [추가] 하지 않은 주소)이 바뀔 때마다 호출한다 */
+  onDraftChange?: (draft: string) => void;
   /** 필드 오류 연결용 (aria-describedby) */
   "aria-describedby"?: string;
   "aria-invalid"?: boolean;
@@ -29,6 +32,7 @@ export function RecipientsInput({
   id,
   value,
   onChange,
+  onDraftChange,
   "aria-describedby": describedBy,
   "aria-invalid": invalid,
 }: RecipientsInputProps) {
@@ -40,6 +44,12 @@ export function RecipientsInput({
   const [draft, setDraft] = useState("");
   const [draftError, setDraftError] = useState<string | undefined>();
 
+  const changeDraft = (next: string) => {
+    setDraft(next);
+    setDraftError(undefined);
+    onDraftChange?.(next);
+  };
+
   const add = () => {
     const address = draft.trim();
     if (address === "") return;
@@ -49,8 +59,7 @@ export function RecipientsInput({
       return;
     }
     if (!value.includes(address)) onChange([...value, address]);
-    setDraft("");
-    setDraftError(undefined);
+    changeDraft("");
   };
 
   const remove = (address: string) => {
@@ -104,10 +113,7 @@ export function RecipientsInput({
           value={draft}
           aria-invalid={draftError || invalid ? true : undefined}
           aria-describedby={joinIds(draftError ? draftErrorId : undefined, describedBy)}
-          onChange={(event) => {
-            setDraft(event.target.value);
-            setDraftError(undefined);
-          }}
+          onChange={(event) => changeDraft(event.target.value)}
           onKeyDown={handleKeyDown}
         />
         <Button type="button" variant="outline" onClick={add}>

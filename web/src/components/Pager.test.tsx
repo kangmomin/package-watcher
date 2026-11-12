@@ -41,6 +41,18 @@ describe("Pager", () => {
     expect(screen.getByRole("button", { name: NEXT })).toBeDisabled();
   });
 
+  it("[CT-02] isDisabled 면 범위 표시는 그대로 두고 [이전]/[다음] 을 모두 비활성으로 둔다 (S-17)", () => {
+    const { rerender } = render(<Pager page={2} limit={50} total={120} onPageChange={vi.fn()} isDisabled />);
+
+    expect(screen.getByText("51–100 / 120")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: PREV })).toBeDisabled();
+    expect(screen.getByRole("button", { name: NEXT })).toBeDisabled();
+
+    rerender(<Pager page={2} limit={50} total={120} onPageChange={vi.fn()} isDisabled={false} />);
+    expect(screen.getByRole("button", { name: PREV })).toBeEnabled();
+    expect(screen.getByRole("button", { name: NEXT })).toBeEnabled();
+  });
+
   it("[CT-02][CT-07] total 이 0 이면 페이저를 숨기고, 0 보다 크면 표시한다", () => {
     const { rerender } = render(<Pager page={1} limit={20} total={0} onPageChange={vi.fn()} />);
 

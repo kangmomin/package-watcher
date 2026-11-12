@@ -1,5 +1,6 @@
 // 삭제 확인 Dialog.
 // 요청 중 [삭제] 비활성 + 닫기 불가. 성공 또는 NOT_FOUND → 닫기, 그 외 → 열어 둠.
+// 열어 두는 오류는 toast 에 더해 Dialog 안에도 role="alert" 로 표시한다(다음 [삭제]·닫기에 지운다).
 import type { BlacklistEntry } from "@pw/shared";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -28,22 +29,32 @@ export function DeleteConfirm({ entry, onOpenChange }: DeleteConfirmProps) {
   // 닫히는 애니메이션 동안에도 문구가 비지 않게 마지막 항목을 기억한다.
   const [shown, setShown] = useState(entry);
   if (entry !== null && entry !== shown) setShown(entry);
+  const [deleteError, setDeleteError] = useState<string>();
+
+  const close = () => {
+    setDeleteError(undefined);
+    onOpenChange(false);
+  };
 
   const handleOpenChange = (next: boolean) => {
     if (!next && remove.isPending) return;
-    onOpenChange(next);
+    if (next) onOpenChange(true);
+    else close();
   };
 
   const handleDelete = () => {
     if (!entry) return;
+    setDeleteError(undefined);
     remove.mutate(entry.id, {
       onSuccess: () => {
         toast.success("항목을 삭제했습니다");
-        onOpenChange(false);
+        close();
       },
       onError: (error) => {
-        toast.error(errorToastMessage(error));
-        if (hasErrorCode(error, "NOT_FOUND")) onOpenChange(false);
+        const message = errorToastMessage(error);
+        toast.error(message);
+        if (hasErrorCode(error, "NOT_FOUND")) close();
+        else setDeleteError(message);
       },
     });
   };
@@ -62,6 +73,11 @@ export function DeleteConfirm({ entry, onOpenChange }: DeleteConfirmProps) {
             )}
           </AlertDialogDescription>
         </AlertDialogHeader>
+        {deleteError && (
+          <p role="alert" className="text-sm text-destructive">
+            {deleteError}
+          </p>
+        )}
         <AlertDialogFooter>
           <AlertDialogCancel disabled={remove.isPending}>취소</AlertDialogCancel>
           {/* AlertDialogAction 은 누르면 바로 닫힌다. 결과를 보고 닫아야 하므로 일반 버튼을 쓴다. */}

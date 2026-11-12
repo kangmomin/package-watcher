@@ -3,13 +3,14 @@
 // 요청 중 [저장] 비활성 + 닫기 불가. 성공 → 닫기 + reset.
 // VALIDATION_ERROR·DUPLICATE_ENTRY·INTERNAL_ERROR·NETWORK_ERROR → 열어 두고 입력 보존.
 // DUPLICATE_ENTRY → name 필드 아래에 message. NOT_FOUND → 닫기 + toast + blacklist 재조회.
+// toast 로 알리고 Dialog 를 열어 두는 오류는 Dialog 안에도 role="alert" 로 표시한다(다음 제출 시도·닫기에 지운다).
 import {
   blacklistCreateSchema,
   blacklistUpdateSchema,
   type BlacklistEntry,
   type BlacklistInput,
 } from "@pw/shared";
-import { useId } from "react";
+import { useId, useState, type FormEvent } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -70,8 +71,10 @@ export function BlacklistDialog({ open, entry, onOpenChange }: BlacklistDialogPr
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent showCloseButton={false}>
-        {/* Content 는 닫히면 unmount 된다. 열 때마다 그 항목의 값으로 폼을 새로 만든다. */}
+        {/* Content 는 닫히면 unmount 된다. 열 때마다 그 항목의 값으로 폼을 새로 만든다.
+            key: 닫히는 애니메이션 중에 다른 항목(또는 추가)으로 다시 열어도 이전 폼을 재사용하지 않는다. */}
         <BlacklistForm
+          key={entry?.id ?? "new"}
           entry={entry}
           isPending={isPending}
           onClose={() => onOpenChange(false)}
@@ -97,6 +100,8 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
     },
   });
   const { errors } = form.formState;
+  // Dialog 를 열어 둔 채 toast 로 알린 오류. toast 는 곧 사라지므로 Dialog 안에도 남긴다.
+  const [submitError, setSubmitError] = useState<string>();
 
   const handleError = (error: ApiRequestError) => {
     if (hasErrorCode(error, "DUPLICATE_ENTRY")) {
@@ -109,7 +114,9 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
       return;
     }
     if (applyServerFieldErrors(form.setError, error, FORM_FIELDS)) return;
-    toast.error(errorToastMessage(error));
+    const message = errorToastMessage(error);
+    toast.error(message);
+    setSubmitError(message);
   };
 
   const submit = form.handleSubmit((input) => {
@@ -130,12 +137,18 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
   };
   const errorAria = (field: keyof FormValues) => fieldErrorAria(errors[field], errorId(fieldIds[field]));
 
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    setSubmitError(undefined);
+    void submit(event);
+  };
+
   return (
-    <form onSubmit={submit} noValidate className="grid gap-4">
+    <form onSubmit={handleSubmit} noValidate className="grid gap-4">
       <DialogHeader>
         <DialogTitle>{entry ? "블랙리스트 항목 수정" : "블랙리스트 항목 추가"}</DialogTitle>
         <DialogDescription>이름과 버전 범위가 같은 항목은 하나만 둘 수 있습니다.</DialogDescription>
       </DialogHeader>
+      <p className="text-sm text-muted-foreground">* 표시는 필수 항목입니다</p>
       <FieldGroup className="gap-4">
         <Field data-invalid={errors.name ? true : undefined}>
           <FieldLabel htmlFor={fieldIds.name}>
@@ -175,6 +188,11 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
           <FieldError id={errorId(fieldIds.reason)} errors={[errors.reason]} />
         </Field>
       </FieldGroup>
+      {submitError && (
+        <p role="alert" className="text-sm text-destructive">
+          {submitError}
+        </p>
+      )}
       <DialogFooter>
         <Button type="button" variant="outline" disabled={isPending} onClick={onClose}>
           취소

@@ -157,6 +157,49 @@ describe("스캔 이력 — 표", () => {
     expect(server.count("GET", SCAN_DETAIL)).toBe(0);
   });
 
+  it("[CT-07] 펼칠 수 있는 행은 행을 클릭해도 펼치고 접는다. [상세 보기] 는 클릭·키보드 모두 한 번만 토글한다 (S-19)", async () => {
+    setupServer();
+    const { user } = renderScans();
+
+    const partialRow = await findRowWith("11-11 09:00");
+    const toggle = within(partialRow).getByRole("button", { name: UI.expandRow });
+    const failedRepo = containing("big-monorepo");
+
+    // 행(버튼이 아닌 셀)을 클릭하면 펼친다
+    await user.click(within(partialRow).getByText("partial"));
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(await screen.findByText(failedRepo)).toBeInTheDocument();
+
+    // 다시 클릭하면 접는다
+    await user.click(within(partialRow).getByText("11-11 09:00"));
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText(failedRepo)).not.toBeInTheDocument();
+
+    // 버튼 클릭이 행 클릭과 겹쳐 두 번 토글되지 않는다
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+
+    // 키보드(Enter)도 한 번만 토글한다
+    toggle.focus();
+    await user.keyboard("{Enter}");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText(failedRepo)).not.toBeInTheDocument();
+  });
+
+  it("[CT-07] 펼칠 수 없는 행은 클릭해도 변화가 없다 (S-19)", async () => {
+    setupServer();
+    const { user } = renderScans();
+
+    const successRow = await findRowWith("11-12 09:00");
+    const rowCount = screen.getAllByRole("row").length;
+
+    await user.click(within(successRow).getByText("success"));
+    await user.click(within(successRow).getByText("11-12 09:00"));
+
+    expect(screen.getAllByRole("row")).toHaveLength(rowCount);
+    expect(screen.queryAllByRole("button", { name: UI.expandRow, expanded: true })).toHaveLength(0);
+  });
+
   it("[CT-07] error 와 failedRepos 가 모두 비면 행을 펼칠 수 없다", async () => {
     setupServer();
     renderScans();
@@ -407,5 +450,35 @@ describe("스캔 이력 — 실행 중 polling", () => {
     await advance(5_000);
     await waitFor(() => expect(page2Requests(server)).toBeGreaterThan(before));
     await waitFor(() => expect(scanNowButton()).toBeEnabled());
+  });
+
+  it("[CT-06] polling 간격 안에 스캔이 끝나고 다음 스캔이 시작되면(running 인 채로 id 가 바뀜) 종료로 보고 scans·findings·summary 를 무효화한다 (S-18)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let lastScan: Scan = scanRunning;
+    const server = setupFetchMock()
+      .on("GET", SUMMARY, (request) => reply.json({ ...summaryDefault, lastScan })(request))
+      .on("GET", SCANS, twoPages);
+    const { user, queryClient } = renderScans();
+
+    // page 2 는 polling 대상이 아니므로 재조회는 종료 판정의 무효화로만 일어난다
+    await goToPage2(user);
+    await settle();
+    const before = page2Requests(server);
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+
+    // 같은 스캔이 계속 running 이면 종료가 아니다
+    await advance(5_000);
+    await settle();
+    expect(page2Requests(server)).toBe(before);
+    expect(invalidate).not.toHaveBeenCalled();
+
+    // 스캔 A(id 4) 가 끝나고 스캔 B(id 5) 가 시작됨
+    lastScan = { ...scanRunning, id: scanRunning.id + 1, startedAt: "2026-11-13T01:00:00.000Z" };
+    await advance(5_000);
+    await waitFor(() => expect(page2Requests(server)).toBeGreaterThan(before));
+    const invalidatedKeys = invalidate.mock.calls.map(([filters]) => filters?.queryKey);
+    expect(invalidatedKeys).toEqual(expect.arrayContaining([["scans"], ["findings"], ["summary"]]));
+    // 스캔 B 가 실행 중이므로 [지금 스캔] 은 계속 비활성이다
+    expect(scanNowButton()).toBeDisabled();
   });
 });

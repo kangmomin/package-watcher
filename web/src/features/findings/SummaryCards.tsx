@@ -58,7 +58,9 @@ export function SummaryCards() {
       </div>
       {isLoadError && (
         <div className="flex items-center gap-3 text-sm">
-          <p className="text-muted-foreground">요약을 불러오지 못했습니다</p>
+          <p role="alert" className="text-muted-foreground">
+            요약을 불러오지 못했습니다
+          </p>
           <Button variant="outline" size="sm" onClick={() => void summary.refetch()}>
             다시 시도
           </Button>

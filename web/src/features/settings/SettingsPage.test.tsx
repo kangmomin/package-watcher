@@ -12,8 +12,9 @@ import type { UserEvent } from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { DashboardPage } from "@/features/findings/DashboardPage";
 import { SettingsPage } from "@/features/settings/SettingsPage";
+import { queryKeys } from "@/lib/queryKeys";
 import { deferredReply, reply, setupFetchMock, type FetchMock, type ReplyFactory } from "@/test/fetchMock";
-import { renderWithProviders } from "@/test/render";
+import { createTestQueryClient, renderWithProviders } from "@/test/render";
 import {
   containing,
   expectFieldError,
@@ -54,6 +55,8 @@ const TEXT = {
   retry: "다시 시도",
   saved: "설정을 저장했습니다",
   testSent: "테스트 메일을 보냈습니다",
+  /** S-20: [추가] 하지 않은 주소가 남은 채 저장할 때의 필드 오류 */
+  pendingRecipient: "[추가]를 눌러 수신자에 넣거나 입력란을 비우십시오",
 } as const;
 
 const SETTINGS = "/api/settings";
@@ -384,6 +387,96 @@ describe("설정 — 저장", () => {
     await waitFor(() => expect(server.count("GET", SETTINGS)).toBeGreaterThan(before));
     await settle();
 
+    expect(orgInput()).toHaveValue("draft-org");
+  });
+
+  it("[CT-08] [추가] 하지 않은 주소가 입력란에 남아 있으면 저장하지 않고 그 필드에 오류를 표시한다 (S-20)", async () => {
+    const server = setupServer();
+    const { user } = renderSettings();
+    await waitForForm();
+    const newRecipient = screen.getByRole("textbox", { name: UI.newRecipient });
+
+    await user.type(newRecipient, "c@example.com");
+    await user.click(saveButton());
+
+    await expectFieldError(newRecipient, TEXT.pendingRecipient);
+    expect(newRecipient).toHaveAttribute("aria-invalid", "true");
+    expect(server.count("PUT", SETTINGS)).toBe(0);
+
+    // [추가] 로 넣으면 오류가 사라지고 그 주소를 포함해 저장한다
+    await user.click(screen.getByRole("button", { name: UI.addRecipient }));
+    expect(newRecipient).not.toHaveAccessibleDescription(containing(TEXT.pendingRecipient));
+    await user.click(saveButton());
+
+    await findToast(TEXT.saved);
+    expect(settingsInputSchema.parse(server.last("PUT", SETTINGS)?.body).recipients).toEqual([
+      ...settingsDefault.recipients,
+      "c@example.com",
+    ]);
+  });
+
+  it("[CT-08] 남은 주소를 지우면 오류가 사라지고, 공백만 남은 입력란은 저장을 막지 않는다 (S-20)", async () => {
+    const server = setupServer();
+    const { user } = renderSettings();
+    await waitForForm();
+    const newRecipient = screen.getByRole("textbox", { name: UI.newRecipient });
+
+    await user.type(newRecipient, "c@example.com");
+    await user.click(saveButton());
+    await expectFieldError(newRecipient, TEXT.pendingRecipient);
+
+    await user.clear(newRecipient);
+    await user.type(newRecipient, "   ");
+    expect(newRecipient).not.toHaveAccessibleDescription(containing(TEXT.pendingRecipient));
+    await user.click(saveButton());
+
+    await findToast(TEXT.saved);
+    expect(settingsInputSchema.parse(server.last("PUT", SETTINGS)?.body).recipients).toEqual(
+      settingsDefault.recipients,
+    );
+  });
+});
+
+describe("설정 — 다시 들어왔을 때(캐시가 있을 때)의 첫 로드", () => {
+  /** 이전 방문에서 받은 값이 캐시에 남아 있는 QueryClient */
+  function clientWithCachedSettings(settings: Settings) {
+    const queryClient = createTestQueryClient();
+    queryClient.setQueryData(queryKeys.settings(), settings);
+    return queryClient;
+  }
+
+  it("[CT-08] 캐시 값으로 폼을 만들고, 처음 도착한 새 응답으로 (dirty 가 아니면) 폼을 reset 한다", async () => {
+    const pending = deferredReply();
+    setupFetchMock().on("GET", SETTINGS, pending.reply);
+    renderWithProviders(<SettingsPage />, {
+      route: "/settings",
+      queryClient: clientWithCachedSettings({ ...settingsDefault, org: "old-org" }),
+    });
+
+    await waitForForm();
+    expect(orgInput()).toHaveValue("old-org");
+
+    // 다른 탭에서 org 를 바꾼 뒤의 새 응답
+    await act(async () => pending.resolve(reply.json({ ...settingsDefault, org: "new-org", scanIntervalHours: 6 })));
+    await waitFor(() => expect(orgInput()).toHaveValue("new-org"));
+    expect(intervalInput()).toHaveDisplayValue("6");
+    // reset 이므로 dirty 가 아니다
+    expect(screen.queryByText(TEXT.saveFirst)).not.toBeInTheDocument();
+  });
+
+  it("[CT-08] 새 응답이 오기 전에 폼을 고쳤으면(dirty) 새 응답이 폼을 덮어쓰지 않는다", async () => {
+    const pending = deferredReply();
+    setupFetchMock().on("GET", SETTINGS, pending.reply);
+    const { user } = renderWithProviders(<SettingsPage />, {
+      route: "/settings",
+      queryClient: clientWithCachedSettings({ ...settingsDefault, org: "old-org" }),
+    });
+
+    await waitForForm();
+    await replaceValue(user, orgInput(), "draft-org");
+
+    await act(async () => pending.resolve(reply.json({ ...settingsDefault, org: "new-org" })));
+    await settle();
     expect(orgInput()).toHaveValue("draft-org");
   });
 });

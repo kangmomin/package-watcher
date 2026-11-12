@@ -17,7 +17,8 @@ export function SettingsPage() {
       <h1 className="text-xl font-semibold">설정</h1>
       {data !== undefined ? (
         // 폼 reset 은 첫 로드와 저장 성공 때만 한다: 재조회로 data 가 바뀌어도 SettingsForm 을 다시 만들지 않는다.
-        <SettingsForm settings={data} />
+        // 캐시 값으로 폼을 만들었으면 isFetchedAfterMount 로 첫 새 응답을 알려 준다(폼이 1번 반영한다).
+        <SettingsForm settings={data} isFetchedAfterMount={settings.isFetchedAfterMount} />
       ) : isLoadError ? (
         <LoadError onRetry={() => void settings.refetch()} />
       ) : (
