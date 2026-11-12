@@ -6,7 +6,17 @@ export const queryKeys = {
   summary: () => ["summary"] as const,
   findingsAll: () => ["findings"] as const,
   findings: (filter: FindingsFilter, page: number) =>
-    ["findings", { status: filter.status, repo: filter.repo, package: filter.package }, page] as const,
+    [
+      "findings",
+      {
+        status: filter.status,
+        repo: filter.repo,
+        package: filter.package,
+        ecosystem: filter.ecosystem,
+        severity: filter.severity,
+      },
+      page,
+    ] as const,
   blacklist: () => ["blacklist"] as const,
   scansAll: () => ["scans"] as const,
   scans: (page: number) => ["scans", page] as const,

@@ -64,8 +64,8 @@ export function fieldErrorAria(
 /**
  * date 입력이 불완전한지(날짜 칸 일부만 채운 상태 = `validity.badInput`).
  * 불완전한 입력의 값은 `""` 라서 그대로 보내면 만료가 조용히 해제된다.
- * v2 Red 스텁: 아직 판정하지 않는다(Green 에서 구현).
+ * jsdom 은 badInput 을 구현하지 않으므로 테스트는 validity 를 stub 한다.
  */
-export function isIncompleteDate(_input: Pick<HTMLInputElement, "validity">): boolean {
-  return false;
+export function isIncompleteDate(input: Pick<HTMLInputElement, "validity">): boolean {
+  return input.validity.badInput;
 }

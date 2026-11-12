@@ -1,7 +1,14 @@
 // 표시 형식.
 // 계약: 모든 시각은 Asia/Seoul 로 표시한다(실행 환경의 TZ 와 무관). 표 = MM-dd HH:mm, 카드 = yyyy-MM-dd HH:mm.
 // 라벨: direct/transitive = 직접/전이, scheduled/manual = 자동/수동.
-import { DIGEST_TIMEZONE, type DependencyType, type ScanTrigger } from "@pw/shared";
+import {
+  DIGEST_TIMEZONE,
+  entryStatusOf,
+  type BlacklistEntry,
+  type DependencyType,
+  type EntryStatus,
+  type ScanTrigger,
+} from "@pw/shared";
 
 // hourCycle h23: 자정을 "24" 가 아니라 "00" 으로 쓴다.
 const kstFormatter = new Intl.DateTimeFormat("en-US", {
@@ -48,6 +55,13 @@ const SCAN_TRIGGER_LABELS: Record<ScanTrigger, string> = { scheduled: "자동", 
 
 export function dependencyTypeLabel(type: DependencyType): string {
   return DEPENDENCY_TYPE_LABELS[type];
+}
+
+const ENTRY_STATUS_LABELS: Record<EntryStatus, string> = { active: "켬", disabled: "끔", expired: "만료" };
+
+/** 항목 상태 라벨. 만료가 enabled 보다 우선한다(shared entryStatusOf). */
+export function entryStatusLabel(entry: Pick<BlacklistEntry, "enabled" | "isExpired">): string {
+  return ENTRY_STATUS_LABELS[entryStatusOf(entry)];
 }
 
 export function scanTriggerLabel(trigger: ScanTrigger): string {

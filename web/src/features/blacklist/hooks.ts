@@ -1,5 +1,5 @@
 // 블랙리스트 hooks.
-// 계약: POST/PUT 성공 → blacklist·findings 무효화. DELETE 성공 → blacklist·findings·summary 무효화.
+// 계약: POST 성공 → blacklist·findings, PUT 성공 → blacklist·findings·summary 무효화. DELETE 성공 → blacklist·findings·summary 무효화.
 // INTERNAL_ERROR·NETWORK_ERROR·parse 실패도 성공과 같은 키를 무효화한다. NOT_FOUND → blacklist 재조회.
 // toast·Dialog 처리는 화면이 한다(오류 코드별로 필드 오류와 toast 를 나눠야 한다).
 import type { BlacklistEntry, BlacklistInput, BlacklistList } from "@pw/shared";
@@ -23,7 +23,9 @@ export function useBlacklist(): UseQueryResult<BlacklistList, ApiRequestError> {
   });
 }
 
-const UPSERT_KEYS: readonly QueryKey[] = [queryKeys.blacklist(), queryKeys.findingsAll()];
+const CREATE_KEYS: readonly QueryKey[] = [queryKeys.blacklist(), queryKeys.findingsAll()];
+// 항목을 끄거나 만료일을 바꾸면 검출이 resolved 가 되므로 요약도 다시 읽는다.
+const UPDATE_KEYS: readonly QueryKey[] = [queryKeys.blacklist(), queryKeys.findingsAll(), queryKeys.summary()];
 const DELETE_KEYS: readonly QueryKey[] = [queryKeys.blacklist(), queryKeys.findingsAll(), queryKeys.summary()];
 
 function invalidateAfterError(queryClient: QueryClient, error: ApiRequestError, successKeys: readonly QueryKey[]) {
@@ -38,8 +40,8 @@ export function useCreateBlacklistEntry(): UseMutationResult<BlacklistEntry, Api
   const queryClient = useQueryClient();
   return useMutation<BlacklistEntry, ApiRequestError, BlacklistInput>({
     mutationFn: api.createBlacklistEntry,
-    onSuccess: () => void invalidateKeys(queryClient, UPSERT_KEYS),
-    onError: (error) => invalidateAfterError(queryClient, error, UPSERT_KEYS),
+    onSuccess: () => void invalidateKeys(queryClient, CREATE_KEYS),
+    onError: (error) => invalidateAfterError(queryClient, error, CREATE_KEYS),
   });
 }
 
@@ -56,8 +58,8 @@ export function useUpdateBlacklistEntry(): UseMutationResult<
   const queryClient = useQueryClient();
   return useMutation<BlacklistEntry, ApiRequestError, UpdateBlacklistEntryVariables>({
     mutationFn: ({ id, input }) => api.updateBlacklistEntry(id, input),
-    onSuccess: () => void invalidateKeys(queryClient, UPSERT_KEYS),
-    onError: (error) => invalidateAfterError(queryClient, error, UPSERT_KEYS),
+    onSuccess: () => void invalidateKeys(queryClient, UPDATE_KEYS),
+    onError: (error) => invalidateAfterError(queryClient, error, UPDATE_KEYS),
   });
 }
 
