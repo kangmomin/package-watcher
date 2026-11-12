@@ -1,4 +1,4 @@
-import { asString, asTable, baseName, fail, isPlainObject, normalizeText, readToml } from "./common.ts";
+import { asString, asTable, baseName, fail, isPlainObject, readText, readToml } from "./common.ts";
 import type { DeclaredDependency, EcosystemSupport, LockedPackage } from "./types.ts";
 
 const REQUIREMENT = /^([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)\s*(?:\[[^\]]*\])?\s*(.*)$/;
@@ -25,10 +25,10 @@ const direct = (name: string, spec: string): DeclaredDependency => ({ name, spec
  * requirements*.txt. -r·-e·옵션 줄과 URL·경로 줄은 읽지 않는다.
  * 형식 표지가 없는 평문이라 빈 파일도 의존성이 없는 정상 파일로 본다.
  */
-export function parseRequirements(content: string): DeclaredDependency[] {
+export function parseRequirements(content: string, file = "requirements.txt"): DeclaredDependency[] {
   const deps: DeclaredDependency[] = [];
   // 줄 끝의 \ 는 다음 줄과 한 줄이다 (--hash 를 여러 줄로 적는다).
-  const joined = normalizeText(content).replace(/\\\n/g, " ");
+  const joined = readText(content, file).replace(/\\\n/g, " ");
   for (const raw of joined.split("\n")) {
     const line = raw.replace(/(^|\s)#.*$/, "").trim();
     if (line === "") continue;
@@ -66,7 +66,8 @@ function fromPep508List(list: unknown, deps: DeclaredDependency[]): void {
 
 /** pyproject.toml: PEP 621, PEP 735(dependency-groups), poetry. */
 export function parsePyproject(content: string, file = "pyproject.toml"): DeclaredDependency[] {
-  const data = readToml(content, file);
+  // 빈 pyproject.toml 은 정상적인 사용이다(도구 설정만 쓰거나 아직 비어 있는 프로젝트).
+  const data = readToml(content, file, { allowEmpty: true });
   const deps: DeclaredDependency[] = [];
 
   const project = asTable(data.project);
@@ -125,7 +126,7 @@ export const pypiSupport: EcosystemSupport = {
     return name === "uv.lock" || name === "poetry.lock" ? "lock" : null;
   },
   parseManifest: (path, content) =>
-    baseName(path) === "pyproject.toml" ? parsePyproject(content, path) : parseRequirements(content),
+    baseName(path) === "pyproject.toml" ? parsePyproject(content, path) : parseRequirements(content, path),
   parseLock: (path, content) =>
     baseName(path) === "uv.lock" ? parseUvLock(content, path) : parsePoetryLock(content, path),
 };

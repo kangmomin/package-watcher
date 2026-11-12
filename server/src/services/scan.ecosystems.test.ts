@@ -458,11 +458,11 @@ describe("lock 의 담당 범위와 direct/transitive", () => {
     await entry("cargo", "evil-crate", "<1.0.0");
     await entry("pypi", "evil-pkg", "<1.0");
     t.github.setRepos([
-      { name: "rs", files: { "Cargo.toml": cargoToml({ "evil-crate": "=0.5.0" }), "Cargo.lock": cargoLock(["evil-crate", "1.2.0"]) } },
+      { name: "rs", files: { "Cargo.toml": cargoToml({ "evil-crate": "0.5" }), "Cargo.lock": cargoLock(["evil-crate", "1.2.0"]) } },
       {
         name: "py",
         files: {
-          "requirements.txt": "Evil_Pkg==0.5\n",
+          "requirements.txt": "Evil_Pkg>=0.5\n",
           "uv.lock":
             'version = 1\n\n[[package]]\nname = "evil-pkg"\nversion = "1.5.0"\nsource = { registry = "https://pypi.org/simple" }\n',
         },

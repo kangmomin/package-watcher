@@ -82,7 +82,6 @@ describe("선언 파일 파서", () => {
     expectInputRejected(() => parseGoMod(""));
     expectInputRejected(() => parseGoMod("require (\n\tgithub.com/a/b v1.0.0\n"));
     expectInputRejected(() => parseGoMod("hello world\n"));
-    expectInputRejected(() => parsePyproject(""));
     expectInputRejected(() => parsePyproject("[project\nname = "));
     expectInputRejected(() => parseCsproj(""));
     expectInputRejected(() => parseCsproj("<Project><ItemGroup></Project>"));
@@ -92,7 +91,6 @@ describe("선언 파일 파서", () => {
     expectInputRejected(() => parseCargoToml("[dependencies\nserde = "));
     expectInputRejected(() => parsePubspecYaml(""));
     expectInputRejected(() => parsePubspecYaml("name: [unclosed"));
-    expectInputRejected(() => parseVersionCatalog(""));
     expectInputRejected(() => parseVersionCatalog("[versions\nx = "));
   });
 

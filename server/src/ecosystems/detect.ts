@@ -90,16 +90,29 @@ export function detectEcosystem(
   }
 
   // 담당 lock 이 없거나 담당 lock 모두에 없는 선언만 선언 파일에서 검출한다.
-  const lockedNames = new Map(
-    locks.map((lock) => [lock.path, new Set(lock.packages.map((pkg) => normalize(pkg.name)))]),
-  );
+  // 단, 선언의 고정 버전이 담당 lock 의 같은 이름의 어느 버전과도 다르면 선언 파일의 것도 따로 검사한다.
+  const lockedVersions = new Map<string, Map<string, Set<string>>>();
+  for (const lock of locks) {
+    const byName = new Map<string, Set<string>>();
+    for (const pkg of lock.packages) {
+      const key = normalize(pkg.name);
+      byName.set(key, (byName.get(key) ?? new Set<string>()).add(pkg.version.trim()));
+    }
+    lockedVersions.set(lock.path, byName);
+  }
   for (const manifest of manifests) {
     const owners = ownersByManifest.get(manifest.path) ?? [];
     for (const dep of manifest.deps) {
       const name = normalize(dep.name);
-      if (owners.some((owner) => lockedNames.get(owner.path)?.has(name))) continue;
       // 고정 버전은 정확한 버전으로 비교하고, 범위 spec 은 범위가 null 인 항목에만 일치한다.
       const exact = rule.exactVersionOf(dep.spec);
+      const locked = owners.flatMap((owner) => {
+        const versions = lockedVersions.get(owner.path)?.get(name);
+        return versions ? [versions] : [];
+      });
+      if (locked.length > 0 && (exact === null || locked.some((versions) => versions.has(exact.trim())))) {
+        continue;
+      }
       for (const entry of index.match(ecosystem, dep.name)) {
         if (entry.versionRange !== null) {
           if (exact === null || !rule.satisfies(exact, entry.versionRange)) continue;

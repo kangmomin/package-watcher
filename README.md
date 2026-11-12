@@ -205,6 +205,12 @@ HTTP 전송을 직접 지원하지 않는 클라이언트(예: Claude Desktop)�
   - `*.csproj` 의 `Version="$(Prop)"` 처럼 MSBuild 속성이나 `2.*` 같은 부동 버전은 범위 spec 으로 취급한다. 버전이 없는 `PackageReference`(중앙 관리)는 버전 없이 이름만 비교하고, 버전은 `Directory.Packages.props` 의 `PackageVersion` 이 낸다.
   - `vendor`, `.venv`, `venv`, `site-packages`, `.dart_tool`, `Pods`(npm 은 `node_modules`) 폴더 아래의 파일은 읽지 않는다.
   - 읽을 수 없는 버전은 불일치로 처리하고 예외를 내지 않는다. 파일 자체를 해석할 수 없으면(빈 파일, 문법 오류, 형식 표지가 없는 lock) 그 repo 는 실패다.
+  - Gradle 의 맵 표기(`group: 'g', name: 'n', version: 'v'`)는 읽지 않는다. 버전이 없는 Gradle 선언(BOM 이 관리)은 건너뛴다.
+  - `Directory.Build.props`·`.targets` 의 `PackageReference` 는 읽지 않는다.
+  - `pyproject.toml` 의 `[tool.uv] dev-dependencies` 와 `[tool.pdm.dev-dependencies]` 는 읽지 않는다(`uv.lock` 이 있으면 lock 이 잡는다).
+  - Cargo 는 `serde_json` 과 `serde-json` 을 다른 이름으로 비교한다(crates.io 는 같은 이름으로 취급한다). `Cargo.lock` 에 적힌 이름으로 등록하는 것을 권장한다.
+  - 선언 파일의 고정 버전이 담당 lock 의 버전과 다르면 둘 다 검사한다(선언 파일의 검출은 그 고정 버전, lock 의 검출은 lock 의 버전). 범위 spec 은 lock 에 이름이 있으면 lock 만 본다.
+  - 빈 `pyproject.toml`·`libs.versions.toml` 은 정상으로 처리한다. UTF-8 이 아닌 파일(UTF-16 등)은 그 repo 를 실패로 기록한다.
   - PyPI: `<1.0` 은 PEP 440 대로 `1.0rc1` 같은 prerelease 를 포함하지 않는다. prerelease 끼리의 `<`·`>` 비교는 라이브러리의 한계로 정확하지 않으므로 `<=`·`>=` 를 권장한다.
   - Cargo: 범위는 prerelease 를 포함해서 비교한다. 연산자 없는 값(`1.2`)은 Cargo 의 의미(`^1.2`)다.
   - Maven: `1.0-1` 과 `1.0.1` 을 같은 버전으로 보고, 여러 구간(`[1,2),[3,4)`)은 받지 않는다. NuGet·Maven 의 버전 순서는 흔한 형태(숫자 마디 + 알려진 수식어)만 구현했다.

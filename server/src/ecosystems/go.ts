@@ -1,4 +1,4 @@
-import { baseName, fail, requireContent } from "./common.ts";
+import { baseName, fail, requireText } from "./common.ts";
 import type { DeclaredDependency, EcosystemSupport } from "./types.ts";
 
 /** 인용부호로 감싼 모듈 경로("a/b")를 푼다 */
@@ -17,7 +17,7 @@ function toDependency(name: string, version: string, comment: string): DeclaredD
  * replace·exclude·retract 는 읽지 않는다 — 어느 버전이 실제로 빌드에 쓰이는지는 go.sum 과 빌드가 정한다.
  */
 export function parseGoMod(content: string, file = "go.mod"): DeclaredDependency[] {
-  const text = requireContent(content, file);
+  const text = requireText(content, file);
   const deps: DeclaredDependency[] = [];
   let block: string | null = null;
   let hasModule = false;
@@ -43,6 +43,7 @@ export function parseGoMod(content: string, file = "go.mod"): DeclaredDependency
     const open = /^(\w+)\s*\($/.exec(code);
     if (open) {
       block = open[1] as string;
+      if (block === "module") hasModule = true;
       continue;
     }
     const parts = code.split(/\s+/);
