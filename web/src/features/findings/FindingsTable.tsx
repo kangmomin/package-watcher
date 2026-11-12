@@ -6,6 +6,7 @@ import type { Finding } from "@pw/shared";
 import { EllipsisVerticalIcon, EyeOffIcon, ExternalLinkIcon, RotateCcwIcon } from "lucide-react";
 import { useId } from "react";
 import { RowHeaderCell } from "@/components/RowHeaderCell";
+import { SeverityBadge } from "@/components/SeverityBadge";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import {
@@ -42,8 +43,10 @@ export function FindingsTable({ items }: FindingsTableProps) {
           <TableRow>
             <TableHead scope="col">repo</TableHead>
             <TableHead scope="col">파일 경로</TableHead>
-            <TableHead scope="col">패키지@버전</TableHead>
             <TableHead scope="col">종류</TableHead>
+            <TableHead scope="col">패키지@버전</TableHead>
+            <TableHead scope="col">심각도</TableHead>
+            <TableHead scope="col">직접/전이</TableHead>
             <TableHead scope="col">상태</TableHead>
             <TableHead scope="col" className="w-12">
               <span className="sr-only">메뉴</span>
@@ -62,8 +65,12 @@ export function FindingsTable({ items }: FindingsTableProps) {
                 <TableCell className="max-w-64 truncate" title={finding.filePath}>
                   {finding.filePath}
                 </TableCell>
+                <TableCell>{finding.ecosystem}</TableCell>
                 <TableCell id={packageId} className="font-mono text-xs">
                   {`${finding.packageName}@${finding.version}`}
+                </TableCell>
+                <TableCell>
+                  <SeverityBadge severity={finding.severity} />
                 </TableCell>
                 <TableCell>{dependencyTypeLabel(finding.dependencyType)}</TableCell>
                 <TableCell>

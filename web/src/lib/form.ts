@@ -53,10 +53,19 @@ export function joinIds(...ids: (string | false | undefined)[]): string | undefi
 export function fieldErrorAria(
   error: unknown,
   errorElementId: string,
-  ...describedBy: string[]
+  ...describedBy: (string | false | undefined)[]
 ): { "aria-invalid": true | undefined; "aria-describedby": string | undefined } {
   return {
     "aria-invalid": error ? true : undefined,
     "aria-describedby": joinIds(...describedBy, error ? errorElementId : undefined),
   };
+}
+
+/**
+ * date 입력이 불완전한지(날짜 칸 일부만 채운 상태 = `validity.badInput`).
+ * 불완전한 입력의 값은 `""` 라서 그대로 보내면 만료가 조용히 해제된다.
+ * jsdom 은 badInput 을 구현하지 않으므로 테스트는 validity 를 stub 한다.
+ */
+export function isIncompleteDate(input: Pick<HTMLInputElement, "validity">): boolean {
+  return input.validity.badInput;
 }

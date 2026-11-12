@@ -5,9 +5,16 @@ import {
   blacklistCreateSchema,
   blacklistEntrySchema,
   blacklistListSchema,
+  blacklistQuerySchema,
   blacklistUpdateSchema,
+  ECOSYSTEMS,
+  entryStatusOf,
   ERROR_CODES,
   ERROR_HTTP_STATUS,
+  kstDateOf,
+  SEVERITIES,
+  SEVERITY_RANK,
+  SUPPORTED_ECOSYSTEMS,
   findingSchema,
   findingsPageSchema,
   findingsQuerySchema,
@@ -93,7 +100,15 @@ describe("[CT-01] 입력 스키마는 규칙 밖의 값을 거부한다", () => 
   it("블랙리스트: trim, 빈 범위 → null, 잘못된 값 거부", () => {
     expect(
       blacklistCreateSchema.parse({ name: " lodash ", versionRange: " <4.17.21 ", reason: " 취약점 " }),
-    ).toEqual({ name: "lodash", versionRange: "<4.17.21", reason: "취약점" });
+    ).toEqual({
+      name: "lodash",
+      versionRange: "<4.17.21",
+      reason: "취약점",
+      ecosystem: "npm",
+      severity: "medium",
+      enabled: true,
+      expiresAt: null,
+    });
     expect(blacklistCreateSchema.parse({ name: "@scope/pkg", reason: "x" }).versionRange).toBeNull();
     expect(
       blacklistCreateSchema.parse({ name: "a", versionRange: "  ", reason: "x" }).versionRange,
@@ -194,5 +209,185 @@ describe("[CT-01] toDetails", () => {
     expect(Object.keys(details)).toEqual(["recipients"]);
     expect(details.recipients).toContain("bad-1");
     expect(details.recipients).toContain("bad-2");
+  });
+});
+
+// ---------------------------------------------------------------- v2 (블랙리스트 규칙 확장)
+
+describe("[CT-15] v2 fixture 와 상수", () => {
+  it.each(fx.blacklistEntryVariants.map((entry) => [entry.name, entry] as const))(
+    "BlacklistEntry 변형 %s",
+    (_name, entry) => {
+      expect(blacklistEntrySchema.parse(entry)).toEqual(entry);
+    },
+  );
+
+  it.each(fx.findingsBySeverity.map((finding) => [finding.severity, finding] as const))(
+    "Finding %s",
+    (_severity, finding) => {
+      expect(findingSchema.parse(finding)).toEqual(finding);
+    },
+  );
+
+  it("기존 fixture 는 새 필드의 기본값을 가진다", () => {
+    for (const entry of fx.blacklistEntries) {
+      expect(entry).toMatchObject({
+        ecosystem: "npm",
+        severity: "medium",
+        enabled: true,
+        expiresAt: null,
+        isExpired: false,
+      });
+    }
+    for (const finding of fx.findings) {
+      expect(finding).toMatchObject({ ecosystem: "npm", severity: "medium" });
+    }
+    expect(fx.settingsDefault.notifyMinSeverity).toBe("low");
+  });
+
+  it("새 필드가 없는 응답을 거부한다", () => {
+    const { severity: _severity, ...entryWithoutSeverity } = fx.blacklistEntryRanged;
+    expect(blacklistEntrySchema.safeParse(entryWithoutSeverity).success).toBe(false);
+    const { ecosystem: _ecosystem, ...findingWithoutEcosystem } = fx.findingOpenDirect;
+    expect(findingSchema.safeParse(findingWithoutEcosystem).success).toBe(false);
+    const { notifyMinSeverity: _min, ...settingsWithoutMin } = fx.settingsDefault;
+    expect(settingsSchema.safeParse(settingsWithoutMin).success).toBe(false);
+  });
+
+  it("상수: 종류 7개, 입력은 npm 만, 심각도는 높은 순", () => {
+    expect(ECOSYSTEMS).toEqual(["npm", "go", "pypi", "nuget", "cargo", "pub", "maven"]);
+    expect(SUPPORTED_ECOSYSTEMS).toEqual(["npm"]);
+    expect(SEVERITIES).toEqual(["critical", "high", "medium", "low"]);
+    const ranks = SEVERITIES.map((severity) => SEVERITY_RANK[severity]);
+    expect(ranks).toEqual([...ranks].sort((a, b) => b - a));
+  });
+
+  it("entryStatusOf: 만료가 끄기보다 우선한다", () => {
+    expect(entryStatusOf({ enabled: true, isExpired: false })).toBe("active");
+    expect(entryStatusOf({ enabled: false, isExpired: false })).toBe("disabled");
+    expect(entryStatusOf({ enabled: true, isExpired: true })).toBe("expired");
+    expect(entryStatusOf({ enabled: false, isExpired: true })).toBe("expired");
+  });
+
+  it("kstDateOf: UTC 15:00 에 KST 날짜가 바뀐다", () => {
+    expect(kstDateOf(new Date("2026-11-12T14:59:59.999Z"))).toBe("2026-11-12");
+    expect(kstDateOf(new Date("2026-11-12T15:00:00.000Z"))).toBe("2026-11-13");
+  });
+});
+
+describe("[CT-15] v2 입력 스키마", () => {
+  const base = { name: "a-pkg", reason: "x" };
+
+  it("create 는 기본값을 채우고, update 와 settings 입력은 생략한 필드를 넣지 않는다", () => {
+    expect(blacklistCreateSchema.parse(base)).toEqual({
+      ...base,
+      versionRange: null,
+      ecosystem: "npm",
+      severity: "medium",
+      enabled: true,
+      expiresAt: null,
+    });
+    const updated = blacklistUpdateSchema.parse({ ...base, versionRange: null });
+    expect(updated.ecosystem).toBeUndefined();
+    expect(updated.severity).toBeUndefined();
+    expect(updated.enabled).toBeUndefined();
+    expect(updated.expiresAt).toBeUndefined();
+    const settings = settingsInputSchema.parse({
+      org: "my-org",
+      scanIntervalHours: 24,
+      digestTime: "09:00",
+      recipients: [],
+    });
+    expect(settings.notifyMinSeverity).toBeUndefined();
+  });
+
+  it("update 의 expiresAt: null 은 만료 해제로 남는다 (생략과 다르다)", () => {
+    const parsed = blacklistUpdateSchema.parse({ ...base, versionRange: null, expiresAt: null });
+    expect(parsed.expiresAt).toBeNull();
+    expect("expiresAt" in parsed).toBe(true);
+  });
+
+  it.each(["@evil/*", "@*/evil", "*-malware", "left-pad*", "ab*"])("패턴 %s 허용", (name) => {
+    expect(blacklistCreateSchema.parse({ ...base, name }).name).toBe(name);
+  });
+
+  it.each(["*", "@*/*", "a*", "**", "has space*", "evil/*?"])("패턴 %s 거부", (name) => {
+    const result = blacklistCreateSchema.safeParse({ ...base, name });
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(Object.keys(toDetails(result.error))).toEqual(["name"]);
+  });
+
+  it("연속한 * 는 1개로 정규화한다", () => {
+    expect(blacklistCreateSchema.parse({ ...base, name: "@evil/**" }).name).toBe("@evil/*");
+    expect(blacklistUpdateSchema.parse({ ...base, name: "ab***cd", versionRange: null }).name).toBe(
+      "ab*cd",
+    );
+  });
+
+  it("* 가 없는 이름은 v1 규칙 그대로다", () => {
+    expect(blacklistCreateSchema.safeParse({ ...base, name: "@scope" }).success).toBe(false);
+    expect(blacklistCreateSchema.parse({ ...base, name: "JSONStream" }).name).toBe("JSONStream");
+  });
+
+  it("expiresAt: 빈 문자열 → null, 없는 날짜와 형식 오류 거부", () => {
+    expect(blacklistCreateSchema.parse({ ...base, expiresAt: "  " }).expiresAt).toBeNull();
+    expect(blacklistCreateSchema.parse({ ...base, expiresAt: " 2027-01-31 " }).expiresAt).toBe(
+      "2027-01-31",
+    );
+    for (const expiresAt of ["2027-13-40", "2027-02-30", "2027/01/31", "2027-1-31", 20270131]) {
+      const result = blacklistCreateSchema.safeParse({ ...base, expiresAt });
+      expect(result.success).toBe(false);
+      if (result.success) continue;
+      expect(Object.keys(toDetails(result.error))).toEqual(["expiresAt"]);
+    }
+  });
+
+  it("ecosystem: 입력은 지원하는 종류만 받는다", () => {
+    for (const ecosystem of ["go", "pypi", "maven", "unknown"]) {
+      const result = blacklistCreateSchema.safeParse({ ...base, ecosystem });
+      expect(result.success).toBe(false);
+      if (result.success) continue;
+      expect(Object.keys(toDetails(result.error))).toEqual(["ecosystem"]);
+    }
+  });
+
+  it("severity 와 enabled: enum 밖의 값과 문자열 boolean 거부", () => {
+    expect(blacklistCreateSchema.safeParse({ ...base, severity: "urgent" }).success).toBe(false);
+    expect(blacklistCreateSchema.safeParse({ ...base, enabled: "false" }).success).toBe(false);
+    expect(
+      blacklistUpdateSchema.safeParse({ ...base, versionRange: null, enabled: "false" }).success,
+    ).toBe(false);
+    expect(blacklistCreateSchema.parse({ ...base, severity: "critical", enabled: false })).toMatchObject(
+      { severity: "critical", enabled: false },
+    );
+  });
+
+  it("settings: notifyMinSeverity 는 enum 4개", () => {
+    const input = { org: "my-org", scanIntervalHours: 24, digestTime: "09:00", recipients: [] };
+    expect(settingsInputSchema.parse({ ...input, notifyMinSeverity: "high" }).notifyMinSeverity).toBe(
+      "high",
+    );
+    expect(settingsInputSchema.safeParse({ ...input, notifyMinSeverity: "none" }).success).toBe(false);
+  });
+
+  it("query: 블랙리스트 필터와 검출 필터", () => {
+    expect(blacklistQuerySchema.parse({})).toEqual({});
+    expect(blacklistQuerySchema.parse({ ecosystem: "go", enabled: "false", q: " Evil " })).toEqual({
+      ecosystem: "go",
+      enabled: false,
+      q: "Evil",
+    });
+    expect(blacklistQuerySchema.parse({ enabled: true }).enabled).toBe(true);
+    expect(blacklistQuerySchema.parse({ enabled: "true", q: "  " })).toEqual({ enabled: true });
+    expect(blacklistQuerySchema.safeParse({ enabled: "yes" }).success).toBe(false);
+    expect(blacklistQuerySchema.safeParse({ ecosystem: "foo" }).success).toBe(false);
+
+    expect(findingsQuerySchema.parse({ ecosystem: "maven", severity: "high" })).toMatchObject({
+      ecosystem: "maven",
+      severity: "high",
+    });
+    expect(findingsQuerySchema.safeParse({ severity: "urgent" }).success).toBe(false);
+    expect(findingsQuerySchema.safeParse({ ecosystem: "foo" }).success).toBe(false);
   });
 });

@@ -1,4 +1,11 @@
-import { DIGEST_TIMEZONE, digestTimeSchema, scanIntervalHoursSchema, toDetails } from "@pw/shared";
+import {
+  DIGEST_TIMEZONE,
+  digestTimeSchema,
+  scanIntervalHoursSchema,
+  severitySchema,
+  toDetails,
+  type Severity,
+} from "@pw/shared";
 import type { z } from "zod";
 import type { TokenSource } from "../config.ts";
 import { AppError } from "../errors.ts";
@@ -8,6 +15,8 @@ import type { SettingsRepository } from "../repositories/settings.ts";
 export const HOUR_MS = 60 * 60 * 1000;
 export const DEFAULT_SCAN_INTERVAL_HOURS = 24;
 export const DEFAULT_DIGEST_TIME = "09:00";
+/** 기본값 low = 모든 검출을 즉시 알린다(v1 동작과 같다) */
+export const DEFAULT_NOTIFY_MIN_SEVERITY: Severity = "low";
 
 export const toIso = (date: Date): string => date.toISOString();
 export const addMs = (date: Date, ms: number): Date => new Date(date.getTime() + ms);
@@ -47,13 +56,16 @@ export interface StoredSettings {
   scanIntervalHours: number;
   digestTime: string;
   recipients: string[];
+  notifyMinSeverity: Severity;
 }
 
 /** 저장된 설정. 값이 없거나 깨졌으면 기본값을 쓴다. */
 export function readStoredSettings(settings: SettingsRepository): StoredSettings {
   const interval = scanIntervalHoursSchema.safeParse(Number(settings.get("scan_interval_hours")));
   const digestTime = digestTimeSchema.safeParse(settings.get("digest_time"));
+  const minSeverity = severitySchema.safeParse(settings.get("notify_min_severity"));
   return {
+    notifyMinSeverity: minSeverity.success ? minSeverity.data : DEFAULT_NOTIFY_MIN_SEVERITY,
     org: settings.get("org"),
     scanIntervalHours: interval.success ? interval.data : DEFAULT_SCAN_INTERVAL_HOURS,
     digestTime: digestTime.success ? digestTime.data : DEFAULT_DIGEST_TIME,

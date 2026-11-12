@@ -1,4 +1,4 @@
-// Integration Contract v1.3 의 단일 정의.
+// Integration Contract v1.3 + v2.2(블랙리스트 규칙 확장) 의 단일 정의.
 // BE(응답 생성·입력 검증)와 FE(응답 parse·제출 전 검증)가 같은 스키마를 쓴다.
 // 브라우저 번들에 들어가므로 Node 전용 모듈을 import 하지 않는다.
 import validRange from "semver/ranges/valid.js";
@@ -24,6 +24,19 @@ export const ERROR_CODES = [
   "SMTP_FAILED",
   "INTERNAL_ERROR",
 ] as const;
+
+/** 값 7개를 지금 정의한다. DB 의 CHECK 와 같은 목록이다. */
+export const ECOSYSTEMS = ["npm", "go", "pypi", "nuget", "cargo", "pub", "maven"] as const;
+/** 입력으로 받는 종류. 검사기가 있는 종류만 넣는다. */
+export const SUPPORTED_ECOSYSTEMS = ["npm"] as const;
+/** 높은 순. 화면의 select 순서와 정렬이 이 순서를 쓴다. */
+export const SEVERITIES = ["critical", "high", "medium", "low"] as const;
+
+export const ecosystemSchema = z.enum(ECOSYSTEMS);
+export const severitySchema = z.enum(SEVERITIES);
+export type Ecosystem = z.infer<typeof ecosystemSchema>;
+export type Severity = z.infer<typeof severitySchema>;
+export const SEVERITY_RANK: Record<Severity, number> = { critical: 4, high: 3, medium: 2, low: 1 };
 
 export const findingStatusSchema = z.enum(FINDING_STATUSES);
 export const dependencyTypeSchema = z.enum(DEPENDENCY_TYPES);
@@ -64,6 +77,24 @@ const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 /** ISO 8601 UTC, 밀리초 3자리 (`Date#toISOString` 형식). */
 export const isoDateSchema = z.string().regex(ISO_UTC, "ISO 8601 UTC 형식이 아닙니다");
 const idSchema = z.number().int().positive();
+
+const CALENDAR_DATE = /^\d{4}-\d{2}-\d{2}$/;
+/** 실제로 있는 달력 날짜 `YYYY-MM-DD` 인가 (`2027-02-30` 은 false). */
+export function isCalendarDate(value: string): boolean {
+  if (!CALENDAR_DATE.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+/** KST 달력 날짜. 시각 필드(ISO 8601 UTC)와 다른 형식이다. */
+export const calendarDateSchema = z
+  .string()
+  .refine(isCalendarDate, "YYYY-MM-DD 형식의 날짜가 아닙니다");
+
+const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
+/** 그 시각의 KST 달력 날짜 `YYYY-MM-DD`. 만료 판정과 화면의 `min` 이 같은 함수를 쓴다. */
+export function kstDateOf(date: Date): string {
+  return new Date(date.getTime() + KST_OFFSET_MS).toISOString().slice(0, 10);
+}
 const countSchema = z.number().int().nonnegative();
 
 // ---------------------------------------------------------------- 응답
@@ -72,8 +103,11 @@ export const findingSchema = z.object({
   id: idSchema,
   repo: z.string().min(1),
   filePath: z.string().min(1),
+  ecosystem: ecosystemSchema,
   packageName: z.string().min(1),
   version: z.string(),
+  /** 항목을 PUT 하면 활성 검출의 값도 바뀐다 (reason 과 같다). */
+  severity: severitySchema,
   dependencyType: dependencyTypeSchema,
   status: findingStatusSchema,
   blacklistEntryId: idSchema,
@@ -87,13 +121,27 @@ export type Finding = z.infer<typeof findingSchema>;
 
 export const blacklistEntrySchema = z.object({
   id: idSchema,
+  ecosystem: ecosystemSchema,
   name: z.string().min(1),
   versionRange: z.string().min(1).nullable(),
   reason: z.string().min(1),
+  severity: severitySchema,
+  /** 사용자가 정한 값. 만료 여부는 `isExpired` 다. */
+  enabled: z.boolean(),
+  expiresAt: calendarDateSchema.nullable(),
+  /** 서버가 KST 로 계산한다. 만료일 다음 날 00:00(KST)부터 true. */
+  isExpired: z.boolean(),
   createdAt: isoDateSchema,
   updatedAt: isoDateSchema,
 });
 export type BlacklistEntry = z.infer<typeof blacklistEntrySchema>;
+
+export type EntryStatus = "expired" | "disabled" | "active";
+/** 항목의 상태 1개. 만료가 끄기보다 우선한다. */
+export function entryStatusOf(entry: Pick<BlacklistEntry, "enabled" | "isExpired">): EntryStatus {
+  if (entry.isExpired) return "expired";
+  return entry.enabled ? "active" : "disabled";
+}
 
 export const blacklistListSchema = z.object({ items: z.array(blacklistEntrySchema) });
 export type BlacklistList = z.infer<typeof blacklistListSchema>;
@@ -132,6 +180,8 @@ export const settingsSchema = z.object({
   recipients: z.array(z.string()),
   githubTokenSource: z.enum(TOKEN_SOURCES),
   smtpConfigured: z.boolean(),
+  /** 즉시 메일의 최소 심각도. 이보다 낮은 검출은 일일 요약에만 들어간다. */
+  notifyMinSeverity: severitySchema,
 });
 export type Settings = z.infer<typeof settingsSchema>;
 
@@ -169,12 +219,38 @@ export type ApiError = z.infer<typeof apiErrorSchema>;
 // 대문자는 과거에 등록된 패키지(예: JSONStream)에 있으므로 허용하고, 비교는 대소문자를 구분한다.
 const NPM_NAME = /^(?:@[A-Za-z0-9-~][A-Za-z0-9-._~]*\/)?[A-Za-z0-9-~][A-Za-z0-9-._~]*$/;
 
+// 패턴(`*` 포함)에는 이름의 모양 제한을 적용하지 않고 문자만 검사한다.
+const PATTERN_CHARS = /^[A-Za-z0-9\-._~@/*]+$/;
+const ALNUM = /[A-Za-z0-9]/g;
+
+/** 이름에 `*` 가 있으면 패턴이다. `*` 는 `/` 를 포함한 임의의 문자열과 일치한다. */
+export function isNamePattern(name: string): boolean {
+  return name.includes("*");
+}
+
 const nameSchema = z
   .string({ error: "패키지 이름을 입력하십시오" })
   .trim()
   .min(1, "패키지 이름을 입력하십시오")
   .max(214, "패키지 이름은 214자 이하입니다")
-  .regex(NPM_NAME, "npm 패키지 이름 형식이 아닙니다");
+  // 연속한 `*` 는 뜻이 같으므로 1개로 저장한다 (중복 키 비교가 문자열 비교다).
+  .transform((value) => value.replace(/\*{2,}/g, "*"))
+  .superRefine((value, ctx) => {
+    if (!isNamePattern(value)) {
+      if (!NPM_NAME.test(value)) {
+        ctx.addIssue({ code: "custom", message: "npm 패키지 이름 형식이 아닙니다" });
+      }
+      return;
+    }
+    if (!PATTERN_CHARS.test(value)) {
+      ctx.addIssue({ code: "custom", message: "패턴에 쓸 수 없는 문자가 있습니다" });
+      return;
+    }
+    // `*`, `@*/*` 처럼 거의 모든 패키지와 일치하는 패턴을 막는다.
+    if ((value.match(ALNUM)?.length ?? 0) < 2) {
+      ctx.addIssue({ code: "custom", message: "패턴에 영문자·숫자가 2자 이상 있어야 합니다" });
+    }
+  });
 
 /** trim 후 빈 문자열과 null 은 "모든 버전"(null) 이다. */
 const versionRangeSchema = z
@@ -193,23 +269,60 @@ const reasonSchema = z
   .min(1, "사유를 입력하십시오")
   .max(500, "사유는 500자 이하입니다");
 
-/** POST /api/blacklist — versionRange 생략 = null. */
+const ecosystemInputSchema = z.enum(SUPPORTED_ECOSYSTEMS, { error: "지원하지 않는 종류입니다" });
+const severityInputSchema = z.enum(SEVERITIES, {
+  error: "심각도는 critical, high, medium, low 중 하나입니다",
+});
+// 문자열 "false" 를 true 로 읽지 않도록 boolean 만 받는다.
+const enabledInputSchema = z.boolean({ error: "enabled 는 true 또는 false 입니다" });
+
+/** trim 후 빈 문자열과 null 은 "만료 없음"(null) 이다. 과거 날짜 검사는 서버가 한다 (시계가 필요하다). */
+const expiresAtSchema = z
+  .union([z.string(), z.null()], { error: "만료일은 YYYY-MM-DD 형식의 문자열 또는 null 입니다" })
+  .transform((value) => {
+    const trimmed = value?.trim() ?? "";
+    return trimmed === "" ? null : trimmed;
+  })
+  .refine((value) => value === null || isCalendarDate(value), {
+    message: "만료일은 YYYY-MM-DD 형식의 실제 날짜입니다",
+  });
+
+/** POST /api/blacklist — 생략한 필드는 기본값을 쓴다. 기본값은 이 스키마만 채운다. */
 export const blacklistCreateSchema = z.object({
   name: nameSchema,
   versionRange: versionRangeSchema.optional().transform((value) => value ?? null),
   reason: reasonSchema,
+  ecosystem: ecosystemInputSchema.default("npm"),
+  severity: severityInputSchema.default("medium"),
+  enabled: enabledInputSchema.default(true),
+  expiresAt: expiresAtSchema.optional().transform((value) => value ?? null),
 });
-/** PUT /api/blacklist/:id — 전체 교체. versionRange 키가 반드시 있어야 한다 (A-12). */
+/**
+ * PUT /api/blacklist/:id — name·versionRange·reason 은 전체 교체 (versionRange 키 필수, A-12).
+ * 새 필드 4개는 생략하면 undefined 이고 서버가 저장된 값을 유지한다 (v1 클라이언트 호환).
+ * `expiresAt: null` 은 만료 해제다.
+ */
 export const blacklistUpdateSchema = z.object({
   name: nameSchema,
   versionRange: versionRangeSchema,
   reason: reasonSchema,
+  ecosystem: ecosystemInputSchema.optional(),
+  severity: severityInputSchema.optional(),
+  enabled: enabledInputSchema.optional(),
+  expiresAt: expiresAtSchema.optional(),
 });
+/** 검증을 통과한 생성·수정 입력. 새 필드 4개는 수정에서 생략할 수 있다. */
 export interface BlacklistInput {
   name: string;
   versionRange: string | null;
   reason: string;
+  ecosystem?: Ecosystem;
+  severity?: Severity;
+  enabled?: boolean;
+  expiresAt?: string | null;
 }
+/** 기본값을 채운 생성 입력. */
+export type BlacklistCreateData = z.infer<typeof blacklistCreateSchema>;
 
 export const findingStatusInputSchema = z.object({
   status: z.enum(["ignored", "open"], { error: "status 는 ignored 또는 open 입니다" }),
@@ -256,6 +369,8 @@ export const settingsInputSchema = z.object({
   scanIntervalHours: scanIntervalHoursSchema,
   digestTime: digestTimeSchema,
   recipients: recipientsSchema,
+  /** 생략하면 저장된 값을 유지한다. */
+  notifyMinSeverity: severityInputSchema.optional(),
 });
 export type SettingsInput = z.infer<typeof settingsInputSchema>;
 
@@ -283,10 +398,27 @@ export const findingsQuerySchema = z.object({
   status: findingStatusSchema.optional(),
   repo: textFilter,
   package: textFilter,
+  /** 정확히 일치하는 값만 반환한다 ("이상" 이 아니다). */
+  ecosystem: ecosystemSchema.optional(),
+  severity: severitySchema.optional(),
   page: pageParam.default(1),
   limit: limitParam(FINDINGS_MAX_LIMIT).default(FINDINGS_DEFAULT_LIMIT),
 });
 export type FindingsQuery = z.infer<typeof findingsQuerySchema>;
+
+/** query string 은 문자열 "true"/"false", MCP 는 JSON boolean 을 보낸다. */
+const booleanParam = z
+  .union([z.boolean(), z.enum(["true", "false"])], { error: "enabled 는 true 또는 false 입니다" })
+  .transform((value) => value === true || value === "true");
+
+export const blacklistQuerySchema = z.object({
+  ecosystem: ecosystemSchema.optional(),
+  /** 사용자가 정한 값으로 거른다. `true` 에는 만료된 항목도 들어간다. */
+  enabled: booleanParam.optional(),
+  /** 이름의 대소문자 무시 부분 일치. */
+  q: textFilter,
+});
+export type BlacklistQuery = z.infer<typeof blacklistQuerySchema>;
 
 export const scansQuerySchema = z.object({
   page: pageParam.default(1),

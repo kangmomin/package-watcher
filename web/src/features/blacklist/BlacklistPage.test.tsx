@@ -198,6 +198,10 @@ describe("블랙리스트 — 추가/수정 Dialog", () => {
       name: "left-pad",
       versionRange: null,
       reason: "테스트 사유",
+      ecosystem: "npm",
+      severity: "medium",
+      enabled: true,
+      expiresAt: null,
     });
     await waitFor(() => {
       expect(server.count("GET", BLACKLIST)).toBeGreaterThan(before.blacklist);
@@ -330,7 +334,15 @@ describe("블랙리스트 — 추가/수정 Dialog", () => {
     await waitForDialogClosed();
     const body = server.last("PUT", "/api/blacklist/2")?.body;
     expect(body).toHaveProperty("versionRange");
-    expect(blacklistUpdateSchema.parse(body)).toEqual({ name: "evil-pkg", versionRange: null, reason: "새 사유" });
+    expect(blacklistUpdateSchema.parse(body)).toEqual({
+      name: "evil-pkg",
+      versionRange: null,
+      reason: "새 사유",
+      ecosystem: "npm",
+      severity: "medium",
+      enabled: true,
+      expiresAt: null,
+    });
     await waitFor(() => {
       expect(server.count("GET", BLACKLIST)).toBeGreaterThan(before.blacklist);
       expect(server.count("GET", FINDINGS)).toBeGreaterThan(before.findings);

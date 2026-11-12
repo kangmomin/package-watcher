@@ -1,5 +1,6 @@
 // 추가/수정 공용 Dialog.
-// 필드: 이름*, 버전 범위(placeholder "비우면 모든 버전"), 사유*. 제출 전 shared 스키마로 검증.
+// 필드: 종류*, 이름*, 버전 범위(placeholder "비우면 모든 버전"), 심각도*, 만료일, 켜기, 사유*. 제출 전 shared 스키마로 검증.
+// 만료일 입력이 불완전하면(validity.badInput) 제출하지 않는다: 불완전한 값은 ""(= 만료 해제)로 읽히기 때문이다.
 // 요청 중 [저장] 비활성 + 닫기 불가. 성공 → 닫기 + reset.
 // VALIDATION_ERROR·DUPLICATE_ENTRY·INTERNAL_ERROR·NETWORK_ERROR → 열어 두고 입력 보존.
 // DUPLICATE_ENTRY → name 필드 아래에 message. NOT_FOUND → 닫기 + toast + blacklist 재조회.
@@ -7,13 +8,20 @@
 import {
   blacklistCreateSchema,
   blacklistUpdateSchema,
+  kstDateOf,
+  SEVERITIES,
+  SEVERITY_RANK,
+  SUPPORTED_ECOSYSTEMS,
   type BlacklistEntry,
   type BlacklistInput,
+  type Ecosystem,
+  type Severity,
 } from "@pw/shared";
-import { useId, useState, type FormEvent } from "react";
-import { useForm } from "react-hook-form";
+import { useId, useRef, useState, type FormEvent } from "react";
+import { Controller, useForm, useWatch } from "react-hook-form";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -22,13 +30,15 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useCreateBlacklistEntry, useUpdateBlacklistEntry } from "@/features/blacklist/hooks";
+import { useSettings } from "@/features/settings/hooks";
 import type { ApiRequestError } from "@/lib/api";
 import { errorToastMessage, hasErrorCode } from "@/lib/errors";
-import { applyServerFieldErrors, errorId, fieldErrorAria, schemaResolver } from "@/lib/form";
+import { applyServerFieldErrors, errorId, fieldErrorAria, isIncompleteDate, schemaResolver } from "@/lib/form";
 
 export interface BlacklistDialogProps {
   open: boolean;
@@ -41,6 +51,11 @@ interface FormValues {
   name: string;
   versionRange: string;
   reason: string;
+  ecosystem: Ecosystem;
+  severity: Severity;
+  enabled: boolean;
+  /** `YYYY-MM-DD`. 비우면 "" (스키마가 null 로 바꾼다) */
+  expiresAt: string;
 }
 
 interface SaveCallbacks {
@@ -55,7 +70,10 @@ interface BlacklistFormProps {
   onSave: (input: BlacklistInput, callbacks: SaveCallbacks) => void;
 }
 
-const FORM_FIELDS = ["name", "versionRange", "reason"] as const;
+const FORM_FIELDS = ["name", "versionRange", "reason", "ecosystem", "severity", "enabled", "expiresAt"] as const;
+
+const INCOMPLETE_DATE_ERROR = "incompleteDate";
+const INCOMPLETE_DATE_MESSAGE = "날짜를 끝까지 입력하거나 모두 지우십시오";
 
 export function BlacklistDialog({ open, entry, onOpenChange }: BlacklistDialogProps) {
   const create = useCreateBlacklistEntry();
@@ -97,11 +115,28 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
       name: entry?.name ?? "",
       versionRange: entry?.versionRange ?? "",
       reason: entry?.reason ?? "",
+      ecosystem: entry?.ecosystem ?? SUPPORTED_ECOSYSTEMS[0],
+      severity: entry?.severity ?? "medium",
+      enabled: entry?.enabled ?? true,
+      expiresAt: entry?.expiresAt ?? "",
     },
   });
   const { errors } = form.formState;
   // Dialog 를 열어 둔 채 toast 로 알린 오류. toast 는 곧 사라지므로 Dialog 안에도 남긴다.
   const [submitError, setSubmitError] = useState<string>();
+  const expiresAtRef = useRef<HTMLInputElement | null>(null);
+
+  // min 은 힌트일 뿐이다(판정은 서버). 저장된 값이 이미 과거면 그 값이 무효로 보이지 않게 min 을 주지 않는다.
+  const [minDate] = useState(() => {
+    const today = kstDateOf(new Date());
+    return entry?.expiresAt && entry.expiresAt < today ? undefined : today;
+  });
+
+  // 설정을 아직 못 읽었거나 실패했으면 안내만 생략한다(이 Dialog 의 오류가 아니다).
+  const notifyMinSeverity = useSettings().data?.notifyMinSeverity;
+  const [severity, enabled] = useWatch({ control: form.control, name: ["severity", "enabled"] });
+  const showSeverityHint =
+    notifyMinSeverity !== undefined && enabled && SEVERITY_RANK[severity] < SEVERITY_RANK[notifyMinSeverity];
 
   const handleError = (error: ApiRequestError) => {
     if (hasErrorCode(error, "DUPLICATE_ENTRY")) {
@@ -134,11 +169,38 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
     name: `${id}-name`,
     versionRange: `${id}-range`,
     reason: `${id}-reason`,
+    ecosystem: `${id}-ecosystem`,
+    severity: `${id}-severity`,
+    enabled: `${id}-enabled`,
+    expiresAt: `${id}-expires-at`,
   };
-  const errorAria = (field: keyof FormValues) => fieldErrorAria(errors[field], errorId(fieldIds[field]));
+  const hintIds = {
+    name: `${id}-name-hint`,
+    severity: `${id}-severity-hint`,
+    enabled: `${id}-enabled-hint`,
+    expiresAt: `${id}-expires-at-hint`,
+  };
+  const errorAria = (field: keyof FormValues, ...describedBy: (string | false | undefined)[]) =>
+    fieldErrorAria(errors[field], errorId(fieldIds[field]), ...describedBy);
+
+  const expiresAtField = form.register("expiresAt", {
+    onChange: () => {
+      // 제출 전에는 재검증이 돌지 않으므로 직접 지운다.
+      if (form.getFieldState("expiresAt").error?.type === INCOMPLETE_DATE_ERROR) form.clearErrors("expiresAt");
+    },
+  });
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     setSubmitError(undefined);
+    if (expiresAtRef.current && isIncompleteDate(expiresAtRef.current)) {
+      event.preventDefault();
+      form.setError(
+        "expiresAt",
+        { type: INCOMPLETE_DATE_ERROR, message: INCOMPLETE_DATE_MESSAGE },
+        { shouldFocus: true },
+      );
+      return;
+    }
     void submit(event);
   };
 
@@ -146,10 +208,44 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
     <form onSubmit={handleSubmit} noValidate className="grid gap-4">
       <DialogHeader>
         <DialogTitle>{entry ? "블랙리스트 항목 수정" : "블랙리스트 항목 추가"}</DialogTitle>
-        <DialogDescription>이름과 버전 범위가 같은 항목은 하나만 둘 수 있습니다.</DialogDescription>
+        <DialogDescription>종류·이름·버전 범위가 같은 항목은 하나만 둘 수 있습니다.</DialogDescription>
       </DialogHeader>
       <p className="text-sm text-muted-foreground">* 표시는 필수 항목입니다</p>
       <FieldGroup className="gap-4">
+        <Field data-invalid={errors.ecosystem ? true : undefined}>
+          <FieldLabel htmlFor={fieldIds.ecosystem}>
+            종류<span aria-hidden="true">*</span>
+          </FieldLabel>
+          <Controller
+            control={form.control}
+            name="ecosystem"
+            render={({ field }) => (
+              // react-hook-form 의 disabled 옵션은 값을 undefined 로 만들어 본문에서 빠뜨린다. Select 의 prop 으로만 끈다.
+              <Select
+                value={field.value}
+                onValueChange={field.onChange}
+                disabled={SUPPORTED_ECOSYSTEMS.length === 1}
+              >
+                <SelectTrigger
+                  id={fieldIds.ecosystem}
+                  className="w-40"
+                  aria-required="true"
+                  {...errorAria("ecosystem")}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {SUPPORTED_ECOSYSTEMS.map((ecosystem) => (
+                    <SelectItem key={ecosystem} value={ecosystem}>
+                      {ecosystem}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          />
+          <FieldError id={errorId(fieldIds.ecosystem)} errors={[errors.ecosystem]} />
+        </Field>
         <Field data-invalid={errors.name ? true : undefined}>
           <FieldLabel htmlFor={fieldIds.name}>
             이름<span aria-hidden="true">*</span>
@@ -158,9 +254,12 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
             id={fieldIds.name}
             autoComplete="off"
             aria-required="true"
-            {...errorAria("name")}
+            {...errorAria("name", hintIds.name)}
             {...form.register("name")}
           />
+          <FieldDescription id={hintIds.name}>
+            <code>*</code> 로 패턴을 쓸 수 있습니다
+          </FieldDescription>
           <FieldError id={errorId(fieldIds.name)} errors={[errors.name]} />
         </Field>
         <Field data-invalid={errors.versionRange ? true : undefined}>
@@ -173,6 +272,84 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
             {...form.register("versionRange")}
           />
           <FieldError id={errorId(fieldIds.versionRange)} errors={[errors.versionRange]} />
+        </Field>
+        <Field data-invalid={errors.severity ? true : undefined}>
+          <FieldLabel htmlFor={fieldIds.severity}>
+            심각도<span aria-hidden="true">*</span>
+          </FieldLabel>
+          <Controller
+            control={form.control}
+            name="severity"
+            render={({ field }) => (
+              <Select value={field.value} onValueChange={field.onChange}>
+                <SelectTrigger
+                  id={fieldIds.severity}
+                  className="w-40"
+                  aria-required="true"
+                  {...errorAria("severity", showSeverityHint && hintIds.severity)}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {SEVERITIES.map((value) => (
+                    <SelectItem key={value} value={value}>
+                      {value}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          />
+          {showSeverityHint && (
+            <FieldDescription id={hintIds.severity}>
+              {`현재 즉시 알림 기준(${notifyMinSeverity})보다 낮아 일일 요약에만 포함됩니다`}
+            </FieldDescription>
+          )}
+          <FieldError id={errorId(fieldIds.severity)} errors={[errors.severity]} />
+        </Field>
+        <Field data-invalid={errors.expiresAt ? true : undefined}>
+          <FieldLabel htmlFor={fieldIds.expiresAt}>만료일</FieldLabel>
+          <Input
+            id={fieldIds.expiresAt}
+            type="date"
+            min={minDate}
+            className="w-44"
+            {...errorAria("expiresAt", entry?.isExpired && hintIds.expiresAt)}
+            {...expiresAtField}
+            ref={(element) => {
+              expiresAtField.ref(element);
+              expiresAtRef.current = element;
+            }}
+          />
+          {entry?.isExpired && (
+            <FieldDescription id={hintIds.expiresAt}>
+              만료되어 검사에서 제외됩니다. 만료일을 바꾸거나 비우면 다음 스캔부터 다시 검사합니다
+            </FieldDescription>
+          )}
+          <FieldError id={errorId(fieldIds.expiresAt)} errors={[errors.expiresAt]} />
+        </Field>
+        <Field data-invalid={errors.enabled ? true : undefined}>
+          <div className="flex items-center gap-2">
+            <Controller
+              control={form.control}
+              name="enabled"
+              render={({ field }) => (
+                <Checkbox
+                  id={fieldIds.enabled}
+                  checked={field.value}
+                  onCheckedChange={(checked) => field.onChange(checked === true)}
+                  onBlur={field.onBlur}
+                  ref={field.ref}
+                  {...errorAria("enabled", hintIds.enabled)}
+                />
+              )}
+            />
+            <FieldLabel htmlFor={fieldIds.enabled}>켜기</FieldLabel>
+          </div>
+          <FieldDescription id={hintIds.enabled}>
+            끄면 이 항목의 검출(무시 포함)이 resolved로 바뀌고, 다시 켜면 다음 스캔에서 새로 검출됩니다
+          </FieldDescription>
+          <FieldError id={errorId(fieldIds.enabled)} errors={[errors.enabled]} />
         </Field>
         <Field data-invalid={errors.reason ? true : undefined}>
           <FieldLabel htmlFor={fieldIds.reason}>

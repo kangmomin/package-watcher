@@ -15,6 +15,7 @@ import {
   type BlacklistEntry,
   type BlacklistInput,
   type BlacklistList,
+  type Ecosystem,
   type ErrorCode,
   type Finding,
   type FindingStatus,
@@ -23,6 +24,7 @@ import {
   type Scan,
   type Settings,
   type SettingsInput,
+  type Severity,
   type Summary,
   type TestEmailResult,
 } from "@pw/shared";
@@ -53,6 +55,8 @@ export interface FindingsFilter {
   status?: FindingStatus;
   repo?: string;
   package?: string;
+  ecosystem?: Ecosystem;
+  severity?: Severity;
 }
 
 export interface FindingsParams extends FindingsFilter {
@@ -122,8 +126,12 @@ function withQuery(path: string, params: Record<string, string | number | undefi
 
 export const api = {
   getSummary: (): Promise<Summary> => request(summarySchema, "GET", "/api/summary"),
-  listFindings: ({ status, repo, package: pkg, page, limit }: FindingsParams): Promise<Page<Finding>> =>
-    request(findingsPageSchema, "GET", withQuery("/api/findings", { status, repo, package: pkg, page, limit })),
+  listFindings: ({ status, repo, package: pkg, ecosystem, severity, page, limit }: FindingsParams): Promise<Page<Finding>> =>
+    request(
+      findingsPageSchema,
+      "GET",
+      withQuery("/api/findings", { status, repo, package: pkg, ecosystem, severity, page, limit }),
+    ),
   setFindingStatus: (id: number, input: FindingStatusInput): Promise<Finding> =>
     request(findingSchema, "PATCH", `/api/findings/${id}`, input),
   listBlacklist: (): Promise<BlacklistList> => request(blacklistListSchema, "GET", "/api/blacklist"),
@@ -135,6 +143,10 @@ export const api = {
       name: input.name,
       versionRange: input.versionRange,
       reason: input.reason,
+      ecosystem: input.ecosystem,
+      severity: input.severity,
+      enabled: input.enabled,
+      expiresAt: input.expiresAt,
     }),
   deleteBlacklistEntry: async (id: number): Promise<void> => {
     await send("DELETE", `/api/blacklist/${id}`);

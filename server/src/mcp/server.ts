@@ -2,11 +2,14 @@ import { StreamableHTTPTransport } from "@hono/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
+  ECOSYSTEMS,
   FINDING_STATUSES,
   FINDINGS_DEFAULT_LIMIT,
   FINDINGS_MAX_LIMIT,
   SCANS_DEFAULT_LIMIT,
   SCANS_MAX_LIMIT,
+  SEVERITIES,
+  SUPPORTED_ECOSYSTEMS,
 } from "@pw/shared";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -31,6 +34,12 @@ const FINDINGS_QUERY = loose({
   status: field({ type: "string", enum: FINDING_STATUSES, description: "생략하면 모든 상태" }),
   repo: field({ type: "string", description: "repo 이름 부분 일치(대소문자 무시)" }),
   package: field({ type: "string", description: "패키지 이름 부분 일치(대소문자 무시)" }),
+  ecosystem: field({ type: "string", enum: ECOSYSTEMS, description: "정확히 일치하는 종류만. 생략하면 모든 종류" }),
+  severity: field({
+    type: "string",
+    enum: SEVERITIES,
+    description: "정확히 일치하는 심각도만(이상이 아니다). 생략하면 모든 심각도",
+  }),
   page: field({ type: "integer", minimum: 1, description: "기본 1" }),
   limit: field({
     type: "integer",
@@ -54,22 +63,37 @@ const VERSION_RANGE = field({
   type: ["string", "null"],
   description: "semver range. null 또는 빈 문자열 = 모든 버전",
 });
+const ECOSYSTEM = field({
+  type: "string",
+  enum: SUPPORTED_ECOSYSTEMS,
+  description: "패키지 종류. 기본 npm",
+});
+const SEVERITY = field({ type: "string", enum: SEVERITIES, description: "심각도. 기본 medium" });
+const ENABLED = field({ type: "boolean", description: "켜기. 기본 true" });
+const EXPIRES_AT = field({
+  type: ["string", "null"],
+  description: "만료일 YYYY-MM-DD(KST, 오늘 이후). null 또는 빈 문자열 = 만료 없음",
+});
+const BLACKLIST_QUERY = loose({
+  ecosystem: field({ type: "string", enum: ECOSYSTEMS, description: "정확히 일치하는 종류만" }),
+  enabled: field({ type: "boolean", description: "사용자가 정한 켜기 값으로 거른다" }),
+  q: field({ type: "string", description: "이름 부분 일치(대소문자 무시)" }),
+});
 const NO_INPUT = loose({});
 const ID_ONLY = loose({ id: ID }, ["id"]);
 const FINDING_STATUS_INPUT = loose(
   { id: ID, status: field({ type: "string", enum: ["ignored", "open"] }) },
   ["id", "status"],
 );
-const BLACKLIST_CREATE = loose({ name: NAME, versionRange: VERSION_RANGE, reason: REASON }, [
-  "name",
-  "reason",
-]);
-const BLACKLIST_UPDATE = loose({ id: ID, name: NAME, versionRange: VERSION_RANGE, reason: REASON }, [
-  "id",
-  "name",
-  "versionRange",
-  "reason",
-]);
+const NEW_FIELDS = { ecosystem: ECOSYSTEM, severity: SEVERITY, enabled: ENABLED, expiresAt: EXPIRES_AT };
+const BLACKLIST_CREATE = loose(
+  { name: NAME, versionRange: VERSION_RANGE, reason: REASON, ...NEW_FIELDS },
+  ["name", "reason"],
+);
+const BLACKLIST_UPDATE = loose(
+  { id: ID, name: NAME, versionRange: VERSION_RANGE, reason: REASON, ...NEW_FIELDS },
+  ["id", "name", "versionRange", "reason"],
+);
 
 type ToolArgs = Record<string, unknown>;
 
@@ -131,19 +155,23 @@ export function createMcpServer(services: AppServices, logger: Logger = consoleL
   );
   register(
     "list_blacklist",
-    "블랙리스트 항목 목록을 조회한다 (GET /api/blacklist). 결과: { items: BlacklistEntry[] }",
-    NO_INPUT,
-    () => services.blacklist.list(),
+    "블랙리스트 항목 목록을 조회한다 (GET /api/blacklist). ecosystem·enabled·q 로 거른다. " +
+      "enabled=true 에는 만료된 항목도 포함된다(사용자가 켠 항목 전부). 결과: { items: BlacklistEntry[] }",
+    BLACKLIST_QUERY,
+    (args) => services.blacklist.list(args),
   );
   register(
     "add_blacklist_entry",
-    "블랙리스트 항목을 추가한다 (POST /api/blacklist). versionRange 를 생략하면 모든 버전. 결과: BlacklistEntry",
+    "블랙리스트 항목을 추가한다 (POST /api/blacklist). versionRange 를 생략하면 모든 버전. name 에 * 를 넣으면 패턴이다. " +
+      "severity 기본값은 medium. 즉시 메일 기준은 get_settings 의 notifyMinSeverity. " +
+      "expiresAt: null 은 만료 해제다. 유지하려면 키를 생략한다. 결과: BlacklistEntry",
     BLACKLIST_CREATE,
     (args) => services.blacklist.create(args),
   );
   register(
     "update_blacklist_entry",
-    "블랙리스트 항목을 전체 교체한다 (PUT /api/blacklist/:id). versionRange 는 필수(null = 모든 버전). 결과: BlacklistEntry",
+    "블랙리스트 항목을 수정한다 (PUT /api/blacklist/:id). name·versionRange·reason 은 전체 교체, 새 필드는 생략하면 유지. " +
+      "versionRange 는 필수(null = 모든 버전). expiresAt: null 은 만료 해제다. 유지하려면 키를 생략한다. 결과: BlacklistEntry",
     BLACKLIST_UPDATE,
     (args) => {
       const { id: rawId, ...input } = args;

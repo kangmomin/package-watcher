@@ -38,12 +38,14 @@ describe("GET /api/settings", () => {
       recipients: [],
       githubTokenSource: "env",
       smtpConfigured: true,
+      notifyMinSeverity: "low",
     });
     expect(Object.keys(res.json as object).sort()).toEqual(
       [
         "digestTime",
         "digestTimezone",
         "githubTokenSource",
+        "notifyMinSeverity",
         "org",
         "recipients",
         "scanIntervalHours",

@@ -5,15 +5,25 @@
 // 첫 로드: 캐시 값으로 폼을 만들었으면 마운트 후 처음 도착한 새 응답에서 dirty 가 아닐 때 한 번 reset 한다.
 // 수신자 입력란에 [추가] 하지 않은 주소가 남아 있으면 저장하지 않고 그 필드에 오류를 표시한다(S-20).
 // [테스트 메일] 비활성: 서버 recipients 0명, smtpConfigured=false, 폼 dirty("저장 후 테스트할 수 있습니다"), 요청 중.
-import { settingsInputSchema, type Settings, type SettingsInput } from "@pw/shared";
+import {
+  entryStatusOf,
+  SEVERITIES,
+  SEVERITY_RANK,
+  settingsInputSchema,
+  type Settings,
+  type SettingsInput,
+  type Severity,
+} from "@pw/shared";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { Controller, useForm } from "react-hook-form";
+import { Controller, useForm, useWatch } from "react-hook-form";
 import { toast } from "sonner";
 import type { z } from "zod";
 import { Button } from "@/components/ui/button";
 import { FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import { useBlacklist } from "@/features/blacklist/hooks";
 import { ConnectionStatus } from "@/features/settings/ConnectionStatus";
 import { useSaveSettings, useTestEmail } from "@/features/settings/hooks";
 import { RecipientsInput } from "@/features/settings/RecipientsInput";
@@ -30,7 +40,7 @@ export interface SettingsFormProps {
 }
 
 /** 폼 값 = 저장 스키마의 입력 모양(검증 전). 스키마에 필드가 생기면 toFormValues 가 타입 오류로 알려 준다. */
-type FormValues = z.input<typeof settingsInputSchema>;
+type FormValues = z.input<typeof settingsInputSchema> & { notifyMinSeverity: Severity };
 
 interface FormRowProps {
   label: string;
@@ -39,7 +49,7 @@ interface FormRowProps {
   children: ReactNode;
 }
 
-const FORM_FIELDS = ["org", "scanIntervalHours", "digestTime", "recipients"] as const;
+const FORM_FIELDS = ["org", "scanIntervalHours", "digestTime", "recipients", "notifyMinSeverity"] as const;
 
 /** 수신자 입력란에 [추가] 하지 않은 주소가 남은 채 저장하려 할 때의 recipients 필드 오류 */
 const PENDING_RECIPIENT_ERROR = "pendingRecipient";
@@ -51,6 +61,7 @@ function toFormValues(settings: Settings): FormValues {
     scanIntervalHours: settings.scanIntervalHours,
     digestTime: settings.digestTime,
     recipients: [...settings.recipients],
+    notifyMinSeverity: settings.notifyMinSeverity,
   };
 }
 
@@ -66,6 +77,13 @@ export function SettingsForm({ settings, isFetchedAfterMount = true }: SettingsF
   const { errors, isDirty } = form.formState;
   // 수신자 입력란에 남은 값([추가] 전). 저장할 때 확인한다(S-20).
   const [recipientDraft, setRecipientDraft] = useState("");
+
+  // 경고는 블랙리스트 데이터가 있을 때만 그린다. loading·오류는 이 폼에 영향을 주지 않는다(조용히 생략).
+  const blacklistItems = useBlacklist().data?.items;
+  const selectedSeverity = useWatch({ control: form.control, name: "notifyMinSeverity" });
+  const belowThresholdCount = blacklistItems?.filter(
+    (entry) => entryStatusOf(entry) === "active" && SEVERITY_RANK[entry.severity] < SEVERITY_RANK[selectedSeverity],
+  ).length;
 
   // 캐시 값으로 폼을 만들었으면(다른 탭에서 바뀐 값을 모를 수 있다) 처음 도착한 새 응답을 1번 반영한다.
   const awaitingFreshSettings = useRef(!isFetchedAfterMount);
@@ -83,9 +101,13 @@ export function SettingsForm({ settings, isFetchedAfterMount = true }: SettingsF
     timezone: `${id}-timezone`,
     recipients: `${id}-recipients`,
     testEmailHint: `${id}-test-email-hint`,
+    notifyMinSeverity: `${id}-notify-min-severity`,
+    notifyMinSeverityHint: `${id}-notify-min-severity-hint`,
+    notifyMinSeverityWarning: `${id}-notify-min-severity-warning`,
   };
+  const showThresholdWarning = belowThresholdCount !== undefined && belowThresholdCount > 0;
   const errorIdOf = (field: keyof FormValues) => errorId(`${id}-${field}`);
-  const errorAria = (field: keyof FormValues, ...describedBy: string[]) =>
+  const errorAria = (field: keyof FormValues, ...describedBy: (string | false | undefined)[]) =>
     fieldErrorAria(errors[field], errorIdOf(field), ...describedBy);
 
   /** 입력란에 [추가] 하지 않은 주소가 있으면 recipients 필드 오류로 표시하고 true (저장하지 않는다). */
@@ -169,6 +191,42 @@ export function SettingsForm({ settings, isFetchedAfterMount = true }: SettingsF
             </span>
           </div>
           <FieldError id={errorIdOf("digestTime")} errors={[errors.digestTime]} />
+        </FormRow>
+
+        <FormRow label="즉시 알림 최소 심각도" htmlFor={ids.notifyMinSeverity}>
+          <Controller
+            control={form.control}
+            name="notifyMinSeverity"
+            render={({ field }) => (
+              <Select value={field.value} onValueChange={field.onChange}>
+                <SelectTrigger
+                  id={ids.notifyMinSeverity}
+                  className="w-40"
+                  {...errorAria(
+                    "notifyMinSeverity",
+                    ids.notifyMinSeverityHint,
+                    showThresholdWarning && ids.notifyMinSeverityWarning,
+                  )}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {SEVERITIES.map((severity) => (
+                    <SelectItem key={severity} value={severity}>
+                      {severity}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          />
+          <FieldDescription id={ids.notifyMinSeverityHint}>이보다 낮은 검출은 일일 요약에만 포함합니다</FieldDescription>
+          {showThresholdWarning && (
+            <FieldDescription id={ids.notifyMinSeverityWarning} className="text-amber-700 dark:text-amber-300">
+              {`켜진 항목 ${belowThresholdCount}개는 이 기준보다 낮아 즉시 알림을 받지 않습니다`}
+            </FieldDescription>
+          )}
+          <FieldError id={errorIdOf("notifyMinSeverity")} errors={[errors.notifyMinSeverity]} />
         </FormRow>
 
         <FormRow label="이메일 수신자" htmlFor={ids.recipients}>
