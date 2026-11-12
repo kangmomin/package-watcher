@@ -33,6 +33,11 @@ function toEntry(row: BlacklistRow): BlacklistEntry {
     name: row.name,
     versionRange: row.version_range === "" ? null : row.version_range,
     reason: row.reason,
+    ecosystem: "npm", // v2-shim
+    severity: "medium", // v2-shim
+    enabled: true, // v2-shim
+    expiresAt: null, // v2-shim
+    isExpired: false, // v2-shim
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

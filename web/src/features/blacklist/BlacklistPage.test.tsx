@@ -198,6 +198,10 @@ describe("블랙리스트 — 추가/수정 Dialog", () => {
       name: "left-pad",
       versionRange: null,
       reason: "테스트 사유",
+      ecosystem: "npm",
+      severity: "medium",
+      enabled: true,
+      expiresAt: null,
     });
     await waitFor(() => {
       expect(server.count("GET", BLACKLIST)).toBeGreaterThan(before.blacklist);

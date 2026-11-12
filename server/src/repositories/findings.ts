@@ -72,8 +72,10 @@ function toFinding(row: FindingRow): Finding {
     id: row.id,
     repo: row.repo,
     filePath: row.file_path,
+    ecosystem: "npm", // v2-shim
     packageName: row.package_name,
     version: row.version,
+    severity: "medium", // v2-shim
     dependencyType: row.dependency_type,
     status: row.status,
     blacklistEntryId: row.blacklist_entry_id,

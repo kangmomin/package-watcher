@@ -35,6 +35,7 @@ export function createSettingsService(deps: SettingsServiceDeps): SettingsServic
       recipients: stored.recipients,
       githubTokenSource,
       smtpConfigured,
+      notifyMinSeverity: "low", // v2-shim
     };
   }
 

@@ -18,23 +18,79 @@ const T2 = "2026-11-13T00:00:00.000Z";
 
 export const blacklistEntryRanged: BlacklistEntry = {
   id: 1,
+  ecosystem: "npm",
   name: "lodash",
   versionRange: "<4.17.21",
   reason: "취약점",
+  severity: "medium",
+  enabled: true,
+  expiresAt: null,
+  isExpired: false,
   createdAt: T0,
   updatedAt: T0,
 };
 
 export const blacklistEntryAllVersions: BlacklistEntry = {
   id: 2,
+  ecosystem: "npm",
   name: "evil-pkg",
   versionRange: null,
   reason: "악성 코드",
+  severity: "medium",
+  enabled: true,
+  expiresAt: null,
+  isExpired: false,
   createdAt: T0,
   updatedAt: T0,
 };
 
 export const blacklistEntries: BlacklistEntry[] = [blacklistEntryAllVersions, blacklistEntryRanged];
+
+// v2 변형. 기존 묶음(blacklistEntries)에는 넣지 않는다 — v1 화면 테스트가 행을 텍스트로 1개만 찾는다.
+
+export const blacklistEntryDisabled: BlacklistEntry = {
+  ...blacklistEntryAllVersions,
+  id: 11,
+  name: "paused-pkg",
+  reason: "일시 중지",
+  severity: "low",
+  enabled: false,
+};
+
+export const blacklistEntryExpired: BlacklistEntry = {
+  ...blacklistEntryAllVersions,
+  id: 12,
+  name: "old-advisory",
+  reason: "기한이 지난 권고",
+  severity: "high",
+  expiresAt: "2026-11-01",
+  isExpired: true,
+};
+
+/** 꺼짐 + 만료. 상태는 `만료` 다 (만료가 우선). */
+export const blacklistEntryDisabledExpired: BlacklistEntry = {
+  ...blacklistEntryExpired,
+  id: 13,
+  name: "stale-pkg",
+  reason: "꺼진 뒤 만료",
+  enabled: false,
+};
+
+export const blacklistEntryPattern: BlacklistEntry = {
+  ...blacklistEntryAllVersions,
+  id: 14,
+  name: "@typosquat/*",
+  reason: "악성 scope",
+  severity: "critical",
+  expiresAt: "2027-12-31",
+};
+
+export const blacklistEntryVariants: BlacklistEntry[] = [
+  blacklistEntryDisabled,
+  blacklistEntryExpired,
+  blacklistEntryDisabledExpired,
+  blacklistEntryPattern,
+];
 
 // ---------------------------------------------------------------- Finding
 
@@ -42,8 +98,10 @@ export const findingOpenDirect: Finding = {
   id: 1,
   repo: "api",
   filePath: "package-lock.json",
+  ecosystem: "npm",
   packageName: "lodash",
   version: "4.17.20",
+  severity: "medium",
   dependencyType: "direct",
   status: "open",
   blacklistEntryId: 1,
@@ -58,8 +116,10 @@ export const findingOpenTransitive: Finding = {
   id: 2,
   repo: "web-app",
   filePath: "apps/site/pnpm-lock.yaml",
+  ecosystem: "npm",
   packageName: "evil-pkg",
   version: "1.0.0",
+  severity: "medium",
   dependencyType: "transitive",
   status: "open",
   blacklistEntryId: 2,
@@ -105,6 +165,48 @@ export const findings: Finding[] = [
   findingResolved,
   findingRangeVersion,
 ];
+
+// v2 변형: 심각도별 검출. 기존 묶음(findings)에는 넣지 않는다.
+
+export const findingCritical: Finding = {
+  ...findingOpenTransitive,
+  id: 11,
+  repo: "payments",
+  filePath: "yarn.lock",
+  packageName: "@typosquat/core",
+  version: "0.0.1",
+  severity: "critical",
+  blacklistEntryId: 14,
+  reason: "악성 scope",
+  htmlUrl: "https://github.com/my-org/payments/blob/HEAD/yarn.lock",
+};
+
+export const findingHigh: Finding = {
+  ...findingCritical,
+  id: 12,
+  repo: "gateway",
+  packageName: "old-advisory",
+  version: "2.0.0",
+  severity: "high",
+  blacklistEntryId: 12,
+  reason: "기한이 지난 권고",
+  htmlUrl: "https://github.com/my-org/gateway/blob/HEAD/yarn.lock",
+};
+
+export const findingLow: Finding = {
+  ...findingCritical,
+  id: 13,
+  repo: "docs-site",
+  packageName: "paused-pkg",
+  version: "3.1.0",
+  severity: "low",
+  blacklistEntryId: 11,
+  reason: "일시 중지",
+  htmlUrl: "https://github.com/my-org/docs-site/blob/HEAD/yarn.lock",
+};
+
+/** 심각도 높은 순. */
+export const findingsBySeverity: Finding[] = [findingCritical, findingHigh, findingLow];
 
 // ---------------------------------------------------------------- Scan
 
@@ -190,6 +292,7 @@ export const settingsDefault: Settings = {
   recipients: ["a@example.com", "b@example.com"],
   githubTokenSource: "env",
   smtpConfigured: true,
+  notifyMinSeverity: "low",
 };
 
 export const settingsUnconfigured: Settings = {
@@ -200,6 +303,7 @@ export const settingsUnconfigured: Settings = {
   recipients: [],
   githubTokenSource: "none",
   smtpConfigured: false,
+  notifyMinSeverity: "low",
 };
 
 // ---------------------------------------------------------------- Page / 기타
