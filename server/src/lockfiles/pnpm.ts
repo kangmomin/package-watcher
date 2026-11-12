@@ -1,22 +1,29 @@
 import { valid } from "semver";
-import { parse as parseYaml } from "yaml";
-import { errorMessage, isPlainObject, LockfileParseError, requireContent } from "./common.ts";
+import { parseAllDocuments } from "yaml";
+import { isPlainObject, LockfileParseError, requireContent } from "./common.ts";
 import type { LockPackage } from "./index.ts";
 
 /**
  * `pnpm-lock.yaml`. `packages` 만 읽는다(v9 의 `snapshots` 무시).
+ * pnpm 11 은 YAML 문서 2개를 쓴다(첫 문서 = pnpm 자신의 의존성, 둘째 = 프로젝트). 모든 문서의 `packages` 를 합친다.
  * 키 형식: v5 `/name/1.0.0_peer`, v6 `/name@1.0.0(peer)`, v9 `name@1.0.0(peer)` — peer suffix 를 뗀다.
  * git/tarball 항목은 `name`/`version` 필드에서 읽는다.
  * 공통: UTF-8 BOM 제거, CRLF → LF. 파싱 실패·빈 입력은 예외.
  */
 export function parsePnpmLock(content: string): LockPackage[] {
   const text = requireContent(content, "pnpm-lock.yaml");
-  let data: unknown;
-  try {
-    data = parseYaml(text);
-  } catch (error) {
-    throw new LockfileParseError(`pnpm-lock.yaml 을 해석할 수 없습니다: ${errorMessage(error)}`);
+  const packages: LockPackage[] = [];
+  for (const document of parseAllDocuments(text)) {
+    const [firstError] = document.errors;
+    if (firstError) {
+      throw new LockfileParseError(`pnpm-lock.yaml 을 해석할 수 없습니다: ${firstError.message}`);
+    }
+    packages.push(...readDocument(document.toJS()));
   }
+  return packages;
+}
+
+function readDocument(data: unknown): LockPackage[] {
   if (!isPlainObject(data) || data.lockfileVersion === undefined || data.lockfileVersion === null) {
     throw new LockfileParseError("pnpm-lock.yaml 에 형식 표지(lockfileVersion)가 없습니다");
   }

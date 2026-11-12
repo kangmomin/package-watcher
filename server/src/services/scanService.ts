@@ -1,5 +1,7 @@
+import { parse as parseJsonc, type ParseError } from "jsonc-parser";
 import {
   isNamePattern,
+  scanReposQuerySchema,
   scansQuerySchema,
   type BlacklistEntry,
   type Ecosystem,
@@ -7,6 +9,7 @@ import {
   type FailedRepo,
   type Page,
   type Scan,
+  type ScanRepo,
   type ScanTrigger,
 } from "@pw/shared";
 import type { Clock } from "../clock.ts";
@@ -34,6 +37,7 @@ import type { Logger } from "../logger.ts";
 import { createEntryIndex, matchExact, matchRange, type EntryIndex } from "../matcher.ts";
 import type { FindingKey } from "../repositories/findings.ts";
 import type { Repositories } from "../repositories/index.ts";
+import type { RepoDone } from "../repositories/scanRepos.ts";
 import type { ScanResult } from "../repositories/scans.ts";
 import { assignLockfiles, dirOf, readWorkspaceGlobs } from "../workspaces.ts";
 import { parseInput, toIso } from "./common.ts";
@@ -80,6 +84,8 @@ export interface ScanService {
   list(query: unknown): Page<Scan>;
   /** 없는 id → NOT_FOUND */
   get(id: number): Scan;
+  /** 없는 스캔 → NOT_FOUND, 그 다음 `scanReposQuerySchema` 검증(VALIDATION_ERROR). 정렬은 repo 의 상태 순서 */
+  listRepos(id: number, query: unknown): Page<ScanRepo>;
 }
 
 export interface ScanServiceDeps {
@@ -97,7 +103,7 @@ interface Match extends FindingKey {
 }
 
 type RepoOutcome =
-  | { repo: string; ok: true; packageJsonCount: number; matches: Match[] }
+  | { repo: string; ok: true; packageJsonCount: number; fileCount: number; matches: Match[] }
   | { repo: string; ok: false; error: string };
 
 type Collected =
@@ -188,11 +194,17 @@ async function mapWithConcurrency<T, R>(
 }
 
 function parseManifest(path: string, content: string): Manifest {
+  const text = normalizeText(content);
   let data: unknown;
   try {
-    data = JSON.parse(normalizeText(content));
+    data = JSON.parse(text);
   } catch (error) {
-    throw new Error(`${path} 을 JSON 으로 읽을 수 없습니다: ${errorMessage(error)}`);
+    // Sencha Cmd 등이 쓰는 주석·끝 쉼표가 든 파일은 JSONC 로 다시 읽는다. 그래도 오류가 남으면 실패다.
+    const errors: ParseError[] = [];
+    data = parseJsonc(text, errors, { allowTrailingComma: true });
+    if (errors.length > 0) {
+      throw new Error(`${path} 을 JSON 으로 읽을 수 없습니다: ${errorMessage(error)}`);
+    }
   }
   if (!isPlainObject(data)) throw new Error(`${path} 의 형식이 올바르지 않습니다`);
   const dependencies: Manifest["dependencies"] = [];
@@ -209,17 +221,52 @@ function parseManifest(path: string, content: string): Manifest {
   return { raw: data, dependencies };
 }
 
+const LOCKFILE_ERROR_MARKER = " 을 해석할 수 없습니다: ";
+
 function parseLockfileOrThrow(file: LockfileFile, content: string): LockPackage[] {
   try {
     return parseLockfile(file.kind, content);
   } catch (error) {
-    throw new Error(`${file.path} 을 해석할 수 없습니다: ${errorMessage(error)}`);
+    // 파서의 메시지가 이미 "<파일 이름> 을 해석할 수 없습니다: " 로 시작하면 경로만 바꿔서 문구가 겹치지 않게 한다.
+    const message = errorMessage(error);
+    const at = message.indexOf(LOCKFILE_ERROR_MARKER);
+    const detail = at === -1 ? message : message.slice(at + LOCKFILE_ERROR_MARKER.length);
+    throw new Error(`${file.path}${LOCKFILE_ERROR_MARKER}${detail}`);
   }
 }
 
 export function createScanService(deps: ScanServiceDeps): ScanService {
   const { repos, github, githubTokenSource, notifier, clock, logger } = deps;
   let running: Promise<Scan> | null = null;
+
+  // ---------------------------------------------------------------- 진행 기록
+
+  /** 진행 기록은 부가 정보라서 쓰기가 실패해도 스캔은 계속한다(로그만 남긴다). */
+  function track(what: string, write: () => void): void {
+    try {
+      write();
+    } catch (error) {
+      logger.error(`스캔 진행 기록을 저장하지 못했습니다 (${what})`, error);
+    }
+  }
+
+  /** 끝나지 않은 repo 행(pending·running)을 failed 로 바꾼다 */
+  function failProgress(scanId: number, error: string): void {
+    track("남은 repo 를 failed 로", () => repos.scanRepos.failUnfinished(scanId, error, toIso(clock.now())));
+  }
+
+  /** 이 스캔이 찾은 매칭이 1건 이상이면 임시로 issue, 종료 트랜잭션이 확정한다 */
+  function doneOf(outcome: RepoOutcome): RepoDone {
+    const finishedAt = toIso(clock.now());
+    if (!outcome.ok) return { status: "failed", fileCount: 0, error: outcome.error, finishedAt };
+    if (outcome.packageJsonCount === 0) return { status: "skipped", fileCount: 0, error: null, finishedAt };
+    return {
+      status: outcome.matches.length > 0 ? "issue" : "passed",
+      fileCount: outcome.fileCount,
+      error: null,
+      finishedAt,
+    };
+  }
 
   // ---------------------------------------------------------------- repo 1개
 
@@ -228,7 +275,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     client: GitHubClient,
     repo: RepoInfo,
     entryIndex: EntryIndex<BlacklistEntry>,
-  ): Promise<{ packageJsonCount: number; matches: Match[] }> {
+  ): Promise<{ packageJsonCount: number; fileCount: number; matches: Match[] }> {
     const tree = await client.getTree(org, repo.name, repo.defaultBranch);
     if (tree.truncated) {
       throw new Error("파일 트리가 너무 커서 GitHub 가 일부만 반환했습니다(truncated)");
@@ -250,7 +297,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       }
     }
     // package.json 이 0개면 Node 프로젝트가 아니다(실패 아님).
-    if (packageJsons.length === 0) return { packageJsonCount: 0, matches: [] };
+    if (packageJsons.length === 0) return { packageJsonCount: 0, fileCount: 0, matches: [] };
 
     const dirsOf = (kind: LockfileKind) =>
       new Set(lockfiles.filter((file) => file.kind === kind).map((file) => dirOf(file.path)));
@@ -349,12 +396,17 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
         }
       }
     }
-    return { packageJsonCount: packageJsons.length, matches };
+    return { packageJsonCount: packageJsons.length, fileCount: toFetch.length, matches };
   }
 
   // ---------------------------------------------------------------- GitHub 단계 (DB 에 쓰지 않는다)
 
-  async function collect(org: string, client: GitHubClient, snapshot: BlacklistEntry[]): Promise<Collected> {
+  async function collect(
+    scanId: number,
+    org: string,
+    client: GitHubClient,
+    snapshot: BlacklistEntry[],
+  ): Promise<Collected> {
     let listed: RepoInfo[];
     try {
       listed = await client.listOrgRepos(org);
@@ -367,16 +419,33 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
 
     const entryIndex = createEntryIndex(snapshot);
 
+    // 대상 목록을 받은 직후에 오래된 기록을 지우고 repo 마다 pending 행을 만든다.
+    track("대상 repo 등록", () =>
+      repos.transaction(() => {
+        repos.scanRepos.prune();
+        repos.scanRepos.insertPending(
+          scanId,
+          targets.map((repo) => repo.name),
+        );
+      }),
+    );
+
     let rateLimited = false;
-    const scanTarget = async (repo: RepoInfo): Promise<RepoOutcome> => {
+    const inspect = async (repo: RepoInfo): Promise<RepoOutcome> => {
       // primary rate limit 이 소진되면 기다리지 않고 남은 repo 를 모두 실패로 둔다.
       if (rateLimited) return { repo: repo.name, ok: false, error: RATE_LIMITED };
+      track("repo 시작", () => repos.scanRepos.markRunning(scanId, repo.name, toIso(clock.now())));
       try {
         return { repo: repo.name, ok: true, ...(await scanRepo(org, client, repo, entryIndex)) };
       } catch (error) {
         if (error instanceof RateLimitedError) rateLimited = true;
         return { repo: repo.name, ok: false, error: describeError(error) };
       }
+    };
+    const scanTarget = async (repo: RepoInfo): Promise<RepoOutcome> => {
+      const outcome = await inspect(repo);
+      track("repo 결과", () => repos.scanRepos.markDone(scanId, repo.name, doneOf(outcome)));
+      return outcome;
     };
     const outcomes = await mapWithConcurrency(targets, REPO_CONCURRENCY, scanTarget);
 
@@ -454,6 +523,30 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     return valid;
   }
 
+  /**
+   * 검사를 끝낸 repo 의 상태를 확정한다: 그 repo 의 open 검출이 1건 이상이면 issue, 아니면 passed(ignored 만 있어도 passed).
+   * 종료 트랜잭션 안에서 부른다. 실패해도 스캔 결과는 저장해야 하므로 savepoint 로 감싸서 이 기록만 되돌린다.
+   */
+  function confirmRepoStatuses(scanId: number, outcomes: RepoOutcome[], newByRepo: Map<string, number>): void {
+    track("repo 상태 확정", () =>
+      repos.transaction(() => {
+        const openByRepo = new Map<string, number>();
+        for (const finding of repos.findings.listOpen()) {
+          openByRepo.set(finding.repo, (openByRepo.get(finding.repo) ?? 0) + 1);
+        }
+        for (const outcome of outcomes) {
+          if (!outcome.ok || outcome.packageJsonCount === 0) continue;
+          const openFindingCount = openByRepo.get(outcome.repo) ?? 0;
+          repos.scanRepos.finalize(scanId, outcome.repo, {
+            status: openFindingCount > 0 ? "issue" : "passed",
+            openFindingCount,
+            newFindingCount: newByRepo.get(outcome.repo) ?? 0,
+          });
+        }
+      }),
+    );
+  }
+
   /** 동기 트랜잭션 1개: ① org 확인 ② 유효 항목 ③ 생성·resolve ④ 스캔 행 마감 */
   function finalize(
     scanId: number,
@@ -463,6 +556,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
   ): { scan: Scan; sendMail: boolean } {
     return repos.transaction(() => {
       if (repos.settings.get("org") !== org) {
+        failProgress(scanId, ORG_CHANGED);
         return { scan: repos.scans.finish(scanId, failedResult(ORG_CHANGED)), sendMail: false };
       }
       // today 는 1번만 구해서 두 판정에 같이 쓴다(두 번 구하면 자정에 판정이 갈린다).
@@ -470,6 +564,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       // 비활성 항목의 활성 검출을 먼저 정리한다 — 이후 메일과 요약이 읽는 시점에 불변식이 성립한다.
       repos.findings.resolveForInactiveEntries(today, toIso(clock.now()));
       if (collected.kind === "listFailed") {
+        failProgress(scanId, collected.error);
         return { scan: repos.scans.finish(scanId, failedResult(collected.error)), sendMail: true };
       }
 
@@ -493,6 +588,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       const activeByKey = new Map(active.map((finding) => [findingKey(finding), finding]));
       const seen = new Set<number>();
       let newFindingCount = 0;
+      const newByRepo = new Map<string, number>();
       for (const [key, match] of results) {
         const existing = activeByKey.get(key);
         if (existing) {
@@ -515,6 +611,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
           now,
         );
         newFindingCount += 1;
+        newByRepo.set(match.repo, (newByRepo.get(match.repo) ?? 0) + 1);
       }
 
       const packageJsonCounts = new Map<string, number>();
@@ -534,6 +631,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
         if (count === 0 || entries.has(finding.blacklistEntryId)) toResolve.push(finding.id); // ③, ①
       }
       repos.findings.resolve(toResolve, now);
+      confirmRepoStatuses(scanId, collected.outcomes, newByRepo);
 
       const failedRepos: FailedRepo[] = [
         ...collected.outcomes.flatMap((outcome) =>
@@ -559,6 +657,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
   /** 예상하지 못한 예외: 스캔 행을 failed 로 바꾸고 검출은 그대로 둔다. 이 함수도 throw 하지 않는다. */
   function failUnexpected(scan: Scan, error: unknown): Scan {
     const result = failedResult(`스캔 중 예상하지 못한 오류가 발생했습니다: ${describeError(error)}`);
+    failProgress(scan.id, result.error ?? "");
     try {
       return repos.scans.finish(scan.id, result);
     } catch (finishError) {
@@ -576,7 +675,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     let finished: Scan;
     let sendMail = false;
     try {
-      const collected = await collect(org, client, snapshot);
+      const collected = await collect(scan.id, org, client, snapshot);
       ({ scan: finished, sendMail } = finalize(scan.id, org, snapshot, collected));
     } catch (error) {
       logger.error(`스캔 #${scan.id} 중 예상하지 못한 오류`, error);
@@ -637,6 +736,10 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       const scan = repos.scans.get(id);
       if (!scan) throw new AppError("NOT_FOUND", "스캔을 찾을 수 없습니다");
       return scan;
+    },
+    listRepos(id, query) {
+      if (!repos.scans.get(id)) throw new AppError("NOT_FOUND", "스캔을 찾을 수 없습니다");
+      return repos.scanRepos.list(id, parseInput(scanReposQuerySchema, query));
     },
   };
 }

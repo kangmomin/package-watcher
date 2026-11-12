@@ -30,6 +30,21 @@ $env:GITHUB_TOKEN = gh auth token; docker compose up --build
 
 GitHub 토큰에는 org 의 repo 를 읽을 권한이 필요하다(classic 토큰: `repo`, `read:org` / fine-grained 토큰: 대상 org 의 Contents·Metadata read).
 
+## 스캔 화면
+
+스캔 이력 표는 스캔마다 대상 repo 수 중 몇 건이 어떻게 끝났는지 보여 준다(`진행`, `통과`, `이슈`, `실패`, `건너뜀`). 행을 펼치면 repo 별 진행 상황(상태·검출 수·읽은 파일 수·실패 원인)을 상태와 이름으로 걸러서 볼 수 있다. 스캔이 진행 중이면 5초마다 갱신한다.
+
+| 상태 | 뜻 |
+|------|----|
+| 통과 | 검사를 끝냈고 `open` 검출이 0건(무시한 검출만 있어도 통과) |
+| 이슈 | 검사를 끝냈고 `open` 검출이 1건 이상(이번 스캔이 새로 만든 검출이 없어도 기존 `open` 검출이 있으면 이슈) |
+| 실패 | 검사하지 못함(오류 메시지가 표시된다) |
+| 건너뜀 | 검사할 파일이 없음(`package.json` 이 0개) |
+| 대기·진행 중 | 스캔이 진행 중일 때만 나온다 |
+
+archived·fork repo 는 검사하지 않으므로 대상 수에 들어가지 않는다. repo 별 기록은 **최근 30회의 스캔만 보관**한다(스캔 시작 때 오래된 기록을 지운다). 그 이전 스캔은 집계만 남고 repo 별 표는 비어 있다. 이 기능 이전의 스캔은 집계가 없어서 이전 표시(`repo 수`, 실패한 repo 목록)로 나온다.
+`GET /api/scans/:id/repos`(`status`, `q`, `page`, `limit`)가 같은 내용을 준다.
+
 ## 로컬 실행 (개발)
 
 Node.js 24 이상이 필요하다.
@@ -101,10 +116,10 @@ Docker 로 실행할 때는 `.env` 에 `PORT`, `HOST`, `DATA_DIR`, `WEB_DIST_DIR
 
 ## 업그레이드와 백업
 
-새 버전을 처음 띄울 때 기존 DB 는 **자동으로 마이그레이션**된다(항목·검출·설정과 `id` 는 그대로, 새 필드는 `npm`/`medium`/켬/만료 없음). 마이그레이션 직전에 같은 폴더에 백업 파일을 만든다:
+새 버전을 처음 띄울 때 기존 DB 는 **자동으로 마이그레이션**된다(항목·검출·설정과 `id` 는 그대로, DB 버전은 3). v1 DB 의 새 필드는 `npm`/`medium`/켬/만료 없음이고, 예전 스캔은 repo 별 기록 없이 남는다. 마이그레이션 직전에 같은 폴더에 백업 파일을 만든다:
 
-- `package-watcher.db.v0-backup` — Docker 에서는 volume 의 `/data/package-watcher.db.v0-backup`. 파일 이름의 `v0` 은 이전 버전(v1) 이미지의 DB 라는 뜻이다. 이미 있으면 새 내용으로 덮어쓴다.
-- 마이그레이션을 했다는 로그 한 줄(`DB 를 v0 에서 v2 로 마이그레이션했습니다. 백업: …`)이 남는다.
+- `package-watcher.db.v{n}-backup` — Docker 에서는 volume 의 `/data/package-watcher.db.v{n}-backup`. 파일 이름의 `v{n}` 은 마이그레이션 직전 DB 의 버전이다(v1 이미지의 DB 는 `v0`, 이전 버전(v2) 이미지의 DB 는 `v2`). 같은 이름이 이미 있으면 새 내용으로 덮어쓴다.
+- 마이그레이션을 했다는 로그 한 줄(`DB 를 v2 에서 v3 로 마이그레이션했습니다. 백업: …`)이 남는다.
 
 **시작 거부:** 백업이나 마이그레이션이 실패하거나, DB 가 이 서버보다 새로운 버전이면 서버가 시작하지 않는다(DB 는 바꾸지 않는다). Docker 에서는 컨테이너가 종료와 재시작을 반복하는 것으로 보인다. `docker compose logs` 로 원인을 확인한다. 백업 파일이 있는 디렉터리에 쓸 수 없는 경우가 대표적이다.
 
@@ -152,14 +167,14 @@ HTTP 전송을 직접 지원하지 않는 클라이언트(예: Claude Desktop)�
 | `remove_blacklist_entry` | 블랙리스트 항목 삭제 (`id`). 그 항목의 검출은 `resolved` 가 된다 |
 | `trigger_scan` | 수동 스캔 시작 |
 | `list_scans` | 스캔 이력 (`page`, `limit`) |
-| `get_scan` | 스캔 1건 + 실패한 repo 목록 (`id`) |
+| `get_scan` | 스캔 1건 + 실패한 repo 목록 + repo 별 집계 `repoStats` (`id`). `list_scans` 의 결과에도 `repoStats` 가 들어간다 |
 | `get_settings` | 설정과 연결 상태 조회(읽기 전용) |
 
 결과는 JSON 문자열(text content)이고, 오류는 `isError: true` 와 `{ code, message, details? }` JSON 이다.
 
 ## 알려진 한계
 
-- GitHub 가 파일 트리를 잘라서(`truncated`) 돌려주는 대형 repo 와, `package.json`, lockfile, `pnpm-workspace.yaml` 을 해석할 수 없는 repo 는 매 스캔 실패 repo 로 기록되어 스캔이 `partial` 이 된다.
+- GitHub 가 파일 트리를 잘라서(`truncated`) 돌려주는 대형 repo 와, `package.json`, lockfile, `pnpm-workspace.yaml` 을 해석할 수 없는 repo 는 매 스캔 실패 repo 로 기록되어 스캔이 `partial` 이 된다. 주석이나 끝 쉼표가 있는 `package.json`(JSONC)과 YAML 문서가 여러 개인 `pnpm-lock.yaml`(pnpm 11)은 읽는다. 파일 1개라도 읽지 못하면 그 repo 는 실패다(일부만 검사하고 통과로 표시하지 않는다).
 - `bun.lockb`(바이너리)는 읽지 않는다. `bun.lock` 이 없으면 lockfile 이 없는 것으로 보고 `package.json` 의 range 로만 검사하며 경고 로그를 남긴다.
 - lockfile 이 없는 `package.json` 은 range 겹침으로 검사한다. `latest` 같은 dist-tag, `workspace:`, git URL 처럼 semver range 가 아닌 spec 은 "모든 버전" 항목에만 검출된다.
 - GitHub API primary rate limit 이 소진되면 기다리지 않고 남은 repo 를 `RATE_LIMITED` 실패로 기록한다. 다음 스캔에서 다시 검사한다.
