@@ -153,7 +153,8 @@ export const blacklistEntrySchema = z.object({
 });
 export type BlacklistEntry = z.infer<typeof blacklistEntrySchema>;
 
-export type EntryStatus = "expired" | "disabled" | "active";
+export const ENTRY_STATUSES = ["active", "disabled", "expired"] as const;
+export type EntryStatus = (typeof ENTRY_STATUSES)[number];
 /** 항목의 상태 1개. 만료가 끄기보다 우선한다. */
 export function entryStatusOf(entry: Pick<BlacklistEntry, "enabled" | "isExpired">): EntryStatus {
   if (entry.isExpired) return "expired";
@@ -484,8 +485,105 @@ export const blacklistQuerySchema = z.object({
   enabled: booleanParam.optional(),
   /** 이름의 대소문자 무시 부분 일치. */
   q: textFilter,
+  /** 화면의 상태(켬·끔·만료)와 같은 뜻이다. 만료가 끔보다 우선한다. */
+  status: z.enum(ENTRY_STATUSES).optional(),
 });
 export type BlacklistQuery = z.infer<typeof blacklistQuerySchema>;
+
+// ---------------------------------------------------------------- 일괄 관리 (bulk, import, export)
+
+export const BULK_ACTIONS = ["enable", "disable", "delete"] as const;
+export const BULK_MAX_IDS = 1000;
+export const BLACKLIST_FILE_FORMATS = ["json", "csv"] as const;
+export const BLACKLIST_FILE_VERSION = 1;
+/** CSV 의 머리글이자 JSON 항목의 키. 가져오기와 내보내기가 같은 형식을 쓴다. */
+export const BLACKLIST_FILE_COLUMNS = [
+  "ecosystem",
+  "name",
+  "versionRange",
+  "severity",
+  "reason",
+  "enabled",
+  "expiresAt",
+] as const;
+/** 가져오기에서 반드시 있어야 하는 열. 나머지는 생략하면 기본값을 쓴다. */
+export const BLACKLIST_FILE_REQUIRED_COLUMNS = ["name", "reason"] as const;
+export const IMPORT_MAX_BYTES = 1024 * 1024;
+export const IMPORT_MAX_ROWS = 5000;
+
+export type BulkAction = (typeof BULK_ACTIONS)[number];
+export type BlacklistFileFormat = (typeof BLACKLIST_FILE_FORMATS)[number];
+
+const bulkIdSchema = z
+  .number({ error: "ids 는 1 이상의 정수의 배열입니다" })
+  .int("ids 는 1 이상의 정수의 배열입니다")
+  .positive("ids 는 1 이상의 정수의 배열입니다");
+
+export const bulkInputSchema = z.object({
+  action: z.enum(BULK_ACTIONS, { error: "action 은 enable, disable, delete 중 하나입니다" }),
+  /** 중복은 1개로 센다. */
+  ids: z
+    .array(bulkIdSchema, { error: "ids 는 1 이상의 정수의 배열입니다" })
+    .transform((ids) => [...new Set(ids)])
+    .refine((ids) => ids.length >= 1 && ids.length <= BULK_MAX_IDS, {
+      message: `ids 는 1~${BULK_MAX_IDS}개입니다`,
+    }),
+});
+export type BulkInput = z.infer<typeof bulkInputSchema>;
+
+export const bulkResultSchema = z.object({
+  action: z.enum(BULK_ACTIONS),
+  /** 요청한 항목의 수 (중복 제거 후). */
+  count: countSchema,
+});
+export type BulkResult = z.infer<typeof bulkResultSchema>;
+
+const fileFormatSchema = z.enum(BLACKLIST_FILE_FORMATS, { error: "format 은 json 또는 csv 입니다" });
+
+export const importInputSchema = z.object({
+  format: fileFormatSchema,
+  /** 파일의 내용. 크기와 행 수의 한도는 서버가 검사한다. */
+  content: z.string({ error: "content 는 파일의 내용(문자열)입니다" }),
+  /** true = 미리 보기(저장하지 않음). 실수로 바로 적용되지 않게 기본값이 true 다. */
+  dryRun: z.boolean({ error: "dryRun 은 true 또는 false 입니다" }).default(true),
+});
+export type ImportInput = z.infer<typeof importInputSchema>;
+
+export const importErrorSchema = z.object({
+  /** 1부터 시작하는 데이터 행 번호 (CSV 의 머리글은 세지 않는다). */
+  row: z.number().int().min(1),
+  field: z.string().nullable(),
+  message: z.string().min(1),
+});
+export type ImportError = z.infer<typeof importErrorSchema>;
+
+export const importResultSchema = z.object({
+  /** 저장했는가. 미리 보기이거나 오류가 1건이라도 있으면 false. */
+  applied: z.boolean(),
+  created: countSchema,
+  updated: countSchema,
+  unchanged: countSchema,
+  errors: z.array(importErrorSchema),
+});
+export type ImportResult = z.infer<typeof importResultSchema>;
+
+export const exportQuerySchema = blacklistQuerySchema.extend({ format: fileFormatSchema });
+export type ExportQuery = z.infer<typeof exportQuerySchema>;
+
+/** 파일의 항목 1개. 응답의 항목에서 id·시각·isExpired 를 뺀 것이다. */
+export interface BlacklistFileItem {
+  ecosystem: Ecosystem;
+  name: string;
+  versionRange: string | null;
+  severity: Severity;
+  reason: string;
+  enabled: boolean;
+  expiresAt: string | null;
+}
+export interface BlacklistFile {
+  version: typeof BLACKLIST_FILE_VERSION;
+  items: BlacklistFileItem[];
+}
 
 export const scansQuerySchema = z.object({
   page: pageParam.default(1),

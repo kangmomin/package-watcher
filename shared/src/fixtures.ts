@@ -2,6 +2,8 @@
 import type {
   ApiError,
   BlacklistEntry,
+  BulkResult,
+  ImportResult,
   Finding,
   Page,
   Scan,
@@ -418,6 +420,33 @@ export const apiErrorValidation: ApiError = {
 export const apiErrorNotFound: ApiError = {
   error: { code: "NOT_FOUND", message: "대상을 찾을 수 없습니다" },
 };
+
+// ---------------------------------------------------------------- 일괄 관리
+
+export const bulkResultDisable: BulkResult = { action: "disable", count: 2 };
+
+/** 미리 보기: 오류가 없다. */
+export const importPreviewClean: ImportResult = {
+  applied: false,
+  created: 2,
+  updated: 1,
+  unchanged: 3,
+  errors: [],
+};
+
+/** 미리 보기: 오류가 있다 ([적용] 을 누를 수 없다). */
+export const importPreviewWithErrors: ImportResult = {
+  applied: false,
+  created: 1,
+  updated: 0,
+  unchanged: 0,
+  errors: [
+    { row: 2, field: "versionRange", message: "유효한 semver 범위가 아닙니다" },
+    { row: 4, field: null, message: "파일 안에서 중복된 항목입니다 (1행과 같음)" },
+  ],
+};
+
+export const importApplied: ImportResult = { ...importPreviewClean, applied: true };
 
 export function apiErrorOf(code: ApiError["error"]["code"], message: string): ApiError {
   return { error: { code, message } };
