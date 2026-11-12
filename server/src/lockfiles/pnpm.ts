@@ -13,7 +13,10 @@ import type { LockPackage } from "./index.ts";
 export function parsePnpmLock(content: string): LockPackage[] {
   const text = requireContent(content, "pnpm-lock.yaml");
   const packages: LockPackage[] = [];
-  for (const document of parseAllDocuments(text)) {
+  const documents = parseAllDocuments(text);
+  // 주석뿐인 파일은 문서가 0개다. 빈 목록으로 "읽었다"고 하지 않는다.
+  if (documents.length === 0) readDocument(undefined);
+  for (const document of documents) {
     const [firstError] = document.errors;
     if (firstError) {
       throw new LockfileParseError(`pnpm-lock.yaml 을 해석할 수 없습니다: ${firstError.message}`);

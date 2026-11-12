@@ -20,6 +20,10 @@ export interface ScanReposPanelProps {
   scanId: number;
   /** 스캔이 running 이면 5초마다 다시 조회한다 */
   running: boolean;
+  /** 그 스캔의 대상 repo 수 (`repoStats.total`) */
+  total: number;
+  /** 어느 스캔의 표인지 알리는 요소(시작 시각 셀)의 id */
+  describedBy?: string;
 }
 
 const SEARCH_DEBOUNCE_MS = 300;
@@ -34,7 +38,7 @@ function toTextFilter(value: string): string | undefined {
   return trimmed === "" ? undefined : trimmed;
 }
 
-export function ScanReposPanel({ scanId, running }: ScanReposPanelProps) {
+export function ScanReposPanel({ scanId, running, total, describedBy }: ScanReposPanelProps) {
   const id = useId();
   const [filter, setFilter] = useState<ScanReposFilter>({});
   const [page, setPage] = useState(1);
@@ -102,7 +106,14 @@ export function ScanReposPanel({ scanId, running }: ScanReposPanelProps) {
       <DataState
         {...firstLoadState(repos)}
         isEmpty={data?.total === 0}
-        emptyMessage={filtered ? "조건에 맞는 repo가 없습니다" : "repo별 기록은 최근 30회의 스캔만 보관합니다"}
+        emptyMessage={
+          filtered
+            ? "조건에 맞는 repo가 없습니다"
+            : // 집계에는 repo 가 있는데 행이 없으면 보관 기간이 지난 것이다.
+              total === 0
+              ? "검사 대상 repo가 없습니다"
+              : "repo별 기록은 최근 30회의 스캔만 보관합니다"
+        }
         onRetry={() => void repos.refetch()}
       >
         {data && (
@@ -111,7 +122,7 @@ export function ScanReposPanel({ scanId, running }: ScanReposPanelProps) {
               aria-busy={isUnconfirmed || undefined}
               className={cn("transition-opacity", isUnconfirmed && "opacity-60")}
             >
-              <ScanReposTable items={data.items} />
+              <ScanReposTable items={data.items} describedBy={describedBy} />
             </div>
             <Pager
               page={data.page}
@@ -127,10 +138,10 @@ export function ScanReposPanel({ scanId, running }: ScanReposPanelProps) {
   );
 }
 
-function ScanReposTable({ items }: { items: ScanRepo[] }) {
+function ScanReposTable({ items, describedBy }: { items: ScanRepo[]; describedBy?: string }) {
   return (
     <div className="rounded-lg border bg-background">
-      <Table aria-label={TITLE}>
+      <Table aria-label={TITLE} aria-describedby={describedBy}>
         <TableHeader>
           <TableRow>
             <TableHead scope="col">repo</TableHead>

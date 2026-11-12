@@ -23,6 +23,7 @@ export interface ScansTableProps {
 
 interface ScanDetailProps {
   scan: Scan;
+  startedAtId: string;
 }
 
 const COLUMN_COUNT = 10;
@@ -137,7 +138,7 @@ export function ScansTable({ items }: ScansTableProps) {
                 {isOpen && (
                   <TableRow id={detailId} className="bg-muted/30 hover:bg-muted/30">
                     <TableCell colSpan={COLUMN_COUNT} className="whitespace-normal">
-                      <ScanDetail scan={scan} />
+                      <ScanDetail scan={scan} startedAtId={startedAtId} />
                     </TableCell>
                   </TableRow>
                 )}
@@ -155,7 +156,7 @@ function summarySentence(scan: Scan, stats: ScanRepoStats): string {
   return scan.status === "running" ? `${base} · 대기 ${stats.pending}건 · 진행 중 ${stats.running}건` : base;
 }
 
-function ScanDetail({ scan }: ScanDetailProps) {
+function ScanDetail({ scan, startedAtId }: ScanDetailProps) {
   return (
     <div className="flex flex-col gap-3 py-1 pl-10 text-sm">
       {scan.repoStats !== null && <p>{summarySentence(scan, scan.repoStats)}</p>}
@@ -178,7 +179,14 @@ function ScanDetail({ scan }: ScanDetailProps) {
           </ul>
         </div>
       )}
-      {scan.repoStats !== null && <ScanReposPanel scanId={scan.id} running={scan.status === "running"} />}
+      {scan.repoStats !== null && (
+        <ScanReposPanel
+          scanId={scan.id}
+          running={scan.status === "running"}
+          total={scan.repoStats.total}
+          describedBy={startedAtId}
+        />
+      )}
     </div>
   );
 }

@@ -9,7 +9,7 @@ import {
   type ScanTrigger,
 } from "@pw/shared";
 import type { Db } from "../db/index.ts";
-import { readScanRepoStats } from "./scanRepos.ts";
+import { FAIL_UNCONFIRMED_SQL, readScanRepoStats } from "./scanRepos.ts";
 
 export interface ScanResult {
   status: Exclude<ScanStatus, "running">;
@@ -105,11 +105,7 @@ export function createScansRepository(db: Db): ScansRepository {
     `UPDATE scans SET status = 'failed', finished_at = ?, error = ? WHERE status = 'running'`,
   );
   const runningIdsStmt = db.prepare<[], { id: number }>("SELECT id FROM scans WHERE status = 'running'");
-  const failRepoRowsStmt = db.prepare<[string, string, number]>(
-    // 임시 passed·issue 도 실패로 바꾼다: 결과를 버린 스캔에서는 그 repo 의 검출이 반영되지 않았다.
-    `UPDATE scan_repos SET status = 'failed', error = ?, finished_at = COALESCE(finished_at, ?)
-     WHERE scan_id = ? AND status IN ('pending', 'running', 'passed', 'issue')`,
-  );
+  const failRepoRowsStmt = db.prepare<[string, string, number]>(FAIL_UNCONFIRMED_SQL);
   const saveStatsStmt = db.prepare<[string | null, number]>("UPDATE scans SET repo_stats = ? WHERE id = ?");
 
   return {

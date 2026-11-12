@@ -85,4 +85,8 @@ describe("parsePnpmLock 다중 문서", () => {
   it("[SP-01] 둘째 문서의 YAML 오류도 예외", () => {
     expectInputRejected(() => parsePnpmLock(`${MULTI_DOC}---\nlockfileVersion: '9.0'\npackages: [unclosed\n`));
   });
+
+  it("[SP-01] 주석뿐인 파일(문서 0개)은 형식 표지가 없는 것으로 거부한다", () => {
+    expectInputRejected(() => parsePnpmLock("# 주석만 있는 파일\n"));
+  });
 });

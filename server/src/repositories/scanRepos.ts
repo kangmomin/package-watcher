@@ -95,6 +95,13 @@ export function readScanRepoStats(db: Db, scanId: number): ScanRepoStats | null 
   return stats;
 }
 
+/**
+ * 확정되지 않은 행을 실패로 바꾼다. 인자: error, now, scan_id.
+ * 임시 passed·issue 도 포함한다: 결과를 버린 스캔에서는 그 repo 의 검출이 반영되지 않았다.
+ */
+export const FAIL_UNCONFIRMED_SQL = `UPDATE scan_repos SET status = 'failed', error = ?, finished_at = COALESCE(finished_at, ?)
+   WHERE scan_id = ? AND status IN ('pending', 'running', 'passed', 'issue')`;
+
 export function createScanReposRepository(db: Db): ScanReposRepository {
   const insertStmt = db.prepare<[number, string]>(
     "INSERT OR IGNORE INTO scan_repos (scan_id, repo, status) VALUES (?, ?, 'pending')",
@@ -110,11 +117,7 @@ export function createScanReposRepository(db: Db): ScanReposRepository {
     `UPDATE scan_repos SET status = ?, open_finding_count = ?, new_finding_count = ?
      WHERE scan_id = ? AND repo = ?`,
   );
-  const failStmt = db.prepare<[string, string, number]>(
-    // 임시 passed·issue 도 실패로 바꾼다: 결과를 버린 스캔에서는 그 repo 의 검출이 반영되지 않았다.
-    `UPDATE scan_repos SET status = 'failed', error = ?, finished_at = COALESCE(finished_at, ?)
-     WHERE scan_id = ? AND status IN ('pending', 'running', 'passed', 'issue')`,
-  );
+  const failStmt = db.prepare<[string, string, number]>(FAIL_UNCONFIRMED_SQL);
   const pruneStmt = db.prepare<[number]>(
     `DELETE FROM scan_repos WHERE scan_id NOT IN
        (SELECT id FROM scans ORDER BY started_at DESC, id DESC LIMIT ?)`,
