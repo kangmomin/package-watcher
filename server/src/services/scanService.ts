@@ -501,13 +501,15 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
           seen.add(existing.id);
           continue;
         }
+        // results 에는 entries 에 있는 항목의 결과만 들어 있다.
         const entry = entries.get(match.blacklistEntryId);
+        if (!entry) continue;
         repos.findings.insertOpen(
           {
             ...match,
-            ecosystem: entry?.ecosystem ?? NPM,
-            severity: entry?.severity ?? "medium",
-            reason: entry?.reason ?? "",
+            ecosystem: entry.ecosystem,
+            severity: entry.severity,
+            reason: entry.reason,
             htmlUrl: htmlUrlOf(org, match.repo, match.filePath),
           },
           now,

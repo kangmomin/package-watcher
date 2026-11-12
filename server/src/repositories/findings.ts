@@ -167,7 +167,7 @@ export function createFindingsRepository(db: Db): FindingsRepository {
   // join 형태로 쓴다. 상관 서브쿼리는 항목이 없는 검출에서 NOT NULL 위반이 되어 시작을 막는다.
   const syncSeverityStmt = db.prepare(
     `UPDATE findings SET severity = e.severity FROM blacklist_entries e
-     WHERE e.id = findings.blacklist_entry_id AND findings.status IN ('open', 'ignored')
+     WHERE e.id = findings.blacklist_entry_id AND findings.${ACTIVE}
        AND findings.severity <> e.severity`,
   );
   const notifiedStmt = db.prepare<[string, number]>(
