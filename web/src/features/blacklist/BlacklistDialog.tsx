@@ -21,13 +21,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Field, FieldError as FieldErrorText, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useCreateBlacklistEntry, useUpdateBlacklistEntry } from "@/features/blacklist/hooks";
 import type { ApiRequestError } from "@/lib/api";
-import { errorToastMessage, formFieldErrors, hasErrorCode } from "@/lib/errors";
-import { errorId, schemaResolver } from "@/lib/form";
+import { errorToastMessage, hasErrorCode } from "@/lib/errors";
+import { applyServerFieldErrors, errorId, fieldErrorAria, schemaResolver } from "@/lib/form";
 
 export interface BlacklistDialogProps {
   open: boolean;
@@ -35,6 +35,26 @@ export interface BlacklistDialogProps {
   entry: BlacklistEntry | null;
   onOpenChange: (open: boolean) => void;
 }
+
+interface FormValues {
+  name: string;
+  versionRange: string;
+  reason: string;
+}
+
+interface SaveCallbacks {
+  onSuccess: () => void;
+  onError: (error: ApiRequestError) => void;
+}
+
+interface BlacklistFormProps {
+  entry: BlacklistEntry | null;
+  isPending: boolean;
+  onClose: () => void;
+  onSave: (input: BlacklistInput, callbacks: SaveCallbacks) => void;
+}
+
+const FORM_FIELDS = ["name", "versionRange", "reason"] as const;
 
 export function BlacklistDialog({ open, entry, onOpenChange }: BlacklistDialogProps) {
   const create = useCreateBlacklistEntry();
@@ -65,26 +85,6 @@ export function BlacklistDialog({ open, entry, onOpenChange }: BlacklistDialogPr
   );
 }
 
-interface FormValues {
-  name: string;
-  versionRange: string;
-  reason: string;
-}
-
-const FORM_FIELDS = ["name", "versionRange", "reason"] as const;
-
-interface SaveCallbacks {
-  onSuccess: () => void;
-  onError: (error: ApiRequestError) => void;
-}
-
-interface BlacklistFormProps {
-  entry: BlacklistEntry | null;
-  isPending: boolean;
-  onClose: () => void;
-  onSave: (input: BlacklistInput, callbacks: SaveCallbacks) => void;
-}
-
 function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps) {
   const id = useId();
   const form = useForm<FormValues, unknown, BlacklistInput>({
@@ -108,11 +108,7 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
       onClose();
       return;
     }
-    const fieldErrors = Object.entries(formFieldErrors(error, FORM_FIELDS)) as [keyof FormValues, string][];
-    if (fieldErrors.length > 0) {
-      for (const [field, message] of fieldErrors) form.setError(field, { type: "server", message });
-      return;
-    }
+    if (applyServerFieldErrors(form.setError, error, FORM_FIELDS)) return;
     toast.error(errorToastMessage(error));
   };
 
@@ -132,7 +128,7 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
     versionRange: `${id}-range`,
     reason: `${id}-reason`,
   };
-  const describedBy = (field: keyof FormValues) => (errors[field] ? errorId(fieldIds[field]) : undefined);
+  const errorAria = (field: keyof FormValues) => fieldErrorAria(errors[field], errorId(fieldIds[field]));
 
   return (
     <form onSubmit={submit} noValidate className="grid gap-4">
@@ -149,11 +145,10 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
             id={fieldIds.name}
             autoComplete="off"
             aria-required="true"
-            aria-invalid={errors.name ? true : undefined}
-            aria-describedby={describedBy("name")}
+            {...errorAria("name")}
             {...form.register("name")}
           />
-          <FieldMessage id={errorId(fieldIds.name)} error={errors.name} />
+          <FieldError id={errorId(fieldIds.name)} errors={[errors.name]} />
         </Field>
         <Field data-invalid={errors.versionRange ? true : undefined}>
           <FieldLabel htmlFor={fieldIds.versionRange}>버전 범위</FieldLabel>
@@ -161,11 +156,10 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
             id={fieldIds.versionRange}
             autoComplete="off"
             placeholder="비우면 모든 버전"
-            aria-invalid={errors.versionRange ? true : undefined}
-            aria-describedby={describedBy("versionRange")}
+            {...errorAria("versionRange")}
             {...form.register("versionRange")}
           />
-          <FieldMessage id={errorId(fieldIds.versionRange)} error={errors.versionRange} />
+          <FieldError id={errorId(fieldIds.versionRange)} errors={[errors.versionRange]} />
         </Field>
         <Field data-invalid={errors.reason ? true : undefined}>
           <FieldLabel htmlFor={fieldIds.reason}>
@@ -175,11 +169,10 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
             id={fieldIds.reason}
             rows={3}
             aria-required="true"
-            aria-invalid={errors.reason ? true : undefined}
-            aria-describedby={describedBy("reason")}
+            {...errorAria("reason")}
             {...form.register("reason")}
           />
-          <FieldMessage id={errorId(fieldIds.reason)} error={errors.reason} />
+          <FieldError id={errorId(fieldIds.reason)} errors={[errors.reason]} />
         </Field>
       </FieldGroup>
       <DialogFooter>
@@ -192,9 +185,4 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
       </DialogFooter>
     </form>
   );
-}
-
-function FieldMessage({ id, error }: { id: string; error: { message?: string } | undefined }) {
-  if (!error?.message) return null;
-  return <FieldErrorText id={id}>{error.message}</FieldErrorText>;
 }

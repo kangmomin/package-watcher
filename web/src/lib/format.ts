@@ -40,6 +40,9 @@ export function formatCardTime(iso: string): string {
   return `${year}-${month}-${day} ${hour}:${minute}`;
 }
 
+/** 블랙리스트 versionRange 가 null 일 때의 표시 */
+export const ALL_VERSIONS_LABEL = "(모든 버전)";
+
 const DEPENDENCY_TYPE_LABELS: Record<DependencyType, string> = { direct: "직접", transitive: "전이" };
 const SCAN_TRIGGER_LABELS: Record<ScanTrigger, string> = { scheduled: "자동", manual: "수동" };
 

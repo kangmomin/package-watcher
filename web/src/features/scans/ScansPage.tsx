@@ -6,6 +6,7 @@ import { Pager } from "@/components/Pager";
 import { useScans } from "@/features/scans/hooks";
 import { ScanNowButton } from "@/features/scans/ScanNowButton";
 import { ScansTable } from "@/features/scans/ScansTable";
+import { emptyPageFallback, firstLoadState } from "@/lib/queryState";
 
 export function ScansPage() {
   const [page, setPage] = useState(1);
@@ -13,12 +14,8 @@ export function ScansPage() {
   const data = scans.data;
 
   // 보던 페이지가 비었으면 마지막 페이지로 옮긴다 (UI State Contract 페이저 규칙).
-  if (data && !scans.isPlaceholderData && data.items.length === 0 && data.total > 0 && data.page > 1) {
-    const lastPage = Math.ceil(data.total / data.limit);
-    if (page !== lastPage) setPage(lastPage);
-  }
-
-  const isLoadError = data === undefined && scans.isError && !scans.isFetching;
+  const lastPage = emptyPageFallback(scans);
+  if (lastPage !== undefined && page !== lastPage) setPage(lastPage);
 
   return (
     <div className="flex flex-col gap-6">
@@ -27,8 +24,7 @@ export function ScansPage() {
         <ScanNowButton />
       </div>
       <DataState
-        isLoading={data === undefined && !isLoadError}
-        isError={isLoadError}
+        {...firstLoadState(scans)}
         isEmpty={data?.total === 0}
         emptyMessage="스캔 이력이 없습니다"
         onRetry={() => void scans.refetch()}

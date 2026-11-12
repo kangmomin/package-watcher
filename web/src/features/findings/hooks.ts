@@ -1,7 +1,7 @@
 // 검출 조회·상태 변경 hooks.
 // 계약: GET /api/findings?status&repo&package&page&limit (limit 50). 빈 필터는 파라미터를 생략한다.
 // PATCH 성공·INTERNAL_ERROR·NETWORK_ERROR·parse 실패 → findings·summary 무효화. INVALID_STATE 도 같다.
-import type { Finding, FindingStatusInput, Page } from "@pw/shared";
+import { FINDINGS_DEFAULT_LIMIT, type Finding, type FindingStatusInput, type Page } from "@pw/shared";
 import {
   keepPreviousData,
   useMutation,
@@ -16,7 +16,7 @@ import { api, type ApiRequestError, type FindingsFilter } from "@/lib/api";
 import { errorToastMessage, hasErrorCode, invalidateKeys, isUnknownOutcome } from "@/lib/errors";
 import { queryKeys } from "@/lib/queryKeys";
 
-export const FINDINGS_PAGE_LIMIT = 50;
+export const FINDINGS_PAGE_LIMIT = FINDINGS_DEFAULT_LIMIT;
 
 export function useFindings(filter: FindingsFilter, page: number): UseQueryResult<Page<Finding>, ApiRequestError> {
   return useQuery<Page<Finding>, ApiRequestError>({
@@ -32,6 +32,7 @@ export interface SetFindingStatusVariables {
 }
 
 const SET_FINDING_STATUS_KEY = ["setFindingStatus"] as const;
+const STATUS_CHANGE_KEYS = [queryKeys.findingsAll(), queryKeys.summary()];
 
 export function useSetFindingStatus(): UseMutationResult<Finding, ApiRequestError, SetFindingStatusVariables> {
   const queryClient = useQueryClient();
@@ -40,12 +41,12 @@ export function useSetFindingStatus(): UseMutationResult<Finding, ApiRequestErro
     mutationFn: ({ id, status }) => api.setFindingStatus(id, { status }),
     onSuccess: async () => {
       toast.success("상태를 변경했습니다");
-      await invalidateKeys(queryClient, [queryKeys.findingsAll(), queryKeys.summary()]);
+      await invalidateKeys(queryClient, STATUS_CHANGE_KEYS);
     },
     onError: async (error) => {
       toast.error(errorToastMessage(error));
       if (isUnknownOutcome(error) || hasErrorCode(error, "INVALID_STATE")) {
-        await invalidateKeys(queryClient, [queryKeys.findingsAll(), queryKeys.summary()]);
+        await invalidateKeys(queryClient, STATUS_CHANGE_KEYS);
       } else if (hasErrorCode(error, "NOT_FOUND")) {
         await invalidateKeys(queryClient, [queryKeys.findingsAll()]);
       }

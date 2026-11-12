@@ -12,11 +12,17 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { usePendingFindingIds, useSetFindingStatus } from "@/features/findings/hooks";
+import { usePendingFindingIds, useSetFindingStatus, type SetFindingStatusVariables } from "@/features/findings/hooks";
 import { dependencyTypeLabel } from "@/lib/format";
 
 export interface FindingsTableProps {
   items: Finding[];
+}
+
+interface RowMenuProps {
+  finding: Finding;
+  isDisabled: boolean;
+  onChangeStatus: (status: SetFindingStatusVariables["status"]) => void;
 }
 
 export function FindingsTable({ items }: FindingsTableProps) {
@@ -53,7 +59,7 @@ export function FindingsTable({ items }: FindingsTableProps) {
               <TableCell>
                 <RowMenu
                   finding={finding}
-                  disabled={pendingIds.has(finding.id)}
+                  isDisabled={pendingIds.has(finding.id)}
                   onChangeStatus={(status) => setStatus.mutate({ id: finding.id, status })}
                 />
               </TableCell>
@@ -65,16 +71,10 @@ export function FindingsTable({ items }: FindingsTableProps) {
   );
 }
 
-interface RowMenuProps {
-  finding: Finding;
-  disabled: boolean;
-  onChangeStatus: (status: "ignored" | "open") => void;
-}
-
-function RowMenu({ finding, disabled, onChangeStatus }: RowMenuProps) {
+function RowMenu({ finding, isDisabled, onChangeStatus }: RowMenuProps) {
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild disabled={disabled}>
+      <DropdownMenuTrigger asChild disabled={isDisabled}>
         <Button variant="ghost" size="icon-sm" aria-label="행 메뉴">
           <EllipsisVerticalIcon aria-hidden="true" />
         </Button>

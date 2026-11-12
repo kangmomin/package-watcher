@@ -4,6 +4,7 @@ import type { BlacklistEntry } from "@pw/shared";
 import { PencilIcon, Trash2Icon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { ALL_VERSIONS_LABEL } from "@/lib/format";
 
 export interface BlacklistTableProps {
   items: BlacklistEntry[];
@@ -29,7 +30,7 @@ export function BlacklistTable({ items, onEdit, onDelete }: BlacklistTableProps)
             <TableRow key={entry.id}>
               <TableCell className="font-mono text-xs font-medium">{entry.name}</TableCell>
               <TableCell className="font-mono text-xs">
-                {entry.versionRange ?? <span className="font-sans text-muted-foreground">(모든 버전)</span>}
+                {entry.versionRange ?? <span className="font-sans text-muted-foreground">{ALL_VERSIONS_LABEL}</span>}
               </TableCell>
               <TableCell className="max-w-96 whitespace-normal">{entry.reason}</TableCell>
               <TableCell className="text-center">

@@ -9,14 +9,19 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useSummary } from "@/features/summary/useSummary";
 import { formatCardTime } from "@/lib/format";
+import { firstLoadState } from "@/lib/queryState";
+
+interface SummaryCardProps {
+  title: string;
+  children: ReactNode;
+}
 
 const NO_VALUE = "-";
 
 export function SummaryCards() {
   const summary = useSummary();
   const data = summary.data;
-  const isLoadError = data === undefined && summary.isError && !summary.isFetching;
-  const isLoading = data === undefined && !isLoadError;
+  const { isLoading, isError: isLoadError } = firstLoadState(summary);
 
   const render = (value: (summaryData: NonNullable<typeof data>) => ReactNode): ReactNode => {
     if (isLoading) return <Skeleton className="h-7 w-24" />;
@@ -63,7 +68,7 @@ export function SummaryCards() {
   );
 }
 
-function SummaryCard({ title, children }: { title: string; children: ReactNode }) {
+function SummaryCard({ title, children }: SummaryCardProps) {
   return (
     <Card size="sm">
       <CardHeader>

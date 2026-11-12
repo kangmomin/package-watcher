@@ -15,6 +15,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { useDeleteBlacklistEntry } from "@/features/blacklist/hooks";
 import { errorToastMessage, hasErrorCode } from "@/lib/errors";
+import { ALL_VERSIONS_LABEL } from "@/lib/format";
 
 export interface DeleteConfirmProps {
   /** null 이면 닫힌 상태 */
@@ -55,7 +56,7 @@ export function DeleteConfirm({ entry, onOpenChange }: DeleteConfirmProps) {
           <AlertDialogDescription>
             {shown && (
               <>
-                <span className="font-mono">{shown.name}</span> {shown.versionRange ?? "(모든 버전)"} 항목을
+                <span className="font-mono">{shown.name}</span> {shown.versionRange ?? ALL_VERSIONS_LABEL} 항목을
                 삭제합니다. 이 항목의 open·ignored 검출은 resolved 로 바뀝니다.
               </>
             )}

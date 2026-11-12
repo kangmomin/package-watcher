@@ -7,25 +7,28 @@ import { settingsInputSchema, type Settings, type SettingsInput } from "@pw/shar
 import { useId, type ReactNode } from "react";
 import { Controller, useForm } from "react-hook-form";
 import { toast } from "sonner";
+import type { z } from "zod";
 import { Button } from "@/components/ui/button";
-import { FieldDescription, FieldError as FieldErrorText, FieldLabel } from "@/components/ui/field";
+import { FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { ConnectionStatus } from "@/features/settings/ConnectionStatus";
 import { useSaveSettings, useTestEmail } from "@/features/settings/hooks";
 import { RecipientsInput } from "@/features/settings/RecipientsInput";
-import { errorToastMessage, formFieldErrors } from "@/lib/errors";
-import { schemaResolver } from "@/lib/form";
+import { errorToastMessage } from "@/lib/errors";
+import { applyServerFieldErrors, errorId, fieldErrorAria, schemaResolver } from "@/lib/form";
 
 export interface SettingsFormProps {
   settings: Settings;
 }
 
-interface FormValues {
-  org: string;
-  scanIntervalHours: number;
-  digestTime: string;
-  recipients: string[];
+/** 폼 값 = 저장 스키마의 입력 모양(검증 전). 스키마에 필드가 생기면 toFormValues 가 타입 오류로 알려 준다. */
+type FormValues = z.input<typeof settingsInputSchema>;
+
+interface FormRowProps {
+  label: string;
+  htmlFor: string;
+  children: ReactNode;
 }
 
 const FORM_FIELDS = ["org", "scanIntervalHours", "digestTime", "recipients"] as const;
@@ -37,11 +40,6 @@ function toFormValues(settings: Settings): FormValues {
     digestTime: settings.digestTime,
     recipients: [...settings.recipients],
   };
-}
-
-function joinIds(...ids: (string | false | undefined)[]): string | undefined {
-  const joined = ids.filter(Boolean).join(" ");
-  return joined === "" ? undefined : joined;
 }
 
 export function SettingsForm({ settings }: SettingsFormProps) {
@@ -64,8 +62,9 @@ export function SettingsForm({ settings }: SettingsFormProps) {
     recipients: `${id}-recipients`,
     testEmailHint: `${id}-test-email-hint`,
   };
-  const errorIdOf = (field: keyof FormValues) => `${id}-${field}-error`;
-  const describedByError = (field: keyof FormValues) => (errors[field] ? errorIdOf(field) : undefined);
+  const errorIdOf = (field: keyof FormValues) => errorId(`${id}-${field}`);
+  const errorAria = (field: keyof FormValues, ...describedBy: string[]) =>
+    fieldErrorAria(errors[field], errorIdOf(field), ...describedBy);
 
   const submit = form.handleSubmit((input) => {
     save.mutate(input, {
@@ -74,12 +73,7 @@ export function SettingsForm({ settings }: SettingsFormProps) {
         toast.success("설정을 저장했습니다");
       },
       onError: (error) => {
-        const fieldErrors = Object.entries(formFieldErrors(error, FORM_FIELDS)) as [keyof FormValues, string][];
-        if (fieldErrors.length === 0) {
-          toast.error(errorToastMessage(error));
-          return;
-        }
-        for (const [field, message] of fieldErrors) form.setError(field, { type: "server", message });
+        if (!applyServerFieldErrors(form.setError, error, FORM_FIELDS)) toast.error(errorToastMessage(error));
       },
     });
   });
@@ -94,12 +88,11 @@ export function SettingsForm({ settings }: SettingsFormProps) {
             id={ids.org}
             autoComplete="off"
             className="max-w-72"
-            aria-invalid={errors.org ? true : undefined}
-            aria-describedby={joinIds(ids.orgHint, describedByError("org"))}
+            {...errorAria("org", ids.orgHint)}
             {...form.register("org")}
           />
           <FieldDescription id={ids.orgHint}>org를 바꾸면 현재 검출이 모두 resolved로 바뀝니다</FieldDescription>
-          <FieldMessage id={errorIdOf("org")} error={errors.org} />
+          <FieldError id={errorIdOf("org")} errors={[errors.org]} />
         </FormRow>
 
         <FormRow label="스캔 interval(시간)" htmlFor={ids.interval}>
@@ -111,11 +104,10 @@ export function SettingsForm({ settings }: SettingsFormProps) {
             max={168}
             step={1}
             className="max-w-28"
-            aria-invalid={errors.scanIntervalHours ? true : undefined}
-            aria-describedby={describedByError("scanIntervalHours")}
+            {...errorAria("scanIntervalHours")}
             {...form.register("scanIntervalHours", { valueAsNumber: true })}
           />
-          <FieldMessage id={errorIdOf("scanIntervalHours")} error={errors.scanIntervalHours} />
+          <FieldError id={errorIdOf("scanIntervalHours")} errors={[errors.scanIntervalHours]} />
         </FormRow>
 
         <FormRow label="일일 요약 시각" htmlFor={ids.digestTime}>
@@ -124,32 +116,30 @@ export function SettingsForm({ settings }: SettingsFormProps) {
               id={ids.digestTime}
               type="time"
               className="max-w-32"
-              aria-invalid={errors.digestTime ? true : undefined}
-              aria-describedby={joinIds(ids.timezone, describedByError("digestTime"))}
+              {...errorAria("digestTime", ids.timezone)}
               {...form.register("digestTime")}
             />
             <span id={ids.timezone} className="text-sm text-muted-foreground">
               {settings.digestTimezone}
             </span>
           </div>
-          <FieldMessage id={errorIdOf("digestTime")} error={errors.digestTime} />
+          <FieldError id={errorIdOf("digestTime")} errors={[errors.digestTime]} />
         </FormRow>
 
         <FormRow label="이메일 수신자" htmlFor={ids.recipients}>
           <Controller
             control={form.control}
             name="recipients"
-            render={({ field, fieldState }) => (
+            render={({ field }) => (
               <RecipientsInput
                 id={ids.recipients}
                 value={field.value}
                 onChange={field.onChange}
-                aria-invalid={fieldState.invalid || undefined}
-                aria-describedby={describedByError("recipients")}
+                {...errorAria("recipients")}
               />
             )}
           />
-          <FieldMessage id={errorIdOf("recipients")} error={errors.recipients} />
+          <FieldError id={errorIdOf("recipients")} errors={[errors.recipients]} />
         </FormRow>
       </div>
 
@@ -179,7 +169,7 @@ export function SettingsForm({ settings }: SettingsFormProps) {
   );
 }
 
-function FormRow({ label, htmlFor, children }: { label: string; htmlFor: string; children: ReactNode }) {
+function FormRow({ label, htmlFor, children }: FormRowProps) {
   return (
     <div className="grid gap-2 md:grid-cols-[11rem_1fr] md:items-start">
       <FieldLabel htmlFor={htmlFor} className="md:pt-2">
@@ -188,9 +178,4 @@ function FormRow({ label, htmlFor, children }: { label: string; htmlFor: string;
       <div className="flex min-w-0 flex-col gap-1.5">{children}</div>
     </div>
   );
-}
-
-function FieldMessage({ id, error }: { id: string; error: { message?: string } | undefined }) {
-  if (!error?.message) return null;
-  return <FieldErrorText id={id}>{error.message}</FieldErrorText>;
 }

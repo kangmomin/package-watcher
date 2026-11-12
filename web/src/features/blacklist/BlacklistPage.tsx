@@ -10,11 +10,11 @@ import { BlacklistDialog } from "@/features/blacklist/BlacklistDialog";
 import { BlacklistTable } from "@/features/blacklist/BlacklistTable";
 import { DeleteConfirm } from "@/features/blacklist/DeleteConfirm";
 import { useBlacklist } from "@/features/blacklist/hooks";
+import { firstLoadState } from "@/lib/queryState";
 
 export function BlacklistPage() {
   const blacklist = useBlacklist();
   const data = blacklist.data;
-  const isLoadError = data === undefined && blacklist.isError && !blacklist.isFetching;
 
   // 닫을 때 editing 을 비우지 않는다: 닫히는 동안 제목이 "추가" 로 바뀌지 않게 한다.
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -36,8 +36,7 @@ export function BlacklistPage() {
         </Button>
       </div>
       <DataState
-        isLoading={data === undefined && !isLoadError}
-        isError={isLoadError}
+        {...firstLoadState(blacklist)}
         isEmpty={data?.items.length === 0}
         emptyMessage="블랙리스트가 비어 있습니다"
         onRetry={() => void blacklist.refetch()}

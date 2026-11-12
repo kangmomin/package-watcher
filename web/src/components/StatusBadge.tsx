@@ -4,6 +4,10 @@ import { Badge } from "@/components/ui/badge";
 
 type Status = FindingStatus | ScanStatus;
 
+export interface StatusBadgeProps {
+  status: Status;
+}
+
 const STATUS_CLASSES: Record<Status, string> = {
   open: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-200",
   ignored: "bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200",
@@ -14,7 +18,7 @@ const STATUS_CLASSES: Record<Status, string> = {
   failed: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-200",
 };
 
-export function StatusBadge({ status }: { status: Status }) {
+export function StatusBadge({ status }: StatusBadgeProps) {
   return (
     <Badge variant="secondary" className={STATUS_CLASSES[status]}>
       {status}

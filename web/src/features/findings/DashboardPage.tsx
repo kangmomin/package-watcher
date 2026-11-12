@@ -9,6 +9,7 @@ import { FindingsTable } from "@/features/findings/FindingsTable";
 import { useFindings } from "@/features/findings/hooks";
 import { SummaryCards } from "@/features/findings/SummaryCards";
 import type { FindingsFilter } from "@/lib/api";
+import { emptyPageFallback, firstLoadState } from "@/lib/queryState";
 
 export function DashboardPage() {
   const [filter, setFilter] = useState<FindingsFilter>({ status: "open" });
@@ -22,12 +23,8 @@ export function DashboardPage() {
   }, []);
 
   // 보던 페이지가 비었으면(검출이 줄어듦) 마지막 페이지로 옮긴다.
-  if (data && !findings.isPlaceholderData && data.items.length === 0 && data.total > 0 && data.page > 1) {
-    const lastPage = Math.ceil(data.total / data.limit);
-    if (page !== lastPage) setPage(lastPage);
-  }
-
-  const isLoadError = data === undefined && findings.isError && !findings.isFetching;
+  const lastPage = emptyPageFallback(findings);
+  if (lastPage !== undefined && page !== lastPage) setPage(lastPage);
 
   return (
     <div className="flex flex-col gap-6">
@@ -36,8 +33,7 @@ export function DashboardPage() {
       <section aria-label="검출 목록" className="flex flex-col gap-3">
         <FindingsFilters filter={filter} onFilterChange={handleFilterChange} />
         <DataState
-          isLoading={data === undefined && !isLoadError}
-          isError={isLoadError}
+          {...firstLoadState(findings)}
           isEmpty={data?.total === 0}
           emptyMessage="검출이 없습니다"
           onRetry={() => void findings.refetch()}

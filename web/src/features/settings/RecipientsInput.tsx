@@ -7,6 +7,7 @@ import { useId, useRef, useState, type KeyboardEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { FieldError } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { joinIds } from "@/lib/form";
 
 export interface RecipientsInputProps {
   /** 새 주소 입력의 id. 바깥 label 의 htmlFor 와 맞춘다. 생략하면 자체 id 를 쓴다 */
@@ -65,8 +66,6 @@ export function RecipientsInput({
     }
   };
 
-  const descriptionIds = [draftError ? draftErrorId : undefined, describedBy].filter(Boolean).join(" ");
-
   return (
     <div className="flex flex-col gap-2">
       {value.length > 0 ? (
@@ -104,7 +103,7 @@ export function RecipientsInput({
           className="max-w-72"
           value={draft}
           aria-invalid={draftError || invalid ? true : undefined}
-          aria-describedby={descriptionIds === "" ? undefined : descriptionIds}
+          aria-describedby={joinIds(draftError ? draftErrorId : undefined, describedBy)}
           onChange={(event) => {
             setDraft(event.target.value);
             setDraftError(undefined);
@@ -116,7 +115,7 @@ export function RecipientsInput({
           추가
         </Button>
       </div>
-      {draftError && <FieldError id={draftErrorId}>{draftError}</FieldError>}
+      <FieldError id={draftErrorId}>{draftError}</FieldError>
     </div>
   );
 }

@@ -14,6 +14,10 @@ export interface ScansTableProps {
   items: Scan[];
 }
 
+interface ScanDetailProps {
+  scan: Scan;
+}
+
 const COLUMN_COUNT = 7;
 
 function canExpand(scan: Scan): boolean {
@@ -101,7 +105,7 @@ export function ScansTable({ items }: ScansTableProps) {
   );
 }
 
-function ScanDetail({ scan }: { scan: Scan }) {
+function ScanDetail({ scan }: ScanDetailProps) {
   return (
     <div className="flex flex-col gap-2 py-1 pl-10 text-sm">
       {scan.error !== null && (
