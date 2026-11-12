@@ -5,7 +5,13 @@ import {
   blacklistCreateSchema,
   blacklistEntrySchema,
   blacklistListSchema,
+  BLACKLIST_FILE_COLUMNS,
   blacklistQuerySchema,
+  bulkInputSchema,
+  bulkResultSchema,
+  exportQuerySchema,
+  importInputSchema,
+  importResultSchema,
   blacklistUpdateSchema,
   ECOSYSTEMS,
   entryStatusOf,
@@ -667,5 +673,75 @@ describe("[SP-00] 스캔 집계와 repo 별 기록", () => {
     });
     expect(scanReposQuerySchema.safeParse({ status: "done" }).success).toBe(false);
     expect(scanReposQuerySchema.safeParse({ limit: "201" }).success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------- 일괄 관리 (묶음 3)
+
+describe("[BK-00] 일괄 관리의 계약", () => {
+  it("목록 query 의 status: active, disabled, expired 만 받는다", () => {
+    expect(blacklistQuerySchema.parse({ status: "expired" })).toEqual({ status: "expired" });
+    expect(blacklistQuerySchema.safeParse({ status: "on" }).success).toBe(false);
+  });
+
+  it("bulk 입력: 중복 제거, 1~1000개, 정수만", () => {
+    expect(bulkInputSchema.parse({ action: "disable", ids: [3, 1, 3] })).toEqual({
+      action: "disable",
+      ids: [3, 1],
+    });
+    expect(bulkInputSchema.safeParse({ action: "disable", ids: [] }).success).toBe(false);
+    expect(bulkInputSchema.safeParse({ action: "toggle", ids: [1] }).success).toBe(false);
+    expect(bulkInputSchema.safeParse({ action: "delete", ids: [1.5] }).success).toBe(false);
+    expect(bulkInputSchema.safeParse({ action: "delete", ids: ["1"] }).success).toBe(false);
+    expect(bulkInputSchema.safeParse({ action: "delete", ids: [0] }).success).toBe(false);
+    const many = Array.from({ length: 1001 }, (_, index) => index + 1);
+    expect(bulkInputSchema.safeParse({ action: "enable", ids: many }).success).toBe(false);
+    expect(bulkInputSchema.parse({ action: "enable", ids: many.slice(0, 1000) }).ids).toHaveLength(1000);
+    // 중복을 빼면 한도 안이다.
+    expect(bulkInputSchema.parse({ action: "enable", ids: [...many.slice(0, 1000), 1, 2] }).ids).toHaveLength(1000);
+    const result = bulkInputSchema.safeParse({ action: "x", ids: "1" });
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(Object.keys(toDetails(result.error)).sort()).toEqual(["action", "ids"]);
+  });
+
+  it("import 입력: dryRun 의 기본값은 true", () => {
+    expect(importInputSchema.parse({ format: "csv", content: "name,reason" })).toEqual({
+      format: "csv",
+      content: "name,reason",
+      dryRun: true,
+    });
+    expect(importInputSchema.parse({ format: "json", content: "{}", dryRun: false }).dryRun).toBe(false);
+    expect(importInputSchema.safeParse({ format: "xml", content: "" }).success).toBe(false);
+    expect(importInputSchema.safeParse({ format: "csv" }).success).toBe(false);
+    expect(importInputSchema.safeParse({ format: "csv", content: "", dryRun: "false" }).success).toBe(false);
+  });
+
+  it("export query: format 필수, 목록과 같은 필터", () => {
+    expect(exportQuerySchema.parse({ format: "csv", ecosystem: "npm", enabled: "true", q: " a ", status: "active" })).toEqual({
+      format: "csv",
+      ecosystem: "npm",
+      enabled: true,
+      q: "a",
+      status: "active",
+    });
+    expect(exportQuerySchema.safeParse({}).success).toBe(false);
+    expect(exportQuerySchema.safeParse({ format: "xlsx" }).success).toBe(false);
+  });
+
+  it("fixture 와 파일의 열", () => {
+    expect(bulkResultSchema.parse(fx.bulkResultDisable)).toEqual(fx.bulkResultDisable);
+    for (const result of [fx.importPreviewClean, fx.importPreviewWithErrors, fx.importApplied]) {
+      expect(importResultSchema.parse(result)).toEqual(result);
+    }
+    expect(BLACKLIST_FILE_COLUMNS).toEqual([
+      "ecosystem",
+      "name",
+      "versionRange",
+      "severity",
+      "reason",
+      "enabled",
+      "expiresAt",
+    ]);
   });
 });

@@ -3,6 +3,9 @@
 data
 **/data
 .env
+.env*
+.*.un~
+*~
 .git
 .claude
 docs

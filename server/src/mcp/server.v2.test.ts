@@ -56,12 +56,13 @@ afterEach(async () => {
 });
 
 describe("/mcp — 묶음 1/3 의 새 필드와 필터", () => {
-  it("[CT-23] tools/list 는 10개 그대로이고, tool 4개의 입력에 새 필드·필터가 선언되어 있다", async () => {
+  it("[CT-23] tools/list 는 기존 10개를 그대로 포함하고(+ 일괄 관리 3개), tool 4개의 입력에 새 필드·필터가 선언되어 있다", async () => {
     const client = await connect();
 
     const { tools } = await client.listTools();
 
-    expect(tools.map((tool) => tool.name).sort()).toEqual([...TOOL_NAMES].sort());
+    const bulkTools = ["bulk_update_blacklist", "import_blacklist", "export_blacklist"];
+    expect(tools.map((tool) => tool.name).sort()).toEqual([...TOOL_NAMES, ...bulkTools].sort());
     const propertiesOf = (name: string): string[] =>
       Object.keys(tools.find((tool) => tool.name === name)?.inputSchema.properties ?? {});
     // 선언하지 않은 키는 SDK 가 제거하므로 서비스까지 전달되지 않는다.

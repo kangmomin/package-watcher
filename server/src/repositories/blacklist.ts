@@ -1,6 +1,6 @@
 import type { BlacklistEntry, BlacklistQuery, Ecosystem, Severity } from "@pw/shared";
 import type { Db } from "../db/index.ts";
-import { ACTIVE_ENTRY_SQL, isExpired } from "../services/entryActivity.ts";
+import { ACTIVE_ENTRY_SQL, EXPIRED_ENTRY_SQL, isExpired } from "../services/entryActivity.ts";
 
 /** 저장할 값. 검증·기본값 적용·병합이 끝난 상태라서 모든 필드가 있다. */
 export interface BlacklistWrite {
@@ -112,13 +112,17 @@ export function createBlacklistRepository(db: Db): BlacklistRepository {
         where.push("instr(lower(name), lower(?)) > 0");
         params.push(filter.q);
       }
+      // 만료가 끄기보다 우선한다: expired 는 꺼짐 여부와 무관하고, disabled 는 만료되지 않은 꺼진 항목이다.
+      if (filter.status === "active") where.push(ACTIVE_ENTRY_SQL);
+      if (filter.status === "disabled") where.push(`enabled = 0 AND NOT ${EXPIRED_ENTRY_SQL}`);
+      if (filter.status === "expired") where.push(EXPIRED_ENTRY_SQL);
       const whereSql = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
-      return db
-        .prepare<(string | number)[], BlacklistRow>(
-          `SELECT ${COLUMNS} FROM blacklist_entries ${whereSql} ${ORDER}`,
-        )
-        .all(...params)
-        .map((row) => toEntry(row, today));
+      const statement = db.prepare<unknown[], BlacklistRow>(
+        `SELECT ${COLUMNS} FROM blacklist_entries ${whereSql} ${ORDER}`,
+      );
+      const rows =
+        filter.status === undefined ? statement.all(...params) : statement.all(...params, { todayKst: today });
+      return rows.map((row) => toEntry(row, today));
     },
     listActive: (today) => activeStmt.all({ todayKst: today }).map((row) => toEntry(row, today)),
     get(id, today) {

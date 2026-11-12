@@ -7,6 +7,9 @@ import type { Clock } from "../clock.ts";
  */
 export const ACTIVE_ENTRY_SQL = "enabled = 1 AND (expires_at IS NULL OR expires_at >= :todayKst)";
 
+/** `isExpired` 의 SQL 형태. 같은 바인딩(`todayKst`)을 쓴다. */
+export const EXPIRED_ENTRY_SQL = "(expires_at IS NOT NULL AND expires_at < :todayKst)";
+
 /** KST 오늘 날짜. 서버 TZ 와 무관하다. */
 export const todayKst = (clock: Clock): string => kstDateOf(clock.now());
 

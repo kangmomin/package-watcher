@@ -134,6 +134,65 @@ Docker 로 실행할 때는 `.env` 에 `PORT`, `HOST`, `DATA_DIR`, `WEB_DIST_DIR
 **업그레이드 직전에 만든 기존 항목은 모두 `medium` 이다.** 임계값을 `high` 이상으로 올리기 전에 항목마다 심각도를 지정하지 않으면 즉시 메일이 조용히 끊긴다(설정 화면이 이 항목 수를 경고로 알려 준다).
 메일 본문은 심각도 높은 순으로 정렬하고 각 행에 `[심각도][종류]` 를 붙인다.
 
+## 일괄 작업, 가져오기, 내보내기
+
+목록 필터: `GET /api/blacklist` 는 `ecosystem`, `enabled`, `q` 외에 `status`(`active` 켜짐·만료 전 / `disabled` 꺼짐·만료 전 / `expired` 만료, 꺼짐 여부와 무관)로 거른다. 만료가 끔보다 우선한다.
+
+**일괄 작업** — `POST /api/blacklist/bulk` `{ "action": "enable" | "disable" | "delete", "ids": [1, 2] }` → `{ action, count }`.
+- `ids` 는 1~1000개이고 중복은 1개로 센다. 없는 id 가 1개라도 있으면 404 이고 아무것도 바꾸지 않는다. 트랜잭션 1개로 처리한다.
+- `disable`·`delete` 는 그 항목의 활성 검출을 `resolved` 로 바꾼다. `enable` 은 검출을 만들지 않는다(다음 스캔이 만든다).
+- 값이 이미 같은 항목(이미 켜진 항목의 `enable` 등)은 수정하지 않는다. `count` 는 요청한 id 의 수다.
+
+**내보내기** — `GET /api/blacklist/export?format=json|csv` + 목록과 같은 필터(`ecosystem`, `enabled`, `q`, `status`). `name` → `id` 순서이고, 0건이어도 200 이다. 파일 이름은 `blacklist-YYYYMMDD.json|csv`(KST 날짜)이다.
+
+**가져오기** — `POST /api/blacklist/import` `{ "format": "json" | "csv", "content": "<파일 내용>", "dryRun": true }`.
+- `dryRun` 의 기본값은 `true`(미리 보기, 저장하지 않음)다. 적용하려면 `false` 를 보낸다.
+- 응답: `{ applied, created, updated, unchanged, errors: [{ row, field, message }] }`. `row` 는 1부터 시작하는 데이터 행 번호(머리글 제외)이고 `field` 는 필드 이름 또는 `null` 이다.
+- 행마다 1건 등록과 같은 검증(종류별 이름·범위 규칙, 이름 정규화)을 한다. 행의 키(정규화한 종류·이름·버전 범위)가 같은 기존 항목이 있으면 나머지 필드를 갱신하고(`updated`), 모두 같으면 `unchanged`, 없으면 추가한다(`created`). 파일에 없는 기존 항목은 그대로 둔다.
+- **오류가 1건이라도 있으면 `dryRun: false` 여도 아무것도 저장하지 않는다**(`applied: false`). 이때의 `created`·`updated`·`unchanged` 는 오류가 없는 행의 수다. 적용은 트랜잭션 1개이고, 갱신된 항목은 1건 수정과 같이 처리한다(활성 검출의 사유·심각도 갱신, 꺼지면 `resolved`).
+- 파일 안에서 같은 키가 2번 나오면 두 번째 행이 오류다. 과거의 `expiresAt` 은 새 항목이면 오류이고, 기존 항목의 저장된 값과 같으면 허용한다(내보낸 파일을 그대로 다시 가져올 수 있다).
+- 파일을 읽을 수 없거나(JSON 문법 오류, 닫히지 않은 CSV 따옴표), 필수 열이 없거나, 한도를 넘으면 400 `VALIDATION_ERROR` 다.
+
+**한도:** `content` 1 MB(UTF-8 바이트), 5000행, 일괄 작업 `ids` 1000개. 가져오기 요청 본문은 4 MB 까지다.
+
+**파일 형식** (가져오기와 내보내기가 같다):
+
+JSON:
+
+```json
+{
+  "version": 1,
+  "items": [
+    {
+      "ecosystem": "npm",
+      "name": "evil-pkg",
+      "versionRange": "<4.17.21",
+      "severity": "high",
+      "reason": "악성 코드",
+      "enabled": true,
+      "expiresAt": "2027-01-01"
+    }
+  ]
+}
+```
+
+CSV (UTF-8, RFC 4180):
+
+```csv
+ecosystem,name,versionRange,severity,reason,enabled,expiresAt
+npm,evil-pkg,<4.17.21,high,악성 코드,true,2027-01-01
+pypi,foo-bar,">=1.0,<2.0",medium,"쉼표, ""큰따옴표""",false,
+```
+
+- 내보낼 때 CSV 는 BOM 으로 시작하고 줄 끝은 CRLF 다. 읽을 때는 BOM 과 LF·CRLF 를 모두 받는다. 쉼표·줄바꿈·큰따옴표가 있는 값은 `"…"` 로 감싸고 큰따옴표는 `""` 로 쓴다.
+- 빈 `versionRange`·`expiresAt` 은 `null`(모든 버전, 만료 없음)이다. `enabled` 는 `true`/`false` 다.
+- 가져올 때 `name`·`reason` 열(JSON 은 키)만 필수다. 나머지를 생략하면 기본값(`npm`, `medium`, `true`, `null`)을 쓴다. 열 순서는 자유이고 모르는 열·키는 무시한다. 머리글은 대소문자를 구분한다. JSON 의 `version` 은 `1` 이어야 한다.
+- 스프레드시트가 저장한 CSV 를 받도록, CSV 의 머리글 셀은 앞뒤 공백을 지우고(대소문자는 구분) `enabled`·`ecosystem`·`severity` 값은 공백을 지우고 소문자로 읽는다(`TRUE`, `False`, `NPM`, `High` 허용). 그 외의 `enabled` 값(`yes` 등)은 그 행의 오류다. JSON 은 이 완화를 적용하지 않는다(`enabled` 는 boolean).
+- CSV 에서 인용한 값의 닫는 따옴표 뒤에 `,`·줄바꿈·입력 끝이 아닌 문자가 있으면(`"a"b`) 파일을 읽을 수 없는 것으로 400 이다.
+- CSV 의 완전히 빈 줄은 건너뛴다. 열 수가 머리글과 다른 행은 그 행의 오류다. JSON 의 객체가 아닌 항목도 그 행의 오류다.
+
+**주의:** 내보낸 CSV 를 스프레드시트에서 열면 `=`·`@` 등으로 시작하는 값(예: 버전 범위 `=1.2.3`, 이름 `@scope/pkg`)이 수식으로 읽힐 수 있다. 다시 가져올 수 있게 값을 그대로 내보내므로 수식 방지 접두어를 붙이지 않는다. 스프레드시트에서 편집할 때는 텍스트 열로 열고, 다시 저장한 CSV 의 값이 그대로인지 가져오기 미리 보기로 확인한다.
+
 ## 업그레이드와 백업
 
 새 버전을 처음 띄울 때 기존 DB 는 **자동으로 마이그레이션**된다(항목·검출·설정과 `id` 는 그대로, DB 버전은 3). v1 DB 의 새 필드는 `npm`/`medium`/켬/만료 없음이고, 예전 스캔은 repo 별 기록 없이 남는다. 마이그레이션 직전에 같은 폴더에 백업 파일을 만든다:
@@ -181,16 +240,19 @@ HTTP 전송을 직접 지원하지 않는 클라이언트(예: Claude Desktop)�
 |------|------|
 | `list_findings` | 검출 목록 (`status`, `repo`, `package`, `ecosystem`, `severity`, `page`, `limit`). `severity` 는 정확히 일치하는 값만 거른다 |
 | `set_finding_status` | 검출을 `ignored` 또는 `open` 으로 변경 (`id`, `status`) |
-| `list_blacklist` | 블랙리스트 목록 (`ecosystem?`, `enabled?`, `q?`). `enabled=true` 는 사용자가 켠 항목이라서 만료된 항목도 포함된다. 만료 여부는 각 항목의 `isExpired` 로 본다 |
+| `list_blacklist` | 블랙리스트 목록 (`ecosystem?`, `enabled?`, `q?`, `status?`). `enabled=true` 는 사용자가 켠 항목이라서 만료된 항목도 포함된다. 만료 여부는 각 항목의 `isExpired` 로 본다 |
 | `add_blacklist_entry` | 블랙리스트 항목 추가 (`name`, `versionRange?`, `reason`, `ecosystem?`, `severity?`, `enabled?`, `expiresAt?`). `severity` 기본값은 `medium`, 즉시 메일 기준은 `get_settings` 의 `notifyMinSeverity` |
 | `update_blacklist_entry` | 블랙리스트 항목 수정 (`id`, `name`, `versionRange`, `reason`, `ecosystem?`, `severity?`, `enabled?`, `expiresAt?`). `name`·`versionRange`·`reason` 은 전체 교체, 나머지 필드는 생략하면 유지. `expiresAt: null` 은 만료 해제 |
 | `remove_blacklist_entry` | 블랙리스트 항목 삭제 (`id`). 그 항목의 검출은 `resolved` 가 된다 |
+| `bulk_update_blacklist` | 항목 여러 개를 한 번에 켜기·끄기·삭제 (`action`: `enable`/`disable`/`delete`, `ids`). 없는 id 가 있으면 아무것도 바꾸지 않고 `NOT_FOUND` |
+| `import_blacklist` | 파일 형식으로 가져오기 (`items` 배열 또는 `format` + `content` 중 하나, `dryRun?`). `dryRun` 을 생략하면 미리 보기이고 적용하려면 `false`. 행 오류는 결과의 `errors` 로 돌려준다 |
+| `export_blacklist` | 파일 형식으로 내보내기 (`format`, `ecosystem?`, `enabled?`, `q?`, `status?`). 결과는 JSON 으로 감싸지 않은 파일 내용 문자열이다 |
 | `trigger_scan` | 수동 스캔 시작 |
 | `list_scans` | 스캔 이력 (`page`, `limit`) |
 | `get_scan` | 스캔 1건 + 실패한 repo 목록 + repo 별 집계 `repoStats` (`id`). `list_scans` 의 결과에도 `repoStats` 가 들어간다 |
 | `get_settings` | 설정과 연결 상태 조회(읽기 전용) |
 
-결과는 JSON 문자열(text content)이고, 오류는 `isError: true` 와 `{ code, message, details? }` JSON 이다.
+tool 은 모두 13개다. 결과는 JSON 문자열(text content)이고(`export_blacklist` 만 파일 내용 그대로), 오류는 `isError: true` 와 `{ code, message, details? }` JSON 이다.
 
 ## 알려진 한계
 
