@@ -81,6 +81,27 @@ export interface IndicatorRules {
     skipped?: Set<string>,
   ): Promise<IndicatorMatch[]>;
   matchBranches(repo: string, where: string, branches: string[], logger: Logger): IndicatorMatch[];
+  hasCommit: boolean;
+  hasPr: boolean;
+  /** 커밋 메시지에서 commit 항목의 문자열을 대소문자 무시로 찾는다. 검출의 위치는 `commit/<sha>` */
+  matchCommits(
+    repo: string,
+    where: string,
+    commits: readonly { sha: string; message: string }[],
+    logger: Logger,
+  ): Promise<IndicatorMatch[]>;
+  /** PR 제목에서 pr 항목의 문자열을 찾는다. 검출의 위치는 `pull/<번호>` */
+  matchPulls(
+    repo: string,
+    where: string,
+    pulls: readonly { number: number; title: string }[],
+    logger: Logger,
+  ): Promise<IndicatorMatch[]>;
+}
+
+/** 글자 그대로의 문자열 항목(commit·pr)을 소문자로 바꿔 둔다 */
+function needlesOf(snapshot: BlacklistEntry[], ecosystem: string): { entry: BlacklistEntry; needle: string }[] {
+  return snapshot.filter((entry) => entry.ecosystem === ecosystem).map((entry) => ({ entry, needle: entry.name.toLowerCase() }));
 }
 
 export function createIndicatorRules(snapshot: BlacklistEntry[]): IndicatorRules {
@@ -89,6 +110,8 @@ export function createIndicatorRules(snapshot: BlacklistEntry[]): IndicatorRules
     .filter((entry) => entry.ecosystem === "content")
     .map((entry) => ({ entry, needle: entry.name.toLowerCase() }));
   const branchEntries = snapshot.filter((entry) => entry.ecosystem === "branch");
+  const commitNeedles = needlesOf(snapshot, "commit");
+  const prNeedles = needlesOf(snapshot, "pr");
 
   // path: `/` 가 없는 항목은 파일 이름과도 비교한다.
   const pathFull = indexByName(pathEntries);
@@ -104,6 +127,37 @@ export function createIndicatorRules(snapshot: BlacklistEntry[]): IndicatorRules
     hasPath: pathEntries.length > 0,
     hasContent: contentEntries.length > 0,
     hasBranch: branchEntries.length > 0,
+    hasCommit: commitNeedles.length > 0,
+    hasPr: prNeedles.length > 0,
+
+    async matchCommits(repo, where, commits, logger) {
+      const allow = createLimiter(logger, where, "commit");
+      const matches: IndicatorMatch[] = [];
+      // sha 순으로 검사해야 상한(100건)에서 남는 커밋이 입력 순서와 무관하다.
+      const sorted = [...commits].sort((a, b) => (a.sha < b.sha ? -1 : a.sha > b.sha ? 1 : 0));
+      await yieldToLoop();
+      for (const commit of sorted) {
+        const lower = commit.message.toLowerCase();
+        for (const { entry, needle } of commitNeedles) {
+          if (lower.includes(needle) && allow(entry)) matches.push(indicatorMatch(repo, `commit/${commit.sha}`, entry));
+        }
+      }
+      return matches;
+    },
+
+    async matchPulls(repo, where, pulls, logger) {
+      const allow = createLimiter(logger, where, "pr");
+      const matches: IndicatorMatch[] = [];
+      const sorted = [...pulls].sort((a, b) => a.number - b.number);
+      await yieldToLoop();
+      for (const pull of sorted) {
+        const lower = pull.title.toLowerCase();
+        for (const { entry, needle } of prNeedles) {
+          if (lower.includes(needle) && allow(entry)) matches.push(indicatorMatch(repo, `pull/${pull.number}`, entry));
+        }
+      }
+      return matches;
+    },
 
     async matchPaths(repo, where, treePaths, logger) {
       const allow = createLimiter(logger, where, "path");

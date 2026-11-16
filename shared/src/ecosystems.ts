@@ -6,6 +6,7 @@ import {
   valid as pep440Valid,
   validRange as pep440ValidRange,
 } from "@renovatebot/pep440";
+import semverCoerce from "semver/functions/coerce.js";
 import semverParse from "semver/functions/parse.js";
 import semverSatisfies from "semver/functions/satisfies.js";
 import semverValidRange from "semver/ranges/valid.js";
@@ -390,6 +391,149 @@ export function normalizeImageName(name: string): string {
     .replace(/^library\//, "");
 }
 
+// ---------------------------------------------------------------- RubyGems 계열 (rubygems, cocoapods)
+
+// Gem::Version: `.` 으로 나눈 마디. 문자가 든 마디는 prerelease 이고 숫자 마디보다 작다. `-` 는 `.pre.` 다.
+const GEM_VERSION = /^\d+(?:\.[0-9A-Za-z]+)*$/;
+
+function parseGemVersion(text: string): string[] | null {
+  const normalized = text.trim().replace(/-/g, ".pre.");
+  if (!GEM_VERSION.test(normalized)) return null;
+  // `1.0.rc1` → ["1", "0", "rc", "1"]: 문자와 숫자의 경계에서도 나눈다.
+  const parts = normalized.split(".").flatMap((part) => part.match(/\d+|[A-Za-z]+/g) ?? []);
+  // Ruby 는 prerelease 앞의 0 을 뗀다 (`1.0.0.a` = `1.0.a` = `1.a`). 숫자 마디는 1개 이상 남긴다.
+  const firstText = parts.findIndex((part) => !DIGITS.test(part));
+  if (firstText === -1) return parts;
+  let end = firstText;
+  while (end > 1 && /^0+$/.test(parts[end - 1] as string)) end -= 1;
+  return [...parts.slice(0, end), ...parts.slice(firstText)];
+}
+
+function compareGemVersions(a: string[], b: string[]): number {
+  const length = Math.max(a.length, b.length);
+  for (let i = 0; i < length; i += 1) {
+    // 없는 마디는 0 이다 (`1.0` = `1.0.0`). 문자 마디는 0 보다 작다 (`1.0.a` < `1.0`).
+    const x = a[i] ?? "0";
+    const y = b[i] ?? "0";
+    const xNumeric = DIGITS.test(x);
+    const yNumeric = DIGITS.test(y);
+    if (xNumeric && yNumeric) {
+      const order = compareDigits(x, y);
+      if (order !== 0) return order;
+    } else if (xNumeric !== yNumeric) {
+      return xNumeric ? 1 : -1;
+    } else if (x !== y) {
+      return x < y ? -1 : 1;
+    }
+  }
+  return 0;
+}
+
+interface GemComparator {
+  operator: string;
+  version: string[];
+}
+
+const GEM_COMPARATOR = /^(=|!=|>=|<=|~>|>|<)?\s*(\S+)$/;
+
+/** `>= 1.0, < 2.0` → 비교식의 목록. 읽을 수 없으면 null. */
+function parseGemRequirement(range: string): GemComparator[] | null {
+  if (typeof range !== "string") return null;
+  const comparators: GemComparator[] = [];
+  for (const part of range.split(",")) {
+    const match = GEM_COMPARATOR.exec(part.trim());
+    const version = match ? parseGemVersion(match[2] as string) : null;
+    if (!match || version === null) return null;
+    comparators.push({ operator: match[1] ?? "=", version });
+  }
+  return comparators.length === 0 ? null : comparators;
+}
+
+/** `~> 1.2.3` 의 위쪽 경계: 마지막 마디를 버리고 그 앞 마디를 1 올린다 (`1.3`). 마디가 1개면 그 마디를 올린다. */
+function gemPessimisticUpper(version: string[]): string[] {
+  const firstText = version.findIndex((part) => !DIGITS.test(part));
+  const numeric = firstText === -1 ? version : version.slice(0, firstText);
+  const kept = numeric.length > 1 ? numeric.slice(0, -1) : numeric;
+  const last = kept[kept.length - 1] ?? "0";
+  return [...kept.slice(0, -1), (BigInt(last) + 1n).toString()];
+}
+
+function gemSatisfies(version: string[], comparator: GemComparator): boolean {
+  const order = compareGemVersions(version, comparator.version);
+  switch (comparator.operator) {
+    case "=":
+      return order === 0;
+    case "!=":
+      return order !== 0;
+    case ">":
+      return order > 0;
+    case "<":
+      return order < 0;
+    case ">=":
+      return order >= 0;
+    case "<=":
+      return order <= 0;
+    case "~>":
+      return order >= 0 && compareGemVersions(version, gemPessimisticUpper(comparator.version)) < 0;
+    default:
+      return false;
+  }
+}
+
+function gemRule(message: string): Pick<EcosystemRule, "validateRange" | "satisfies" | "exactVersionOf"> {
+  return {
+    validateRange: (range) => (parseGemRequirement(range) === null ? message : null),
+    satisfies: safeSatisfies((versionText, range) => {
+      const version = parseGemVersion(versionText);
+      const comparators = parseGemRequirement(range);
+      return version !== null && comparators !== null && comparators.every((c) => gemSatisfies(version, c));
+    }),
+    exactVersionOf: safeExact((spec) => {
+      const match = /^=?\s*(\S+)$/.exec(spec);
+      return match && parseGemVersion(match[1] as string) !== null ? (match[1] as string) : null;
+    }),
+  };
+}
+
+// ---------------------------------------------------------------- Composer
+
+/**
+ * Composer 와 npm 이 다르게 읽는 조각을 npm 의 뜻으로 고친다.
+ * `~1.2` 는 Composer 에서 `>=1.2 <2.0` 이고(npm 은 `<1.3`), 연산자 없는 `1.2` 는 정확히 `1.2.0` 이다(npm 은 `1.2.x`).
+ */
+function composerToken(token: string): string {
+  const tilde = /^~(\d+)\.(\d+)$/.exec(token);
+  if (tilde) return `>=${tilde[1]}.${tilde[2]}.0 <${(BigInt(tilde[1] as string) + 1n).toString()}.0.0`;
+  const partial = /^(\d+)(?:\.(\d+))?$/.exec(token);
+  if (partial) return `=${partial[1]}.${partial[2] ?? "0"}.0`;
+  return token;
+}
+
+/** Composer 의 제약을 semver 범위로 바꾼다: `,` 는 AND, `|` 는 OR, `v` 접두와 `@stable` 같은 표지는 뗀다. */
+function composerToSemver(range: string): string | null {
+  if (typeof range !== "string") return null;
+  const normalized = range
+    .replace(/@[A-Za-z]+/g, "")
+    .replace(/\|{1,2}/g, " || ")
+    .replace(/,/g, " ")
+    .replace(/(^|[\s<>=^~])v(?=\d)/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+  // 하이픈 범위(`1.0 - 2.0`)는 조각을 고치지 않는다 — 양 끝의 부분 버전은 범위의 경계다.
+  const converted = normalized.includes(" - ")
+    ? normalized
+    : normalized.split(" ").map(composerToken).join(" ");
+  return converted !== "" && semverValidRange(converted) !== null ? converted : null;
+}
+
+/** `v1.2.3`, `1.2.3.4`(4번째 마디는 버린다), `1.2` → semver 버전. */
+function composerVersion(version: string): string | null {
+  if (!/^v?\d/.test(version)) return null;
+  return semverCoerce(version, { includePrerelease: true })?.version ?? null;
+}
+
+const COMPOSER_RANGE_MESSAGE = "Composer 버전 제약이 아닙니다 (예: >=1.0 <2.0). 정확한 버전은 1.2.3 형식으로 적으십시오";
+
 // ---------------------------------------------------------------- 침해의 흔적 (path, content, branch)
 
 const NO_RANGE_MESSAGE = "이 종류는 버전 범위를 쓰지 않습니다. 비워 두십시오";
@@ -428,6 +572,24 @@ function indicatorPattern(options: { empty: string; maxLength: number; invalid: 
     return null;
   };
 }
+
+/** 글자 그대로 부분 일치로 찾는 문자열(content, commit, pr)의 검증. 대소문자는 무시하고 찾는다. */
+function literalText(emptyMessage: string) {
+  return (name: string): string | null => {
+    if (typeof name !== "string" || name === "") return emptyMessage;
+    if (name.length < CONTENT_MIN_LENGTH || name.length > CONTENT_MAX_LENGTH) {
+      return `문자열은 ${CONTENT_MIN_LENGTH}~${CONTENT_MAX_LENGTH}자입니다`;
+    }
+    if (hasControlChar(name)) return "문자열에 줄바꿈이나 제어 문자를 쓸 수 없습니다";
+    // `*` 를 패턴으로 오해하지 않게 받지 않는다.
+    if (name.includes("*")) return "문자열에 * 를 쓸 수 없습니다 (패턴이 아니라 글자 그대로 찾습니다)";
+    if ((name.match(ALNUM)?.length ?? 0) < 2) return "문자열에 영문자·숫자가 2자 이상 있어야 합니다";
+    return null;
+  };
+}
+
+/** SHA·digest 의 앞부분 비교가 없는 종류(버전이 그대로 값이다). */
+const EXACT_ONLY = { ofVersion: () => null, ofToken: () => null, minPrefix: 1 };
 
 // ---------------------------------------------------------------- 종류별 규칙
 
@@ -618,6 +780,112 @@ export const ECOSYSTEM_RULES: Record<Ecosystem, EcosystemRule> = {
     }),
   },
 
+  rubygems: {
+    nameExample: "rest-client",
+    rangeExample: ">= 1.6.10, < 1.6.14 (정확히: = 1.6.13)",
+    normalizeName: identity,
+    validateName: nameValidator({
+      shape: /^[A-Za-z0-9][A-Za-z0-9._-]*$/,
+      patternChars: /^[A-Za-z0-9._*-]+$/,
+      maxLength: 255,
+      invalidMessage: "gem 이름 형식이 아닙니다 (영문자, 숫자, - _ .)",
+    }),
+    ...gemRule("gem 버전 요구식이 아닙니다 (예: >= 1.0, < 2.0). 정확한 버전은 = 1.2.3 형식으로 적으십시오"),
+  },
+
+  composer: {
+    nameExample: "vendor/package",
+    rangeExample: ">=1.0 <2.0 (정확히: 1.2.3)",
+    // Packagist 의 이름은 소문자다.
+    normalizeName: (name) => name.toLowerCase(),
+    validateName: nameValidator({
+      shape: /^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/,
+      patternChars: /^[A-Za-z0-9_./*-]+$/,
+      maxLength: 255,
+      invalidMessage: "Composer 패키지 이름 형식이 아닙니다 (vendor/package)",
+    }),
+    validateRange: (range) => (composerToSemver(range) === null ? COMPOSER_RANGE_MESSAGE : null),
+    satisfies: safeSatisfies((version, range) => {
+      const exact = composerVersion(version);
+      const converted = composerToSemver(range);
+      return exact !== null && converted !== null && semverSatisfies(exact, converted, SEMVER_OPTIONS);
+    }),
+    // `dev-master` 같은 브랜치 별칭과 범위는 정확한 버전이 아니다.
+    // `1.x`, `1.0.*` 같은 와일드카드는 범위다.
+    exactVersionOf: safeExact((spec) =>
+      /^v?\d+(?:\.\d+){0,3}(?:[-+][0-9A-Za-z.+-]*)?$/.test(spec) && composerVersion(spec) !== null ? spec : null,
+    ),
+  },
+
+  cocoapods: {
+    nameExample: "AFNetworking",
+    rangeExample: ">= 3.0, < 4.0 (정확히: = 3.2.1)",
+    normalizeName: identity,
+    validateName: nameValidator({
+      // `Firebase/Auth` 같은 subspec 을 받는다.
+      shape: /^[A-Za-z0-9_+][A-Za-z0-9_+.-]*(?:\/[A-Za-z0-9_+.-]+)*$/,
+      patternChars: /^[A-Za-z0-9_+./*-]+$/,
+      maxLength: 255,
+      invalidMessage: "pod 이름 형식이 아닙니다 (예: AFNetworking, Firebase/Auth)",
+    }),
+    ...gemRule("pod 버전 요구식이 아닙니다 (예: >= 3.0, < 4.0). 정확한 버전은 = 3.2.1 형식으로 적으십시오"),
+  },
+
+  vscode: {
+    nameExample: "publisher.extension-name",
+    rangeExample: "1.2.3, 1.2.4",
+    // marketplace 의 id 는 대소문자를 구분하지 않는다.
+    normalizeName: (name) => name.toLowerCase(),
+    validateName: nameValidator({
+      shape: /^[A-Za-z0-9][A-Za-z0-9-]*\.[A-Za-z0-9][A-Za-z0-9._-]*$/,
+      patternChars: /^[A-Za-z0-9._*-]+$/,
+      maxLength: 255,
+      invalidMessage: "VS Code 확장의 id 형식이 아닙니다 (publisher.name)",
+    }),
+    ...refListRule("버전을 쉼표로 나눠 적으십시오 (예: 1.2.3, 1.2.4)", EXACT_ONLY),
+  },
+
+  helm: {
+    nameExample: "ingress-nginx",
+    rangeExample: "4.10.0, 4.10.1",
+    normalizeName: identity,
+    validateName: nameValidator({
+      shape: /^[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/,
+      patternChars: /^[A-Za-z0-9._/*-]+$/,
+      maxLength: 255,
+      invalidMessage: "Helm chart 이름 형식이 아닙니다 (예: ingress-nginx)",
+    }),
+    ...refListRule("버전을 쉼표로 나눠 적으십시오 (예: 4.10.0, 4.10.1)", EXACT_ONLY),
+  },
+
+  terraform: {
+    nameExample: "terraform-aws-modules/vpc/aws",
+    rangeExample: "5.8.0, 5.8.1",
+    normalizeName: identity,
+    validateName: nameValidator({
+      // registry 주소(`ns/name/provider`) 또는 git·https 의 source 문자열.
+      shape: /^[A-Za-z0-9][A-Za-z0-9._/:@+-]*$/,
+      patternChars: /^[A-Za-z0-9._/:@+*-]+$/,
+      maxLength: 255,
+      invalidMessage: "Terraform module 의 source 형식이 아닙니다 (예: terraform-aws-modules/vpc/aws)",
+    }),
+    ...refListRule("버전을 쉼표로 나눠 적으십시오 (예: 5.8.0, 5.8.1)", EXACT_ONLY),
+  },
+
+  commit: {
+    nameExample: "chore: add ci helper",
+    normalizeName: identity,
+    validateName: literalText("커밋 메시지에서 찾을 문자열을 입력하십시오"),
+    ...NO_RANGE,
+  },
+
+  pr: {
+    nameExample: "docs: dependency audit notes",
+    normalizeName: identity,
+    validateName: literalText("PR 제목에서 찾을 문자열을 입력하십시오"),
+    ...NO_RANGE,
+  },
+
   path: {
     nameExample: ".github/workflows/github_actions_security.yml 또는 .ci-*.sh",
     // 경로는 대소문자를 구분한다.
@@ -633,17 +901,7 @@ export const ECOSYSTEM_RULES: Record<Ecosystem, EcosystemRule> = {
   content: {
     nameExample: "193.32.204.199 또는 git-tanstack.com",
     normalizeName: identity,
-    validateName: (name) => {
-      if (typeof name !== "string" || name === "") return "찾을 문자열을 입력하십시오";
-      if (name.length < CONTENT_MIN_LENGTH || name.length > CONTENT_MAX_LENGTH) {
-        return `문자열은 ${CONTENT_MIN_LENGTH}~${CONTENT_MAX_LENGTH}자입니다`;
-      }
-      if (hasControlChar(name)) return "문자열에 줄바꿈이나 제어 문자를 쓸 수 없습니다";
-      // 부분 일치로 찾는 글자 그대로의 문자열이다. `*` 를 패턴으로 오해하지 않게 받지 않는다.
-      if (name.includes("*")) return "문자열에 * 를 쓸 수 없습니다 (패턴이 아니라 글자 그대로 찾습니다)";
-      if ((name.match(ALNUM)?.length ?? 0) < 2) return "문자열에 영문자·숫자가 2자 이상 있어야 합니다";
-      return null;
-    },
+    validateName: literalText("찾을 문자열을 입력하십시오"),
     ...NO_RANGE,
   },
 

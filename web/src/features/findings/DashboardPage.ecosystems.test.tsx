@@ -12,7 +12,7 @@ import { chooseOption, findRowWith } from "@/test/ui";
 const FINDINGS = "/api/findings";
 
 describe("대시보드 종류 — 필터", () => {
-  it("[ME-24] 종류 필터의 옵션은 전체 + 9개 종류이고, go 를 고르면 ecosystem=go 와 page=1 로 요청한다", async () => {
+  it("[ME-24] 종류 필터의 옵션은 전체 + 20개 종류이고, go 를 고르면 ecosystem=go 와 page=1 로 요청한다", async () => {
     const server = setupFetchMock()
       .on("GET", "/api/summary", reply.json(summaryDefault))
       .on("GET", FINDINGS, reply.json(pageOf(findingsPage.items, { total: 1, page: 1, limit: 50 })));
@@ -28,7 +28,7 @@ describe("대시보드 종류 — 필터", () => {
       SUPPORTED_ECOSYSTEMS.filter(isUserManagedEcosystem).map(ecosystemLabel),
     );
     // 검출 탭의 종류 필터에는 위험한 설정(policy)이 없다.
-    expect(SUPPORTED_ECOSYSTEMS.filter(isUserManagedEcosystem)).toHaveLength(12);
+    expect(SUPPORTED_ECOSYSTEMS.filter(isUserManagedEcosystem)).toHaveLength(20);
     await user.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("listbox")).not.toBeInTheDocument());
 

@@ -20,9 +20,9 @@ import { chooseOption, containing, expectFieldError, findRowWith, findToast } fr
 
 const BLACKLIST = "/api/blacklist";
 const FINDINGS = "/api/findings";
-const PACKAGE_LABELS = ["npm", "go", "pypi", "nuget", "cargo", "pub", "maven"];
-const CI_LABELS = ["GitHub Actions", "Docker 이미지"];
-const INDICATOR_LABELS = ["파일 경로", "파일 내용", "브랜치 이름"];
+const PACKAGE_LABELS = ["npm", "go", "pypi", "nuget", "cargo", "pub", "maven", "RubyGems", "Composer", "CocoaPods"];
+const CI_LABELS = ["GitHub Actions", "Docker 이미지", "VS Code 확장", "Helm chart", "Terraform module"];
+const INDICATOR_LABELS = ["파일 경로", "파일 내용", "브랜치 이름", "커밋 메시지", "PR 제목"];
 const GROUPS = [
   { label: "패키지", options: PACKAGE_LABELS },
   { label: "CI·이미지", options: CI_LABELS },
@@ -103,7 +103,7 @@ function groupsOf(listbox: HTMLElement) {
 }
 
 describe("새 종류 — 종류 select 그룹", () => {
-  it("[SB-50] 추가 Dialog: 패키지 그룹(7개) → CI·이미지 그룹(GitHub Actions, Docker 이미지)", async () => {
+  it("[SB-50] 추가 Dialog: 패키지 그룹(10개) → CI·이미지 그룹(5개) → 침해의 흔적 그룹(5개)", async () => {
     setupServer();
     const { user } = await renderBlacklist();
     const dialog = await openAddDialog(user);

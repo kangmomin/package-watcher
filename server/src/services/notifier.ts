@@ -122,6 +122,15 @@ function compareFindings(a: Finding, b: Finding): number {
 const versionLabel = (finding: Finding): string =>
   finding.version === "" && !usesVersionRange(finding.ecosystem) ? "-" : finding.version;
 
+/** 커밋·PR 흔적의 위치(`commit/<sha>`, `pull/<n>`)는 읽기 쉬운 표시로 바꾼다. 종류로 판정한다(실제 파일 경로와 섞이지 않게) */
+function locationLabel(finding: Finding): string {
+  if (finding.ecosystem === "commit" && finding.filePath.startsWith("commit/")) {
+    return `커밋 ${finding.filePath.slice("commit/".length, "commit/".length + 7)}`;
+  }
+  if (finding.ecosystem === "pr" && finding.filePath.startsWith("pull/")) return `PR #${finding.filePath.slice("pull/".length)}`;
+  return finding.filePath;
+}
+
 /**
  * 즉시 메일과 일일 요약이 함께 쓰는 렌더러. 검출 행은 최대 MAIL_MAX_ROWS 개(repo 제목 행은 세지 않는다, S-2).
  * 심각도 순으로 정렬하므로 repo 제목은 repo 가 바뀔 때마다 출력한다(같은 repo 가 다시 나올 수 있다).
@@ -140,7 +149,7 @@ export function renderFindings(findings: Finding[]): string {
       currentGroup = group;
     }
     lines.push(
-      `- [${finding.severity}][${finding.ecosystem}] ${printable(finding.filePath)}: ${printable(finding.packageName)}@${printable(versionLabel(finding))} (${typeLabel(finding)}) — 사유: ${printable(finding.reason)}`,
+      `- [${finding.severity}][${finding.ecosystem}] ${printable(locationLabel(finding))}: ${printable(finding.packageName)}@${printable(versionLabel(finding))} (${typeLabel(finding)}) — 사유: ${printable(finding.reason)}`,
       `  ${finding.htmlUrl}`,
     );
   }

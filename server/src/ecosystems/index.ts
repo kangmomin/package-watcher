@@ -1,10 +1,13 @@
 import type { PackageEcosystem } from "@pw/shared";
 import { cargoSupport } from "./cargo.ts";
+import { cocoapodsSupport } from "./cocoapods.ts";
+import { composerSupport } from "./composer.ts";
 import { goSupport } from "./go.ts";
 import { mavenSupport } from "./maven.ts";
 import { nugetSupport } from "./nuget.ts";
 import { pubSupport } from "./pub.ts";
 import { pypiSupport } from "./pypi.ts";
+import { rubygemsSupport } from "./rubygems.ts";
 import type { EcosystemSupport, FileRole } from "./types.ts";
 
 export type { DeclaredDependency, EcosystemSupport, FileRole, LockedPackage } from "./types.ts";
@@ -19,6 +22,9 @@ export const ECOSYSTEM_SUPPORT: Record<FileEcosystem, EcosystemSupport> = {
   cargo: cargoSupport,
   pub: pubSupport,
   maven: mavenSupport,
+  rubygems: rubygemsSupport,
+  composer: composerSupport,
+  cocoapods: cocoapodsSupport,
 };
 
 const SUPPORTS = Object.values(ECOSYSTEM_SUPPORT);

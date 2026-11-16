@@ -47,7 +47,7 @@ describe("convertAdvisory: 범위 표기의 변환 (종류 × 표기)", () => {
     expect(converted?.versionRange).toBe(expected);
   });
 
-  it("[SE-21] 종류의 대응: 8개를 지원하고 그 외는 건너뛴다(null)", () => {
+  it("[SE-21] 종류의 대응: 10개를 지원하고 그 외는 건너뛴다(null)", () => {
     expect(Object.fromEntries(Object.entries(GHSA_ECOSYSTEMS))).toEqual({
       NPM: "npm",
       PIP: "pypi",
@@ -57,8 +57,10 @@ describe("convertAdvisory: 범위 표기의 변환 (종류 × 표기)", () => {
       MAVEN: "maven",
       PUB: "pub",
       ACTIONS: "actions",
+      RUBYGEMS: "rubygems",
+      COMPOSER: "composer",
     });
-    for (const skipped of ["RUBYGEMS", "COMPOSER", "ERLANG", "SWIFT", "", "npm"]) {
+    for (const skipped of ["SWIFT", "ERLANG", "", "npm"]) {
       expect(convertAdvisory(skipped, "pkg", "= 1.0.0")).toBeNull();
     }
   });

@@ -78,7 +78,7 @@ describe("침해의 흔적 — 종류 select", () => {
     await user.click(d.ecosystem);
     const groups = groupsOf(await screen.findByRole("listbox"));
     expect(groups.map((g) => g.label)).toEqual(["패키지", "CI·이미지", "침해의 흔적"]);
-    expect(groups[2]?.options).toEqual(["파일 경로", "파일 내용", "브랜치 이름"]);
+    expect(groups[2]?.options).toEqual(["파일 경로", "파일 내용", "브랜치 이름", "커밋 메시지", "PR 제목"]);
   });
 
   it("[SC-51] 검출 필터에도 침해의 흔적 그룹이 있다", async () => {

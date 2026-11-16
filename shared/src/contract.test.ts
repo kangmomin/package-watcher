@@ -270,7 +270,7 @@ describe("[CT-15] v2 fixture 와 상수", () => {
     expect(settingsSchema.safeParse(settingsWithoutMin).success).toBe(false);
   });
 
-  it("[SD-02] 내장 검사 9개: id 는 서로 다르고 policy 의 이름 규칙을 통과한다", () => {
+  it("[SD-02] 내장 검사 16개: id 는 서로 다르고 policy 의 이름 규칙을 통과한다", () => {
     expect(POLICY_CHECK_IDS).toEqual([
       "unpinned-action",
       "missing-lockfile",
@@ -281,8 +281,15 @@ describe("[CT-15] v2 fixture 와 상수", () => {
       "unpinned-image",
       "committed-node-modules",
       "suspicious-filename",
+      "workflow-changed",
+      "new-committer",
+      "install-script",
+      "lock-external-source",
+      "custom-registry",
+      "npmrc-token",
+      "external-submodule",
     ]);
-    expect(new Set(POLICY_CHECK_IDS).size).toBe(9);
+    expect(new Set(POLICY_CHECK_IDS).size).toBe(16);
     for (const check of POLICY_CHECKS) {
       expect(ECOSYSTEM_RULES.policy.validateName(check.id), check.id).toBeNull();
       expect(check.title.length).toBeGreaterThan(0);
@@ -305,20 +312,17 @@ describe("[CT-15] v2 fixture 와 상수", () => {
     expect(summarySchema.safeParse(withoutCount).success).toBe(false);
   });
 
-  it("상수: 종류 13개(패키지 7 + CI 2 + 흔적 3 + 설정 1), 입력도 같다, 심각도는 높은 순", () => {
+  it("상수: 종류 21개(패키지 10 + CI 5 + 흔적 5 + 설정 1), 입력도 같다, 심각도는 높은 순", () => {
     expect(ECOSYSTEMS).toEqual([
-      ...["npm", "go", "pypi", "nuget", "cargo", "pub", "maven"],
-      ...["actions", "docker"],
-      ...["path", "content", "branch"],
+      ...["npm", "go", "pypi", "nuget", "cargo", "pub", "maven", "rubygems", "composer", "cocoapods"],
+      ...["actions", "docker", "vscode", "helm", "terraform"],
+      ...["path", "content", "branch", "commit", "pr"],
       "policy",
     ]);
     expect(ECOSYSTEMS.map((ecosystem) => ECOSYSTEM_CATEGORY[ecosystem])).toEqual([
-      ...Array.from({ length: 7 }, () => "package"),
-      "ci",
-      "ci",
-      "indicator",
-      "indicator",
-      "indicator",
+      ...Array.from({ length: 10 }, () => "package"),
+      ...Array.from({ length: 5 }, () => "ci"),
+      ...Array.from({ length: 5 }, () => "indicator"),
       "policy",
     ]);
     expect(SUPPORTED_ECOSYSTEMS).toEqual([...ECOSYSTEMS]);

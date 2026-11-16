@@ -108,7 +108,8 @@ describe("[ME-01] 이름 규칙", () => {
   it("패턴의 메시지는 묶음 1 그대로다 (모든 종류)", () => {
     // content 는 패턴이 아니라 글자 그대로의 문자열이라 `*` 자체를 받지 않는다.
     // policy 의 이름은 내장 검사의 id 라서 패턴이 없다.
-    for (const ecosystem of ECOSYSTEMS.filter((value) => value !== "content" && value !== "policy")) {
+    const literal: readonly string[] = ["content", "commit", "pr", "policy"];
+    for (const ecosystem of ECOSYSTEMS.filter((value) => !literal.includes(value))) {
       expect(rule(ecosystem).validateName("ab?*")).toBe("패턴에 쓸 수 없는 문자가 있습니다");
       expect(rule(ecosystem).validateName("*")).toBe("패턴에 영문자·숫자가 2자 이상 있어야 합니다");
     }
@@ -126,6 +127,12 @@ const RANGE_EXAMPLE_FIRST: Partial<Record<Ecosystem, string>> = {
   maven: "[1.0,2.0)",
   actions: "v0.34.0, v0.34.1",
   docker: "v1.107.0, latest",
+  rubygems: ">= 1.6.10, < 1.6.14",
+  composer: ">=1.0 <2.0",
+  cocoapods: ">= 3.0, < 4.0",
+  vscode: "1.2.3, 1.2.4",
+  helm: "4.10.0, 4.10.1",
+  terraform: "5.8.0, 5.8.1",
 };
 
 describe("[v2-AC-11] 이름 정규화", () => {

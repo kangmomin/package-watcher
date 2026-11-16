@@ -104,7 +104,7 @@ describe("GET /api/feed/entries", () => {
 
     expectApiError(await t.request("GET", "/api/feed/entries?limit=201"), 400, "VALIDATION_ERROR");
     expectApiError(await t.request("GET", "/api/feed/entries?page=0"), 400, "VALIDATION_ERROR");
-    expectApiError(await t.request("GET", "/api/feed/entries?ecosystem=rubygems"), 400, "VALIDATION_ERROR");
+    expectApiError(await t.request("GET", "/api/feed/entries?ecosystem=erlang"), 400, "VALIDATION_ERROR");
   });
 
   it("[SE-86] 블랙리스트 목록에는 feed 항목이 나오지 않는다", async () => {

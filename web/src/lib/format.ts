@@ -103,11 +103,19 @@ const ECOSYSTEM_LABELS: Record<Ecosystem, string> = {
   cargo: "cargo",
   pub: "pub",
   maven: "maven",
+  rubygems: "RubyGems",
+  composer: "Composer",
+  cocoapods: "CocoaPods",
   actions: "GitHub Actions",
   docker: "Docker 이미지",
+  vscode: "VS Code 확장",
+  helm: "Helm chart",
+  terraform: "Terraform module",
   path: "파일 경로",
   content: "파일 내용",
   branch: "브랜치 이름",
+  commit: "커밋 메시지",
+  pr: "PR 제목",
   policy: "위험한 설정",
 };
 const ECOSYSTEM_CATEGORY_LABELS: Record<EcosystemCategory, string> = {
@@ -140,4 +148,36 @@ export function policyCheckTitle(id: string): string {
 /** 건수의 천 단위 구분 (`151,751`). 로케일과 무관하게 같은 모양이다. */
 export function formatCount(count: number): string {
   return count.toLocaleString("en-US");
+}
+
+const COMMIT_FILE_PATH = /^commit\/([0-9a-f]{40})$/;
+const PULL_FILE_PATH = /^pull\/(\d+)$/;
+
+interface FileLabelSource {
+  ecosystem: Ecosystem;
+  filePath: string;
+}
+
+/** 파일 칸의 값을 바꿔 보여 줄 때의 (보이는 글자, 전체 값을 읽는 글자). 바꾸지 않으면 null. */
+function findingFileParts({ ecosystem, filePath }: FileLabelSource): { short: string; full: string } | null {
+  // path 흔적이 잡은 실제 파일 이름과 구별하려고 종류까지 본다.
+  if (ecosystem === "commit" || ecosystem === "policy") {
+    const sha = COMMIT_FILE_PATH.exec(filePath)?.[1];
+    if (sha) return { short: `커밋 ${sha.slice(0, 7)}`, full: `커밋 ${sha}` };
+  }
+  if (ecosystem === "pr") {
+    const number = PULL_FILE_PATH.exec(filePath)?.[1];
+    if (number) return { short: `PR #${number}`, full: `PR #${number}` };
+  }
+  return null;
+}
+
+/** 검출의 파일 칸 표시: commit·policy 의 `commit/<소문자 sha 40자>` → "커밋 <앞 7자>", pr 의 `pull/<번호>` → "PR #<번호>", 그 외는 그대로 */
+export function findingFileLabel(source: FileLabelSource): string {
+  return findingFileParts(source)?.short ?? source.filePath;
+}
+
+/** 변환해 보일 때 스크린 리더가 읽을 전체 값. 변환하지 않으면 null. */
+export function findingFileFullLabel(source: FileLabelSource): string | null {
+  return findingFileParts(source)?.full ?? null;
 }

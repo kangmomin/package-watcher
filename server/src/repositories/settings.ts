@@ -14,6 +14,8 @@ export type SettingKey =
   | "listed_baseline"
   | "feed_enabled"
   | "branch_scan_days"
+  // repo_authors 를 기록한 org (org 가 바뀌면 비운다)
+  | "authors_org"
   // 외부 목록 동기화의 내부 상태(API 응답은 feed 서비스가 조합한다)
   | "feed_full_sync_done"
   | "feed_cursor"
