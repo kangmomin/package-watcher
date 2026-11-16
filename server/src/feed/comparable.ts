@@ -27,6 +27,14 @@ export function comparableRange(ecosystem: string, range: string | null): string
     case "cargo":
     case "go":
       return SEMVER_ALL.has(bare) ? "" : compact;
+    case "rubygems":
+    case "cocoapods":
+    case "composer":
+      return SEMVER_ALL.has(bare) ? "" : compact;
+    case "vscode":
+    case "helm":
+    case "terraform":
+      return compact === "*" ? "" : compact;
     case "pypi":
       return bare === ">=0" || bare === ">=0.0.0" ? "" : compact;
     case "nuget":

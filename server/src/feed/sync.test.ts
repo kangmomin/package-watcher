@@ -82,7 +82,7 @@ describe("전체 동기화", () => {
   it("[SE-31] 심각도의 대응(MODERATE → medium)과 건너뛴 항목의 수: 지원하지 않는 종류·읽을 수 없는 범위·깨진 노드", async () => {
     const client = new FakeFeedClient([
       fakeNode({ ghsa: "GHSA-aaaa-aaaa-0001", name: "ok-mod", severity: "MODERATE" }),
-      fakeNode({ ghsa: "GHSA-aaaa-aaaa-0002", ecosystem: "RUBYGEMS", name: "gem" }),
+      fakeNode({ ghsa: "GHSA-aaaa-aaaa-0002", ecosystem: "ERLANG", name: "gem" }),
       fakeNode({ ghsa: "GHSA-aaaa-aaaa-0003", name: "bad-range", range: "~> 1.0" }),
       fakeNode({ ghsa: "GHSA-aaaa-aaaa-0004", name: "bad-severity", severity: "WEIRD" }),
       { updatedAt: "2026-11-01T00:00:00Z" },
@@ -170,7 +170,7 @@ describe("전체 동기화", () => {
   });
 
   it("[SE-36] 프로세스가 다시 시작해도 저장된 cursor 에서 이어받고, 건너뛴 수는 이어서 센다", async () => {
-    const list = [...nodes(4), fakeNode({ ghsa: "GHSA-zzzz-zzzz-0001", ecosystem: "RUBYGEMS", name: "gem", updatedAt: "2026-10-01T00:00:00Z" })];
+    const list = [...nodes(4), fakeNode({ ghsa: "GHSA-zzzz-zzzz-0001", ecosystem: "ERLANG", name: "gem", updatedAt: "2026-10-01T00:00:00Z" })];
     const first = new FakeFeedClient(list, 2);
     first.failures.set(2, new Error("끊김"));
     const t1 = appWith(first);

@@ -32,6 +32,7 @@ import {
   normalizeText,
   unwrapNpmAlias,
 } from "../lockfiles/common.ts";
+import { resolvedHostsOf } from "../lockfiles/resolvedHosts.ts";
 import {
   lockfileKindOf,
   parseLockfile,
@@ -59,7 +60,14 @@ import { createBlobCache, type BlobCache } from "./blobCache.ts";
 import type { FeedSource } from "./feedService.ts";
 import type { Notifier } from "./notifier.ts";
 import { createIndicatorRules, type IndicatorRules } from "./scanIndicators.ts";
-import { createPolicyRules, type PolicyManifest, type PolicyMatch, type PolicyRules } from "./scanPolicy.ts";
+import {
+  createPolicyRules,
+  installScriptsOf,
+  type PolicyInput,
+  type PolicyManifest,
+  type PolicyMatch,
+  type PolicyRules,
+} from "./scanPolicy.ts";
 import { needsSourceKind, scanSources, sourceFileOf, type SourceFile } from "./scanSources.ts";
 import type { SourceFacts } from "../sources/index.ts";
 
@@ -230,6 +238,15 @@ interface Manifest {
   raw: Record<string, unknown>;
   /** 직접 의존성. `name` 은 실제 패키지 이름(`npm:` 별칭 분해), `spec` 은 원문 */
   dependencies: { name: string; spec: string }[];
+}
+
+/** `scanNpm` 의 결과. 뒤의 둘은 policy(install-script, lock-external-source)의 입력이다 */
+interface NpmScan {
+  matches: RawMatch[];
+  fileCount: number;
+  manifests: PolicyManifest[];
+  packageScripts: { path: string; scripts: Record<string, string> }[];
+  lockHosts: { path: string; hosts: string[] }[];
 }
 
 interface LockfileFile {
@@ -540,6 +557,8 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     const bunLockbs: TreeEntry[] = [];
     const sourceFiles: SourceFile[] = [];
     const yamlCandidates: TreeEntry[] = [];
+    // custom-registry 검사가 읽는 pypi 의 선언 파일(pyproject.toml, requirements*.txt). pypi 의 파싱과는 따로 읽는다.
+    const registryExtras: SourceFile[] = [];
     const otherFiles = new Map<FileEcosystem, { manifests: TreeEntry[]; locks: TreeEntry[] }>();
     let otherManifestCount = 0;
     let otherLockCount = 0;
@@ -567,6 +586,9 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
           if (source) sourceFiles.push(source);
           continue;
         }
+        if (!isBranch && other.ecosystem === "pypi" && other.role === "manifest" && policy.active.has("custom-registry")) {
+          registryExtras.push({ ...entry, kind: "registry-config" });
+        }
         const files = otherFiles.get(other.ecosystem) ?? { manifests: [], locks: [] };
         if (other.role === "manifest") {
           files.manifests.push(entry);
@@ -590,10 +612,14 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     if (declaredCount === 0 && !traced) {
       return { declaredCount: 0, traced: false, fileCount: 0, matches: [], policyMatches: [], skippedPaths: new Set() };
     }
-    const evaluatePolicy = (manifests: PolicyManifest[], sources: SourceFacts[]): Promise<PolicyMatch[]> =>
+    const evaluatePolicy = (
+      manifests: PolicyManifest[],
+      sources: SourceFacts[],
+      extra: Pick<PolicyInput, "packageScripts" | "lockHosts"> = {},
+    ): Promise<PolicyMatch[]> =>
       policyActive
         ? policy.evaluate(
-            { org, repo: repo.name, treePaths: entries.map((entry) => entry.path), manifests, sources },
+            { org, repo: repo.name, treePaths: entries.map((entry) => entry.path), manifests, sources, ...extra },
             logger,
           )
         : Promise.resolve([]);
@@ -614,7 +640,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     }
     // 보조 파일은 그 파일에서 나오는 종류(또는 활성 policy 검사)의 활성 항목이 있을 때만 받는다.
     // 브랜치에서는 policy 를 평가하지 않으므로 policy 검사가 필요로 하는 종류를 따지지 않는다.
-    const wantedSources = sourceFiles.filter((file) =>
+    const wantedSources = [...sourceFiles, ...registryExtras].filter((file) =>
       needsSourceKind(file.kind, activeEcosystems, isBranch ? new Set() : policy.active),
     );
     if (isBranch) {
@@ -636,7 +662,16 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
 
     // content 검사용: 이 스캔이 받은 모든 파일의 (경로 → 내용). content 항목이 없으면 내용을 보관하지 않는다.
     const received = indicators.hasContent ? new Map<string, string>() : undefined;
-    const npm = await scanNpm(org, client, repo, entryIndex, { packageJsons, lockfiles, bunLockbs, yamlCandidates }, received, isBranch);
+    const npm = await scanNpm(
+      org,
+      client,
+      repo,
+      entryIndex,
+      { packageJsons, lockfiles, bunLockbs, yamlCandidates },
+      received,
+      isBranch,
+      policyActive,
+    );
     matches.push(...withRef(npm.matches));
     let fileCount = npm.fileCount;
     // 블랙리스트에 활성 항목이 있는 종류의 파일만 받는다(GitHub 요청 수를 늘리지 않는다).
@@ -662,7 +697,9 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
         skippedPaths,
       );
       matches.push(...withRef(result.matches));
-      fileCount += result.fileCount;
+      // pypi 가 활성이면 같은 파일을 이미 센 것이다(blob 은 캐시에서 나온다).
+      const alreadyCounted = activeEcosystems.has("pypi") ? wantedSources.filter((f) => registryExtras.includes(f)).length : 0;
+      fileCount += result.fileCount - alreadyCounted;
     }
     if (indicators.hasContent) {
       matches.push(
@@ -676,7 +713,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       traced,
       fileCount,
       matches,
-      policyMatches: await evaluatePolicy(npm.manifests, sourceFacts),
+      policyMatches: await evaluatePolicy(npm.manifests, sourceFacts, npm),
       skippedPaths,
     };
   }
@@ -695,10 +732,14 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     },
     received?: Map<string, string>,
     isBranch = false,
-  ): Promise<{ matches: RawMatch[]; fileCount: number; manifests: PolicyManifest[] }> {
+    /** policy 가 쓰는 package.json 의 설치 script 와 lock 의 주소를 모은다 */
+    collectPolicy = false,
+  ): Promise<NpmScan> {
     const { packageJsons, lockfiles, bunLockbs, yamlCandidates } = files;
     // package.json 이 0개면 Node 프로젝트가 아니다. 브랜치는 lock 만 바뀐 경우도 본다.
-    if (packageJsons.length === 0 && !(isBranch && lockfiles.length > 0)) return { matches: [], fileCount: 0, manifests: [] };
+    if (packageJsons.length === 0 && !(isBranch && lockfiles.length > 0)) {
+      return { matches: [], fileCount: 0, manifests: [], packageScripts: [], lockHosts: [] };
+    }
 
     const dirsOf = (kind: LockfileKind) =>
       new Set(lockfiles.filter((file) => file.kind === kind).map((file) => dirOf(file.path)));
@@ -814,7 +855,21 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       dependencies: manifests.get(entry.path)?.dependencies ?? [],
       locked: (assignment.byPackageJson.get(entry.path) ?? []).length > 0 || hasBunLockb(entry.path),
     }));
-    return { matches, fileCount: toFetch.length, manifests: policyManifests };
+    const packageScripts: NpmScan["packageScripts"] = collectPolicy
+      ? packageJsons.map((entry) => ({ path: entry.path, scripts: installScriptsOf(manifests.get(entry.path)?.raw ?? {}) }))
+      : [];
+    const lockHosts: NpmScan["lockHosts"] = [];
+    if (collectPolicy) {
+      for (const file of lockfiles) {
+        try {
+          const hosts = resolvedHostsOf(file.kind, contentOf(file.path));
+          if (hosts.length > 0) lockHosts.push({ path: file.path, hosts });
+        } catch (error) {
+          logger.warn(`lock 파일의 주소를 읽지 못해 건너뜁니다: ${printable(`${org}/${repo.name}/${file.path}`)}: ${printable(errorMessage(error))}`);
+        }
+      }
+    }
+    return { matches, fileCount: toFetch.length, manifests: policyManifests, packageScripts, lockHosts };
   }
 
   /** npm 을 뺀 종류 1개: 선언 파일과 lock 을 받아 파싱하고 검출한다. 파일 1개라도 실패하면 repo 실패다. */

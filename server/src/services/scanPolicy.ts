@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { POLICY_CHECK_IDS, POLICY_ECOSYSTEM, type BlacklistEntry, type PolicyCheckId } from "@pw/shared";
 import type { Logger } from "../logger.ts";
 import { isRunCommand, type SourceFacts, type SourceKind } from "../sources/index.ts";
@@ -26,6 +27,25 @@ export interface PolicyInput {
   manifests: readonly PolicyManifest[];
   /** 받아서 해석에 성공한 보조 파일. 파싱에 실패한 파일은 넣지 않는다 (오탐을 만들지 않는다) */
   sources: readonly SourceFacts[];
+  /** `package.json` 의 설치 script (preinstall·install·postinstall 만, 내용이 있는 것) */
+  packageScripts?: readonly { path: string; scripts: Readonly<Record<string, string>> }[];
+  /** lock 파일이 공식이 아닌 주소에서 받는 host (공식뿐이면 항목이 없다) */
+  lockHosts?: readonly { path: string; hosts: readonly string[] }[];
+}
+
+/** 설치할 때 npm 이 실행하는 script 의 이름 */
+export const INSTALL_SCRIPT_NAMES = ["preinstall", "install", "postinstall"] as const;
+
+/** `package.json` 의 `scripts` 에서 설치 script 의 (이름 → 내용) */
+export function installScriptsOf(raw: Record<string, unknown>): Record<string, string> {
+  const scripts = raw.scripts;
+  const found: Record<string, string> = {};
+  if (typeof scripts !== "object" || scripts === null || Array.isArray(scripts)) return found;
+  for (const name of INSTALL_SCRIPT_NAMES) {
+    const body = (scripts as Record<string, unknown>)[name];
+    if (typeof body === "string" && body.trim() !== "") found[name] = body;
+  }
+  return found;
 }
 
 export interface PolicyRules {
@@ -42,6 +62,9 @@ const CHECK_SOURCE_KINDS: Partial<Record<PolicyCheckId, readonly SourceKind[]>> 
   "curl-pipe-shell": ["workflow", "action", "dockerfile"],
   "unpinned-exec": ["workflow", "action", "dockerfile", "mcp"],
   "unpinned-image": ["workflow", "action", "dockerfile", "compose"],
+  "custom-registry": ["registry-config"],
+  "npmrc-token": ["registry-config"],
+  "external-submodule": ["gitmodules"],
 };
 
 /** 이 종류의 보조 파일을 활성 policy 검사가 필요로 하는가 */
@@ -257,6 +280,60 @@ function unpinnedImages(input: PolicyInput): Candidate[] {
   return found;
 }
 
+/** 내용이 바뀌면 다른 검출이 되도록 script 내용의 SHA-256 앞 12자를 버전으로 쓴다 */
+const hashOf = (text: string): string => createHash("sha256").update(text).digest("hex").slice(0, 12);
+
+function installScripts(input: PolicyInput): Candidate[] {
+  const found: Candidate[] = [];
+  for (const manifest of input.packageScripts ?? []) {
+    if (isExcludedPath(manifest.path)) continue;
+    for (const name of INSTALL_SCRIPT_NAMES) {
+      const body = manifest.scripts[name];
+      if (body !== undefined) found.push({ filePath: manifest.path, packageName: name, version: hashOf(body) });
+    }
+  }
+  return found;
+}
+
+/** lock 파일 × host 마다 1건. 받은 패키지의 수는 넣지 않는다(수가 바뀔 때마다 새 검출이 되면 안 된다). */
+function lockExternalSources(input: PolicyInput): Candidate[] {
+  return (input.lockHosts ?? []).flatMap((lock) =>
+    lock.hosts.map((host) => ({ filePath: lock.path, packageName: host, version: "" })),
+  );
+}
+
+function customRegistries(input: PolicyInput): Candidate[] {
+  return input.sources.flatMap((source) =>
+    (source.registryHosts ?? []).map((host) => ({ filePath: source.path, packageName: host, version: "" })),
+  );
+}
+
+/** 파일마다 1건. 키의 이름만 보고하고 토큰의 값은 검출에 넣지 않는다. */
+function npmrcTokens(input: PolicyInput): Candidate[] {
+  return input.sources.flatMap((source) => {
+    const key = source.tokenKeys?.[0];
+    return key === undefined ? [] : [{ filePath: source.path, packageName: key, version: "" }];
+  });
+}
+
+/** 이 org 의 GitHub repo 인가 (https·ssh 주소, 대소문자 무시) 또는 상대 경로인가 */
+function isInternalSubmodule(url: string, org: string): boolean {
+  const lower = url.toLowerCase();
+  if (lower.startsWith("./") || lower.startsWith("../")) return true;
+  const name = org.toLowerCase();
+  return [`https://github.com/${name}/`, `ssh://github.com/${name}/`, `git@github.com:${name}/`].some((prefix) =>
+    lower.startsWith(prefix),
+  );
+}
+
+function externalSubmodules(input: PolicyInput): Candidate[] {
+  return input.sources.flatMap((source) =>
+    (source.submodules ?? [])
+      .filter((url) => !isInternalSubmodule(url, input.org))
+      .map((url) => ({ filePath: source.path, packageName: url, version: "" })),
+  );
+}
+
 /** package.json 과 보조 파일의 사실을 쓰는 검사 */
 const SOURCE_CHECKS: Partial<Record<PolicyCheckId, (input: PolicyInput) => Candidate[]>> = {
   "unpinned-action": unpinnedActions,
@@ -266,6 +343,11 @@ const SOURCE_CHECKS: Partial<Record<PolicyCheckId, (input: PolicyInput) => Candi
   "curl-pipe-shell": curlPipes,
   "workflow-no-permissions": workflowsWithoutPermissions,
   "unpinned-image": unpinnedImages,
+  "install-script": installScripts,
+  "lock-external-source": lockExternalSources,
+  "custom-registry": customRegistries,
+  "npmrc-token": npmrcTokens,
+  "external-submodule": externalSubmodules,
 };
 
 /** 활성 policy 항목(스냅샷에서 1번 만들어 repo 마다 쓴다). id 가 내장 검사가 아닌 항목은 무시한다. */

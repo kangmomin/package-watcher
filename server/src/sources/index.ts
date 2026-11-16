@@ -1,16 +1,33 @@
 import { isExcludedPath } from "../ecosystems/index.ts";
 import { extractDockerfile } from "./dockerfile.ts";
+import { extractGitmodules } from "./gitmodules.ts";
+import { extractHelm } from "./helm.ts";
 import { extractMcpCommands } from "./mcpConfig.ts";
+import { extractRegistryConfig } from "./registryConfig.ts";
+import { extractTerraform } from "./terraform.ts";
+import { extractVscode } from "./vscode.ts";
 import { extractActionFile, extractComposeImages, extractWorkflowFacts } from "./workflow.ts";
 import type { SourceFacts, SourceKind, SourceRefs } from "./types.ts";
 
 export { isRunCommand } from "./commands.ts";
-export type { ActionRef, CommandPackage, ImageRef, SourceFacts, SourceKind } from "./types.ts";
+export type {
+  ActionRef,
+  CommandPackage,
+  HelmChart,
+  ImageRef,
+  SourceFacts,
+  SourceKind,
+  TerraformModule,
+  VscodeExtension,
+} from "./types.ts";
 
 const WORKFLOW_DIR = ".github/workflows/";
 const COMPOSE = /^(?:docker-compose|compose)[^/]*\.ya?ml$/i;
 
 const baseName = (path: string): string => path.slice(path.lastIndexOf("/") + 1);
+const HELM_FILES = new Set(["Chart.yaml", "Chart.lock", "requirements.yaml"]);
+/** registry·토큰 설정이 들어 있는 파일 (requirements*.txt 와 pyproject.toml 은 pypi 의 선언 파일이라 scanService 가 따로 넘긴다) */
+const REGISTRY_CONFIG_FILES = new Set([".npmrc", ".yarnrc.yml", "pip.conf", "pip.ini", "uv.toml"]);
 
 /** 경로가 보조 파일(여러 종류의 결과를 내는 파일)이면 그 종류. 제외 폴더 안은 아니다. */
 export function sourceKindOf(path: string): SourceKind | null {
@@ -31,8 +48,22 @@ export function sourceKindOf(path: string): SourceKind | null {
   }
   if (COMPOSE.test(name)) return "compose";
   if (name === ".mcp.json" || name === "mcp.json") return "mcp";
+
+  const parts = path.split("/");
+  const dir = parts[parts.length - 2];
+  if (name === "extensions.json" && dir === ".vscode") return "vscode";
+  if (name === ".devcontainer.json") return "vscode";
+  if (name === "devcontainer.json" && (dir === ".devcontainer" || parts[parts.length - 3] === ".devcontainer")) {
+    return "vscode";
+  }
+  if (HELM_FILES.has(name)) return "helm";
+  if (name.endsWith(".tf") && !parts.includes(".terraform")) return "terraform";
+  if (REGISTRY_CONFIG_FILES.has(name)) return "registry-config";
+  if (name === ".gitmodules") return "gitmodules";
   return null;
 }
+
+const NO_REFS = (): SourceRefs => ({ commands: [], actions: [], images: [] });
 
 /** 보조 파일에서 사실을 뽑는다. 파일 형식이 깨졌으면 throw 한다(호출 쪽이 그 파일만 건너뛴다). */
 export function extractSource(kind: SourceKind, path: string, content: string): SourceFacts {
@@ -56,5 +87,15 @@ export function extractSource(kind: SourceKind, path: string, content: string): 
       return facts({ commands: extractMcpCommands(content), actions: [], images: [] });
     case "compose":
       return facts(extractComposeImages(content));
+    case "vscode":
+      return { ...facts(NO_REFS()), extensions: extractVscode(content) };
+    case "helm":
+      return { ...facts(NO_REFS()), charts: extractHelm(content) };
+    case "terraform":
+      return { ...facts(NO_REFS()), modules: extractTerraform(content) };
+    case "registry-config":
+      return { ...facts(NO_REFS()), ...extractRegistryConfig(path, content) };
+    case "gitmodules":
+      return { ...facts(NO_REFS()), submodules: extractGitmodules(content) };
   }
 }

@@ -1,6 +1,6 @@
 # package-watcher
 
-GitHub org 의 repo 를 주기적으로 스캔해서, 블랙리스트에 올린 패키지(npm, Go, PyPI, NuGet, Cargo, pub, Maven)가 의존성에 들어왔는지 감시한다.
+GitHub org 의 repo 를 주기적으로 스캔해서, 블랙리스트에 올린 패키지(npm, Go, PyPI, NuGet, Cargo, pub, Maven, RubyGems, Composer, CocoaPods)가 의존성에 들어왔는지 감시한다.
 
 - npm 은 `package.json`(dependencies / devDependencies / optionalDependencies / peerDependencies)과 lockfile 4종(`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock`)을 읽는다. 다른 종류의 파일은 "블랙리스트 규칙"의 표를 본다.
 - 검출은 SQLite 에 저장하고, 신규 검출은 즉시, 미해결 검출은 매일 요약 메일(SMTP)로 알린다.
@@ -97,7 +97,7 @@ Docker 로 실행할 때는 `.env` 에 `PORT`, `HOST`, `DATA_DIR`, `WEB_DIST_DIR
 
 | 필드 | 설명 |
 |------|------|
-| `ecosystem` | 종류. 패키지(`npm`, `go`, `pypi`, `nuget`, `cargo`, `pub`, `maven`, 기본 `npm`)와 CI(`actions`, `docker`), 침해의 흔적(`path`, `content`, `branch`), 위험한 설정(`policy`, 내장 검사라서 추가·삭제 불가 — 아래 "위험한 설정"). 같은 이름·버전 범위라도 종류가 다르면 다른 항목이다. **등록한 뒤에는 바꿀 수 없다**(PUT 으로 다른 종류를 보내면 400, 새 항목으로 등록한다) |
+| `ecosystem` | 종류. 패키지(`npm`, `go`, `pypi`, `nuget`, `cargo`, `pub`, `maven`, `rubygems`, `composer`, `cocoapods`, 기본 `npm`)와 CI(`actions`, `docker`, `vscode`, `helm`, `terraform`), 침해의 흔적(`path`, `content`, `branch`), 위험한 설정(`policy`, 내장 검사라서 추가·삭제 불가 — 아래 "위험한 설정"). 같은 이름·버전 범위라도 종류가 다르면 다른 항목이다. **등록한 뒤에는 바꿀 수 없다**(PUT 으로 다른 종류를 보내면 400, 새 항목으로 등록한다) |
 | `name` | 패키지 이름(`actions` 는 `owner/repo`, `docker` 는 이미지 저장소, `path` 는 경로, `content` 는 찾을 문자열, `branch` 는 브랜치 이름) 또는 `*` 패턴(`content` 제외). 종류마다 이름 규칙과 비교 방법이 다르다(아래 표) |
 | `versionRange` | 그 종류의 범위 문법(아래 표). 비우면 모든 버전. `path`·`content`·`branch` 는 범위를 쓰지 않으므로 항상 비어 있고, 값을 주면 400 이다(`details.versionRange`) |
 | `severity` | `critical` > `high` > `medium` > `low`. 기본 `medium`. 대시보드는 심각도가 높은 검출부터 보여 준다 |
@@ -116,8 +116,14 @@ Docker 로 실행할 때는 `.env` 에 `PORT`, `HOST`, `DATA_DIR`, `WEB_DIST_DIR
 | `cargo` | `Cargo.toml`, `Cargo.lock` | 대소문자 구분 | Cargo 요구식: `<1.2.0`, `>=1, <2`, `=1.2.3` (연산자 없는 `1.2` 는 `^1.2`) |
 | `pub` | `pubspec.yaml`, `pubspec.lock` | 대소문자 구분 | pub 제약: `>=1.0.0 <2.0.0`, `^1.2.3` |
 | `maven` | `pom.xml`, `gradle/libs.versions.toml`, `build.gradle`, `build.gradle.kts` | `group:name`, 대소문자 구분 | 구간 표기: `[1.0,2.0)`, `(,1.5]`, `[1.2.3]` |
+| `rubygems` | `Gemfile`, `Gemfile.lock`, `*.gemspec` | gem 이름, 대소문자 구분 | gem 요구식: `>= 1.0, < 2.0`, `~> 1.2`, 정확한 버전은 `= 1.2.3` |
+| `composer` | `composer.json`, `composer.lock` | `vendor/package`, 소문자로 저장 | Composer 제약: `>=1.0 <2.0`, `^1.2`, `>=1.0 <2.0 \|\| ^3.0`, 정확한 버전은 `1.2.3` |
+| `cocoapods` | `Podfile`, `Podfile.lock` | pod 이름(`Firebase/Auth` 같은 subspec 포함), 대소문자 구분 | gem 요구식과 같다: `>= 3.0, < 4.0`, `= 3.2.1` |
 | `actions` | `.github/workflows/*.yml\|yaml` 의 `uses`(step, job 의 재사용 workflow), `action.yml\|yaml`(composite) | `owner/repo`, 소문자로 저장. `owner/*` 패턴 가능. `owner/repo/path@ref` 는 앞의 두 조각만 이름이다. `./` 로컬 action 과 `${{ }}` 는 건너뛴다 | **정확한 값의 목록**(semver 아님): `v0.34.0, v0.34.1` 또는 commit SHA(전체, 또는 7자 이상의 앞부분). ref 가 없는 `uses: owner/repo` 는 범위 없는 항목에만 일치한다 |
 | `docker` | `Dockerfile*`·`*.Dockerfile`·`Containerfile` 의 `FROM`·`COPY --from`, compose(`docker-compose*.yml`, `compose*.yml`)의 `image`, workflow 의 `container`·`services.*.image`·`docker://`, `action.yml` 의 `runs.image` | 이미지 저장소, 소문자. `docker.io/`·`library/` 는 뗀다(`docker.io/library/node` → `node`). tag·digest 는 이름이 아니라 범위에 적는다 | **정확한 tag 또는 digest 의 목록**: `v1.107.0, latest`, `sha256:…`(전체, 또는 12자 이상의 앞부분). 이미지의 tag 와 digest 를 둘 다 비교하고 tag 가 없으면 `latest` |
+| `vscode` | `.vscode/extensions.json` 의 `recommendations`, `devcontainer.json`(`.devcontainer/`, `.devcontainer/<폴더>/`, `.devcontainer.json`)의 `customizations.vscode.extensions` 와 옛 형식 `extensions` | `publisher.name`, 소문자로 저장 | **정확한 값의 목록**: `1.2.3, 1.2.4`. `publisher.name@1.2.3` 의 `@` 뒤가 버전이고 없으면 범위 없는 항목에만 일치한다 |
+| `helm` | `Chart.yaml`, `Chart.lock`, `requirements.yaml` 의 `dependencies` | chart 이름, 대소문자 구분 | **정확한 값의 목록**: `4.10.0, 4.10.1`. 버전이 범위(`^1.0`, `>=1`)이면 버전 없음으로 본다 |
+| `terraform` | `*.tf`(`.terraform/` 폴더 안은 제외)의 `module` 블록의 `source`+`version` | `source` 에서 `//하위경로` 와 `?쿼리` 를 뗀 값(`terraform-aws-modules/vpc/aws`, `git::https://…/mod.git`), 대소문자 구분 | **정확한 값의 목록**: `5.8.0, 5.8.1`. `version` 이 없으면 git 의 `?ref=v1.2.3` 을 쓰고, 제약(`~> 5.0`, `>= 1`)이면 버전 없음이다. 로컬 경로(`./`, `../`)는 건너뛴다 |
 | `path` | repo 의 tree **전체**(`node_modules`·`vendor` 등 제외 폴더 포함)의 경로. 파일을 받지 않는다(요청 추가 없음) | 경로 또는 `*` 패턴(`*` 은 `/` 도 포함한 임의의 문자열), 대소문자 구분. 패턴에 `/` 가 없으면 파일 이름(마지막 조각)에도 비교한다: `.ci-*.sh` 는 `scripts/.ci-run.sh` 에 일치. 검출의 `filePath` 는 일치한 경로 | 쓰지 않는다 |
 | `content` | 이 스캔이 **받은 모든 파일**(`package.json`·lock 등 npm 파일, 그 종류가 활성일 때 받은 다른 종류의 선언·lock 파일, 보조 파일)의 내용. `content` 항목이 있으면 보조 파일을 항상 받는다(요청이 늘어난다). 8MB 를 넘는 파일은 건너뛴다 | 글자 그대로의 문자열 6~200자(`*`·줄바꿈 불가), 대소문자 무시 부분 일치: `193.32.204.199`. 검출의 `filePath` 는 그 파일 | 쓰지 않는다 |
 | `branch` | repo 의 브랜치 이름 전체. 활성 `branch` 항목이 있으면 repo 마다 브랜치 목록을 받는다(**repo 마다 요청 1회 추가**, 없으면 0회) | 이름 또는 `*` 패턴, 대소문자 구분: `wfx-docs`, `chore/*`. 검출의 `filePath` 는 `refs/heads/<이름>`, 링크는 `/tree/<이름>` | 쓰지 않는다 |
@@ -139,7 +145,7 @@ Docker 로 실행할 때는 `.env` 에 `PORT`, `HOST`, `DATA_DIR`, `WEB_DIST_DIR
 - **보조 파일**은 명령으로 실행·설치하는 패키지, action, 이미지를 찾는다. 그 파일에서 나오는 종류의 활성 항목이 있을 때만 받는다(없으면 받지 않고 읽은 파일 수에도 세지 않는다).
   - `.github/workflows/*.yml|yaml` 의 `run`, `Dockerfile*`·`*.Dockerfile`·`Containerfile` 의 `RUN`(JSON 배열·heredoc 포함), MCP 설정(`.mcp.json`, `mcp.json`, `.cursor/mcp.json`, `.vscode/mcp.json`)의 `command`+`args`.
   - `npx`·`pnpm dlx`·`yarn dlx`·`bunx`·`npm i <pkg>` 등은 `npm`, `uvx`·`pipx`·`pip install <pkg>` 등은 `pypi` 로 비교한다. 검출은 항상 `direct` 이고 `filePath` 는 보조 파일이다.
-  - `actions`·`docker` 의 활성 항목이 있으면 workflow·`action.yml` 을, `docker` 는 Dockerfile·compose 도 받는다(compose 는 `docker` 가 활성일 때만, MCP 설정은 `npm`·`pypi` 가 활성일 때만 받는다). Dockerfile 의 앞 stage 이름을 가리키는 `FROM`·`scratch` 는 건너뛰고, `$VAR` 는 같은 파일의 `ARG` 기본값(compose 는 `${VAR:-기본값}`)으로 풀 수 있을 때만 읽는다. 검출의 `version` 은 일치한 tag(없으면 digest)다. 파일당 action·이미지는 5000개까지 검사한다.
+  - `actions`·`docker` 의 활성 항목이 있으면 workflow·`action.yml` 을, `docker` 는 Dockerfile·compose 도 받는다(compose 는 `docker` 가 활성일 때만, MCP 설정은 `npm`·`pypi` 가 활성일 때만 받는다. `vscode`·`helm`·`terraform` 의 파일도 그 종류의 활성 항목이 있을 때만 받는다). Dockerfile 의 앞 stage 이름을 가리키는 `FROM`·`scratch` 는 건너뛰고, `$VAR` 는 같은 파일의 `ARG` 기본값(compose 는 `${VAR:-기본값}`)으로 풀 수 있을 때만 읽는다. 검출의 `version` 은 일치한 tag(없으면 digest)다. 파일당 action·이미지는 5000개까지 검사한다.
   - 정확한 버전(`pkg@1.2.3`, `pkg==1.2.3`)은 범위와 비교한다. **버전 없는 실행(`pkg`, `pkg@latest`, 범위)은 버전 범위가 없는 항목에만 일치한다.** 어느 버전을 받을지 알 수 없기 때문이다.
   - 파일 형식이 깨져 해석하지 못하면 그 파일만 건너뛰고(로그에 경고) repo 는 실패하지 않는다. 파일 조회 실패는 repo 실패다.
 - lock 파일이 있으면 lock 의 정확한 버전으로 비교한다. lock 이 담당하는 선언 파일은 같은 폴더와, 같은 종류의 lock 이 없는 하위 폴더의 선언 파일이다(하위 폴더에 같은 종류의 lock 이 있으면 그 lock 이 담당한다). lock 의 패키지는 담당 선언 파일에 이름이 있으면 `direct`, 없으면 `transitive` 다(`packages.lock.json` 과 `pubspec.lock` 은 lock 이 알려 주는 값을 쓴다). `go.mod` 에서 `// indirect` 가 붙은 줄은 `transitive` 다.
@@ -156,7 +162,7 @@ Docker 로 실행할 때는 `.env` 에 `PORT`, `HOST`, `DATA_DIR`, `WEB_DIST_DIR
 
 ## 위험한 설정
 
-블랙리스트에 없어도 보고하는 **내장 검사 9개**다. 종류 `policy` 의 항목으로 서버가 시작할 때 없는 것만 만든다(2번 시작해도 9개, 이미 있으면 아무것도 바꾸지 않는다). 항목의 `name` 이 검사의 id 이고 `versionRange` 는 쓰지 않는다.
+블랙리스트에 없어도 보고하는 **내장 검사**다. 종류 `policy` 의 항목 16개를 서버가 시작할 때 없는 것만 만든다(2번 시작해도 16개, 이미 있으면 아무것도 바꾸지 않는다. 업그레이드한 설치에는 새 7개만 더해지고 기존 항목의 켬·끔·심각도는 그대로다). 아래 표는 14개이고, 커밋을 보는 `workflow-changed`·`new-committer` 는 항목만 만들어 두고 아직 평가하지 않는다(모르는 검사는 조용히 건너뛴다). 항목의 `name` 이 검사의 id 이고 `versionRange` 는 쓰지 않는다.
 
 | id | 내용 | 기본 심각도 |
 |----|------|-------------|
@@ -168,6 +174,11 @@ Docker 로 실행할 때는 `.env` 에 `PORT`, `HOST`, `DATA_DIR`, `WEB_DIST_DIR
 | `workflow-no-permissions` | workflow 에 최상위 `permissions` 가 없고 모든 job 에 있지도 않음. 파일당 1건 | low |
 | `unpinned-image` | Docker 이미지의 tag 가 없거나 `latest`(digest 가 있으면 제외) | low |
 | `committed-node-modules` | tree 에 `node_modules/<이름>/package.json` 이 있음. repo 당 1건이고 `filePath` 는 가장 얕은 `node_modules` 폴더(같으면 정렬순), 링크는 tree | low |
+| `install-script` | `package.json`(`node_modules`·제외 폴더 밖)의 `scripts` 에 `preinstall`·`install`·`postinstall` 이 있음. script 마다 1건이고 `packageName` 은 script 의 이름, `version` 은 script 내용의 SHA-256 앞 12자라서 **script 가 바뀌면 새 검출**이 된다 | low |
+| `lock-external-source` | npm 의 lock(`package-lock.json` 의 `resolved`, `yarn.lock` 의 `resolved`·`resolution`, `pnpm-lock.yaml` 의 `tarball`)이 받는 주소의 host 가 공식 registry(`registry.npmjs.org`, `registry.yarnpkg.com`)가 아님(http·https 만. `file:`·`git+…` 은 제외). **lock 파일 × host 마다 1건**, `packageName` 은 host(소문자, 포트 포함), `version` 은 비어 있다 | medium |
+| `custom-registry` | registry 설정: `.npmrc` 의 `registry=`·`@scope:registry=`, `pip.conf`·`pip.ini` 의 `index-url`·`extra-index-url`, `uv.toml`·`pyproject.toml` 의 `[[tool.uv.index]]`·`[tool.uv]`·`[[tool.poetry.source]]`, `requirements*.txt` 의 `--index-url`·`--extra-index-url`·`-i`. 공식(npm 의 두 host, `pypi.org`, `files.pythonhosted.org`)이 아닌 host 만. 파일 × host 마다 1건 | low |
+| `npmrc-token` | `.npmrc` 의 `_authToken`·`_auth`·`_password`, `.yarnrc.yml` 의 `npmAuthToken` 에 토큰의 **값**이 적혀 있음(`${…}` 치환이거나 8자 미만이면 제외). 파일마다 1건이고 `packageName` 은 키의 이름뿐이다 — **토큰의 값은 검출·로그·메일 어디에도 넣지 않는다** | high |
+| `external-submodule` | `.gitmodules` 의 `url` 이 스캔 중인 org 의 GitHub repo(`https://github.com/<org>/…`, `git@github.com:<org>/…`, 대소문자 무시)도 상대 경로(`../x`)도 아님. submodule 마다 1건이고 `packageName` 은 URL(`user:pass@` 는 떼고 200자까지) | low |
 | `suspicious-filename` | 경로에 제어 문자(코드 0x20 미만, 0x7f)나 보이지 않는·방향을 바꾸는 유니코드(`Cf`: U+202A–202E, U+2066–2069, U+200B–200F, U+FEFF 등, 줄·문단 구분자)가 있음. ZWJ(U+200D)가 든 이모지 경로도 잡힌다. 일반 한글·이모지 경로는 통과 | low |
 
 - **바꿀 수 있는 것은 켬·끔(`enabled`), 심각도, 사유, 만료일뿐이다.** 추가(POST, 가져오기의 새 행)는 `VALIDATION_ERROR`, 삭제(DELETE, 일괄 `delete` 에 1개라도 포함)는 `INVALID_STATE` 이고, 이름 변경(PUT)은 `VALIDATION_ERROR` 다. 일괄 `enable`·`disable`, 가져오기의 기존 항목 갱신, 내보내기는 된다.
@@ -178,7 +189,7 @@ Docker 로 실행할 때는 `.env` 에 `PORT`, `HOST`, `DATA_DIR`, `WEB_DIST_DIR
 - 검출은 `ecosystem: "policy"`, `dependencyType: "direct"` 이고 `packageName`·`version` 은 검사마다 다르다(action 이면 `owner/repo`·ref, 의존성이면 이름·spec, `curl-pipe-shell` 은 `curl | sh` 등). 해석하지 못한 파일(YAML 오류 등)은 그 파일에 대한 검사만 건너뛴다.
 - **메일:** 즉시 메일에는 넣지 않고, policy 검출만 새로 생긴 스캔은 메일을 보내지 않는다. 일일 요약의 행 목록에도 넣지 않고, 열린 검출이 1건 이상이면 끝에 `위험한 설정: 총 n건` 과 검사별 건수(많은 순, 0건은 생략)만 붙인다. policy 만 있고 다른 열린 검출이 없는 날은 요약을 보내지 않는다.
 - **숫자에서 제외:** `GET /api/summary` 의 `openCount`·`ignoredCount` 는 policy 를 세지 않고 `policyOpenCount` 가 열린 policy 검출을 센다. 스캔의 repo 상태(`통과`/`이슈`)와 `openFindingCount`·`newFindingCount`(스캔과 repo 모두)도 policy 를 세지 않는다(policy 검출만 있는 repo 는 `통과`). **`category`·`excludeCategory` 가 없는 기본 목록(`GET /api/findings`, MCP `list_findings`)에는 위험한 설정이 섞인다. 검출만 보려면 `excludeCategory=policy`(MCP 는 `excludeCategory: "policy"`)를 준다.** `GET /api/findings` 는 `category`(그 분류만), `excludeCategory`(그 분류 제외)로 거른다(`ecosystem` 과 함께 쓸 수 있다).
-- **요청 수가 늘어난다:** 활성 검사가 필요로 하는 보조 파일을 항상 받는다 — `unpinned-action`·`workflow-no-permissions`: workflow·`action.yml`, `curl-pipe-shell`: 거기에 Dockerfile, `unpinned-exec`: 거기에 MCP 설정, `unpinned-image`: workflow·`action.yml`·Dockerfile·compose. `package.json` 은 이미 받으므로 `missing-lockfile`·`non-registry-dependency` 와, tree 만 보는 `committed-node-modules`·`suspicious-filename` 은 요청이 늘지 않는다. 활성 검사가 하나도 없으면 요청 수는 이전과 같다. 활성 검사가 있으면 의존성 파일이 없는 repo 도 파일이 있으면 `건너뜀`이 아니라 검사 대상이다(tree 검사).
+- **요청 수가 늘어난다:** 활성 검사가 필요로 하는 보조 파일을 항상 받는다 — `unpinned-action`·`workflow-no-permissions`: workflow·`action.yml`, `curl-pipe-shell`: 거기에 Dockerfile, `unpinned-exec`: 거기에 MCP 설정, `unpinned-image`: workflow·`action.yml`·Dockerfile·compose, `custom-registry`·`npmrc-token`: `.npmrc`·`.yarnrc.yml`·`pip.conf`·`pip.ini`·`uv.toml`(`custom-registry` 는 거기에 `requirements*.txt`·`pyproject.toml` 도 — `pypi` 항목이 없어도 받는다), `external-submodule`: `.gitmodules`(모두 작은 파일). `package.json`·lock 은 이미 받으므로 `missing-lockfile`·`non-registry-dependency`·`install-script`·`lock-external-source` 와, tree 만 보는 `committed-node-modules`·`suspicious-filename` 은 요청이 늘지 않는다. 활성 검사가 하나도 없으면 요청 수는 이전과 같다. 활성 검사가 있으면 의존성 파일이 없는 repo 도 파일이 있으면 `건너뜀`이 아니라 검사 대상이다(tree 검사).
 
 ## 외부 목록 (feed)
 
@@ -189,7 +200,7 @@ GitHub Advisory Database 의 **악성 패키지(malware) 권고만** 자동으�
 - **끄는 방법:** ① 설정의 `feedEnabled`(화면의 외부 목록 켬·끔, `PUT /api/settings`)를 끄면 동기화하지 않고 스캔의 대조에도 쓰지 않는다(저장된 항목은 지우지 않는다. 다시 켜면 이어서 쓴다). ② 일치해서 생긴 항목만 끄거나 지우려면 블랙리스트에서 그 항목을 끈다. **같은 (종류, 이름, 범위)의 항목이 블랙리스트에 이미 있으면(꺼져 있어도, 만료돼도) feed 의 같은 항목은 대조에 쓰지 않는다.** 그래서 끈 항목이 다시 살아나지 않는다. 지우면 다음에 일치할 때 다시 생긴다.
 - **언제 동기화하는가:** 서버가 시작된 뒤 백그라운드로 1회(feed 가 켜져 있고 토큰이 있을 때), 그리고 **자동 스캔 직전**에 마지막 동기화 이후 바뀐 것만(증분) 받는다. 스캔은 그 동기화를 최대 60초 기다린 뒤 시작하고, 넘으면 기다리지 않는다. 수동 스캔은 기다리지 않는다. `POST /api/feed/sync`(화면의 [지금 동기화])로 바로 실행할 수도 있다. 동기화는 스캔과 서버 시작을 막지 않으며, 실패해도 마지막 오류(`lastError`)만 남기고 다음 동기화가 이어서 받는다. 철회된 권고(`withdrawnAt`)는 항목을 지운다.
 - **첫 동기화의 요청 수와 시간:** malware 권고가 약 15만 건이라서 100건씩 약 **1,500회**의 GraphQL 요청이다. 약 15분이 걸리고 백그라운드로 돈다(GitHub 의 시간당 한도 5,000회 중 1,500회). 페이지마다 저장하므로 중단돼도(서버 재시작, 오류, rate limit) 다음 동기화가 마지막 위치부터 이어받는다. 첫 동기화가 끝나기 전에도 받은 만큼은 스캔에 쓴다(`fullSyncDone=false`).
-- **지원하는 종류:** npm, PyPI(`pypi`), NuGet, Rust(`cargo`), Go, Maven, pub, GitHub Actions(`actions`). GitHub 의 범위 표기(`>= 1.0, < 2.0`)를 종류별 문법으로 바꿔서 쓰고 `>= 0` 은 모든 버전이다. **건너뛰는 것:** RubyGems·Composer 등 지원하지 않는 종류, 종류의 규칙으로 읽을 수 없는 범위·이름, `actions` 의 비교식(정확한 버전 `= x` 만 쓴다). 건너뛴 수는 `GET /api/feed` 의 `skippedCount`(마지막 전체 동기화 기준)다.
+- **지원하는 종류:** npm, PyPI(`pypi`), NuGet, Rust(`cargo`), Go, Maven, pub, GitHub Actions(`actions`), RubyGems(`rubygems`), Composer(`composer`). GitHub 의 범위 표기(`>= 1.0, < 2.0`)를 종류별 문법으로 바꿔서 쓰고 `>= 0` 은 모든 버전이다. **건너뛰는 것:** CocoaPods(GitHub 에 그 종류의 malware 가 없다)·Swift 등 지원하지 않는 종류, 종류의 규칙으로 읽을 수 없는 범위·이름, `actions` 의 비교식(정확한 버전 `= x` 만 쓴다). 건너뛴 수는 `GET /api/feed` 의 `skippedCount`(마지막 전체 동기화 기준)다.
 - **전체 동기화는 7일마다 다시 한다.** 증분은 철회·범위 변경을 놓칠 수 있어서, 마지막 전체 동기화가 끝난 지 7일이 지나면 다음 동기화는 전체로 받는다. 전체 동기화는 이번에 보지 못한 행을 끝난 뒤에 지우고(그동안 기존 행은 계속 대조에 쓴다), 권고가 없어진 `source=feed` 항목은 **끄고** 사유 끝에 ` (권고가 철회됨)` 을 붙인다(지우지 않는다. 사용자가 다시 켜면 그 항목은 다시 끄지 않는다).
 - `skippedCount` 는 마지막 **전체** 동기화의 값이다(증분은 바꾸지 않는다).
 - feed 가 켜지면 지원하는 모든 종류의 선언·lock 파일을 받는다 — 스캔의 GitHub 요청이 늘어난다.
@@ -339,7 +350,7 @@ tool 은 모두 15개다. 결과는 JSON 문자열(text content)이고(`export_b
 - GitHub 가 파일 트리를 잘라서(`truncated`) 돌려주는 대형 repo 와, `package.json`, lockfile, `pnpm-workspace.yaml` 을 해석할 수 없는 repo 는 매 스캔 실패 repo 로 기록되어 스캔이 `partial` 이 된다. 주석이나 끝 쉼표가 있는 `package.json`(JSONC)과 YAML 문서가 여러 개인 `pnpm-lock.yaml`(pnpm 11)은 읽는다. 파일 1개라도 읽지 못하면 그 repo 는 실패다(일부만 검사하고 통과로 표시하지 않는다).
 - `bun.lockb`(바이너리)는 읽지 않는다. `bun.lock` 이 없으면 lockfile 이 없는 것으로 보고 `package.json` 의 range 로만 검사하며 경고 로그를 남긴다.
 - lockfile 이 없는 `package.json` 은 range 겹침으로 검사한다. `latest` 같은 dist-tag, `workspace:`, git URL 처럼 semver range 가 아닌 spec 은 "모든 버전" 항목에만 검출된다.
-- **여러 종류(go, pypi, nuget, cargo, pub, maven)의 한계:**
+- **여러 종류(go, pypi, nuget, cargo, pub, maven, rubygems, composer, cocoapods)의 한계:**
   - 블랙리스트에 활성 항목이 있는 종류(또는 외부 목록(feed)에 항목이 있는 종류)의 파일만 읽는다. 항목이 없는 종류의 파일은 받지 않으므로, 그 종류의 파일만 있는 repo 는 `통과`다. 항목을 새 종류로 처음 등록하면 다음 스캔부터 그 종류의 파일을 받아서 GitHub 요청 수가 늘어난다.
   - 읽는 파일은 위 표의 것뿐이다. `*.fsproj`·`*.vbproj`, `setup.py`·`Pipfile`, `requirements/` 폴더 안의 다른 이름의 파일은 읽지 않는다. `pom.xml` 은 `<dependencies>` 만 읽고(`dependencyManagement`·플러그인 제외) `${prop}` 은 같은 파일의 `<properties>` 와 `project.version` 으로 푼다. 풀 수 없거나 버전이 없으면 범위 없는 선언으로 본다. `go.sum` 은 Go 의 lock 이다(간접 모듈 포함). `go.mod` 의 `replace`·`exclude` 도 읽지 않는다(`require` 의 버전을 그대로 쓴다).
   - 선언 파일의 고정 버전(`go.mod` 의 버전, `requirements` 의 `==`, `*.csproj` 의 `Version="1.2.3"`, Gradle 의 `"g:n:1.2.3"`, 카탈로그의 문자열 버전, `pubspec.yaml` 의 연산자 없는 버전)은 정확한 버전으로 비교한다. 그 외(`>=`, `^`, `~=`, Cargo 의 `"1.2"`, 구간)는 범위 spec 이라서 **버전 범위가 없는 항목에만** 검출되고, 검출의 버전은 spec 문자열이다. lock 이 있으면 lock 의 정확한 버전으로 비교한다.
@@ -357,6 +368,9 @@ tool 은 모두 15개다. 결과는 JSON 문자열(text content)이고(`export_b
   - Cargo: 범위는 prerelease 를 포함해서 비교한다. 연산자 없는 값(`1.2`)은 Cargo 의 의미(`^1.2`)다.
   - Maven: `1.0-1` 과 `1.0.1` 을 같은 버전으로 보고, 여러 구간(`[1,2),[3,4)`)은 받지 않는다. NuGet·Maven 의 버전 순서는 흔한 형태(숫자 마디 + 알려진 수식어)만 구현했다.
   - pub: 제약 `any` 는 블랙리스트 범위로 받지 않는다(범위를 비우면 모든 버전이다). `pubspec.yaml` 의 버전이 따옴표 없이 `1.0` 처럼 숫자로 읽히면 `1` 로 읽는다.
+  - RubyGems·CocoaPods: `Gemfile`·`Podfile`·`*.gemspec` 은 Ruby 코드를 실행하지 않고 줄 단위로 `gem "이름", "요구식"` 형태만 읽는다. 변수나 반복문으로 만든 선언, `git:`·`path:`·`github:`(Podfile 은 `:git`·`:path`·`:podspec`) 옵션이 있는 항목과 `git`·`path` 블록 안의 항목은 registry 의 패키지가 아니라서 건너뛴다. `Gemfile.lock` 은 `GEM` 구역만 읽고(`PATH`·`GIT` 은 제외) 버전의 플랫폼 접미(`-x86_64-linux`)는 뗀다.
+  - Composer: `composer.json` 의 `php`·`ext-*` 같은 플랫폼 항목(이름에 `/` 가 없는 것)과 `dev-main` 같은 브랜치 버전은 읽지 않는다.
+  - `vscode`·`helm`·`terraform`: 버전은 정확한 값의 목록이다. Terraform 은 HCL 을 완전히 파싱하지 않고 최상위의 `module` 블록의 `source`·`version` 만 읽는다(보간 `${…}` 이 든 source, heredoc 안의 내용, `locals` 로 만든 값은 읽지 않는다). 파일당 항목은 5000개까지 읽는다.
 - GitHub API primary rate limit 이 소진되면 기다리지 않고 남은 repo 를 `RATE_LIMITED` 실패로 기록한다. 다음 스캔에서 다시 검사한다.
 - org 는 1개만 감시한다. org 를 바꾸면 현재 검출이 모두 `resolved` 가 된다.
 - 대상 목록에서 빠진 repo 의 검출은 GitHub 에서 다시 확인한 뒤에만 `resolved` 로 바꾼다. repo 목록이 비거나 직전보다 절반 넘게 줄면 토큰 권한 축소로 보고 보류한다(그 repo 들은 실패 repo 로 기록된다).

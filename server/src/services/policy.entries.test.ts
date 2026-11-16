@@ -45,7 +45,7 @@ describe("내장 검사 항목의 생성", () => {
     }
   });
 
-  it("[SD-11] 같은 DB 로 다시 시작해도 9개이고 사용자가 바꾼 값을 건드리지 않는다", async () => {
+  it("[SD-11] 같은 DB 로 다시 시작해도 16개이고 사용자가 바꾼 값을 건드리지 않는다", async () => {
     const first = await seeded();
     const target = (await policyOf(first)).find((entry) => entry.name === "unpinned-action");
     if (!target) throw new Error("항목이 없습니다");
@@ -63,7 +63,7 @@ describe("내장 검사 항목의 생성", () => {
     const second = createTestApp({ seedPolicy: true, dbPath });
 
     const after = await policyOf(second);
-    expect(after).toHaveLength(9);
+    expect(after).toHaveLength(16);
     expect(after).toEqual(before);
     expect(after.find((entry) => entry.name === "unpinned-action")).toMatchObject({
       reason: "내 사유",
@@ -87,7 +87,7 @@ describe("내장 검사 항목의 보호", () => {
 
     const error = expectApiError(res, 400, "VALIDATION_ERROR");
     expect(error.details).toEqual({ ecosystem: POLICY_CREATE_MESSAGE });
-    expect(await policyOf(t)).toHaveLength(9);
+    expect(await policyOf(t)).toHaveLength(16);
   });
 
   it("[SD-14] DELETE 는 INVALID_STATE 이고 항목이 남는다", async () => {
@@ -98,7 +98,7 @@ describe("내장 검사 항목의 보호", () => {
 
     const error = expectApiError(res, 409, "INVALID_STATE");
     expect(error.message).toBe(POLICY_DELETE_MESSAGE);
-    expect(await policyOf(t)).toHaveLength(9);
+    expect(await policyOf(t)).toHaveLength(16);
   });
 
   it("[SD-15] 일괄 delete 에 policy 가 1개라도 있으면 아무것도 지우지 않고, enable·disable 은 허용한다", async () => {
@@ -109,7 +109,7 @@ describe("내장 검사 항목의 보호", () => {
     const del = await t.request("POST", "/api/blacklist/bulk", { action: "delete", ids: [evil.id, first?.id] });
 
     expectApiError(del, 409, "INVALID_STATE");
-    expect(await listEntries(t)).toHaveLength(10);
+    expect(await listEntries(t)).toHaveLength(17);
 
     const off = await t.request("POST", "/api/blacklist/bulk", { action: "disable", ids: [first?.id] });
     expect(off.status, off.text).toBe(200);
@@ -195,6 +195,6 @@ describe("내장 검사 항목의 보호", () => {
       content: exported.text,
       dryRun: false,
     });
-    expect(res.json).toMatchObject({ applied: true, created: 0, updated: 0, unchanged: 9, errors: [] });
+    expect(res.json).toMatchObject({ applied: true, created: 0, updated: 0, unchanged: 16, errors: [] });
   });
 });

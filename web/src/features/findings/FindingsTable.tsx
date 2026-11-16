@@ -35,7 +35,7 @@ import {
   useSetFindingStatus,
   type SetFindingStatusVariables,
 } from "@/features/findings/hooks";
-import { NO_VERSION_SR_TEXT, dependencyTypeLabel, ecosystemLabel } from "@/lib/format";
+import { NO_VERSION_SR_TEXT, dependencyTypeLabel, ecosystemLabel, findingFileLabel } from "@/lib/format";
 
 export interface FindingsTableProps {
   items: Finding[];
@@ -82,7 +82,7 @@ export function FindingsTable({ items }: FindingsTableProps) {
                 </RowHeaderCell>
                 <TableCell className="max-w-64" title={finding.filePath}>
                   {finding.ref !== "" && <BranchBadge name={finding.ref} />}
-                  <span className="block truncate">{finding.filePath}</span>
+                  <span className="block truncate">{findingFileLabel(finding.filePath)}</span>
                 </TableCell>
                 <TableCell>{ecosystemLabel(finding.ecosystem)}</TableCell>
                 <TableCell

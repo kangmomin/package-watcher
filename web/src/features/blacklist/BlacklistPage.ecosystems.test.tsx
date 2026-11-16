@@ -114,14 +114,14 @@ function schemaMessage(ecosystem: string, field: "name" | "versionRange", name: 
 }
 
 describe("블랙리스트 종류 — 종류 select", () => {
-  it("[ME-20] 추가 Dialog 의 종류 select 는 활성이고 옵션은 SUPPORTED_ECOSYSTEMS 순서의 12개이며 기본값은 npm 이다", async () => {
+  it("[ME-20] 추가 Dialog 의 종류 select 는 활성이고 옵션은 SUPPORTED_ECOSYSTEMS 순서의 20개이며 기본값은 npm 이다", async () => {
     setupServer();
     const { user } = await renderBlacklist();
 
     const dialog = await openAddDialog(user);
     // 등록 Dialog 에는 위험한 설정(policy)이 없다.
     const selectable = SUPPORTED_ECOSYSTEMS.filter(isUserManagedEcosystem);
-    expect(selectable).toHaveLength(12);
+    expect(selectable).toHaveLength(20);
     expect(dialog.ecosystem).toBeEnabled();
     expect(dialog.ecosystem).toHaveTextContent("npm");
     await user.click(dialog.ecosystem);

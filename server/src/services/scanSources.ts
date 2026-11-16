@@ -54,6 +54,12 @@ const KIND_ECOSYSTEMS: Record<SourceKind, readonly string[]> = {
   dockerfile: ["npm", "pypi", "docker", "content"],
   compose: ["docker", "content"],
   mcp: ["npm", "pypi", "content"],
+  vscode: ["vscode", "content"],
+  helm: ["helm", "content"],
+  terraform: ["terraform", "content"],
+  // 아래 둘은 위험한 설정(policy)의 검사만 쓴다. 토큰이 든 파일이라 문자열 찾기(content)로는 받지 않는다.
+  "registry-config": [],
+  gitmodules: [],
 };
 
 /**
@@ -195,8 +201,32 @@ function detectImages(
   return matches;
 }
 
+/** 이름과 정확한 버전(없으면 "")만 있는 선언(vscode 확장, helm chart, terraform module)의 검출. 선언 파일만 있고 lock 이 없다. */
+function detectDeclared(
+  ecosystem: "vscode" | "helm" | "terraform",
+  repo: string,
+  path: string,
+  items: { name: string; version: string }[],
+  entryIndex: EntryIndex<MatchableEntry>,
+): SourceMatch[] {
+  const deps: DeclaredDependency[] = items.map((item) => ({
+    name: item.name,
+    spec: item.version,
+    dependencyType: "direct",
+  }));
+  const seen = new Set<string>();
+  const matches: SourceMatch[] = [];
+  for (const found of detectEcosystem(ecosystem, [{ path, deps }], [], entryIndex)) {
+    const key = [found.packageName, found.version, found.blacklistEntryId].join(" ");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    matches.push({ repo, ...found, version: cleanVersion(found.version) });
+  }
+  return matches;
+}
+
 /**
- * 보조 파일(workflow, action.yml, Dockerfile, compose, MCP 설정)을 받아 명령의 패키지를 검출한다.
+ * 보조 파일(workflow, action.yml, Dockerfile, compose, MCP 설정, VS Code·Helm·Terraform)을 받아 명령의 패키지를 검출한다.
  * 조회 실패는 throw(repo 실패)지만 파싱 실패는 그 파일만 건너뛰고 경고한다 — workflow 의 YAML 오류 1개로
  * 그 repo 의 패키지 검사가 사라지면 안 된다.
  */
@@ -244,6 +274,9 @@ export async function scanSources(
       for (const match of detectCommands(repo.name, file.path, commands, entryIndex)) matches.push(match);
       for (const match of detectActions(repo.name, file.path, actions, entryIndex)) matches.push(match);
       for (const match of detectImages(repo.name, file.path, images, entryIndex)) matches.push(match);
+      for (const match of detectDeclared("vscode", repo.name, file.path, extracted.extensions ?? [], entryIndex)) matches.push(match);
+      for (const match of detectDeclared("helm", repo.name, file.path, extracted.charts ?? [], entryIndex)) matches.push(match);
+      for (const match of detectDeclared("terraform", repo.name, file.path, extracted.modules ?? [], entryIndex)) matches.push(match);
     } catch (error) {
       skipped?.add(file.path);
       logger.warn(`보조 파일을 해석하지 못해 건너뜁니다: ${where}: ${errorMessage(error)}`);

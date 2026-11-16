@@ -277,7 +277,7 @@ describe("설정 — 외부 목록 구역", () => {
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     await user.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
-    expect(within(feedRegion()).getByText(/rubygems 3,846/)).toBeInTheDocument();
+    expect(within(feedRegion()).getByText(/RubyGems 3,846/)).toBeInTheDocument();
     expect(within(feedRegion()).getByText(/mystery-eco 7/)).toBeInTheDocument();
     await user.click(toggle);
     expect(within(feedRegion()).queryByText(/rubygems/)).not.toBeInTheDocument();

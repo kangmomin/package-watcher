@@ -234,7 +234,7 @@ describe("시작과 집계", () => {
     const racing = { ...repos, blacklist: { ...repos.blacklist, findByKey: () => null } };
 
     expect(() => seedPolicyEntries(racing, new FakeClock())).not.toThrow();
-    expect(repos.blacklist.list({ ecosystem: "policy", q: undefined }, "2026-11-12")).toHaveLength(9);
+    expect(repos.blacklist.list({ ecosystem: "policy", q: undefined }, "2026-11-12")).toHaveLength(16);
   });
 
   it("[SD-110] open 검출 수는 SQL 로 repo 별로 센다 (policy 제외)", async () => {

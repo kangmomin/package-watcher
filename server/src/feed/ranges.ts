@@ -1,7 +1,7 @@
 import { ECOSYSTEM_RULES, type Ecosystem } from "@pw/shared";
 
 /**
- * GitHub Advisory 의 종류 → 이 도구의 종류. 여기에 없는 종류(RUBYGEMS, COMPOSER 등)는 건너뛴다.
+ * GitHub Advisory 의 종류 → 이 도구의 종류. 여기에 없는 종류(SWIFT 등)는 건너뛴다. GitHub 에는 CocoaPods 의 malware 종류가 없다.
  * 종류를 더하려면 이 표와 아래 `FORMATTERS` 에 한 줄씩 넣는다.
  */
 export const GHSA_ECOSYSTEMS: Readonly<Record<string, Ecosystem>> = {
@@ -13,6 +13,8 @@ export const GHSA_ECOSYSTEMS: Readonly<Record<string, Ecosystem>> = {
   MAVEN: "maven",
   PUB: "pub",
   ACTIONS: "actions",
+  RUBYGEMS: "rubygems",
+  COMPOSER: "composer",
 };
 
 type Operator = "=" | ">=" | "<=" | ">" | "<";
@@ -74,6 +76,9 @@ const FORMATTERS: Partial<Record<Ecosystem, Formatter>> = {
   go: joinWith(" ", (item) => `${item.op}${vPrefixed(item.version)}`),
   nuget: interval,
   maven: interval,
+  // gem 의 요구식은 GitHub 의 표기와 같다 (`>= 1.0, < 2.0`, `= 1.0.1`).
+  rubygems: joinWith(", ", (item) => `${item.op} ${item.version}`),
+  composer: semverText,
   // GitHub Action 의 버전은 순서가 없는 tag 라서 정확한 값 1개만 안다.
   actions: (comparators) => (comparators.length === 1 && comparators[0]?.op === "=" ? (comparators[0].version) : null),
 };

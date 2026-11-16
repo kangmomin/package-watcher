@@ -103,11 +103,19 @@ const ECOSYSTEM_LABELS: Record<Ecosystem, string> = {
   cargo: "cargo",
   pub: "pub",
   maven: "maven",
+  rubygems: "RubyGems",
+  composer: "Composer",
+  cocoapods: "CocoaPods",
   actions: "GitHub Actions",
   docker: "Docker 이미지",
+  vscode: "VS Code 확장",
+  helm: "Helm chart",
+  terraform: "Terraform module",
   path: "파일 경로",
   content: "파일 내용",
   branch: "브랜치 이름",
+  commit: "커밋 메시지",
+  pr: "PR 제목",
   policy: "위험한 설정",
 };
 const ECOSYSTEM_CATEGORY_LABELS: Record<EcosystemCategory, string> = {
@@ -140,4 +148,16 @@ export function policyCheckTitle(id: string): string {
 /** 건수의 천 단위 구분 (`151,751`). 로케일과 무관하게 같은 모양이다. */
 export function formatCount(count: number): string {
   return count.toLocaleString("en-US");
+}
+
+const COMMIT_FILE_PATH = /^commit\/([0-9a-f]{40})$/i;
+const PULL_FILE_PATH = /^pull\/(\d+)$/;
+
+/** 검출의 파일 칸 표시: `commit/<40자 sha>` → "커밋 <앞 7자>", `pull/<번호>` → "PR #<번호>", 그 외는 그대로 */
+export function findingFileLabel(filePath: string): string {
+  const commit = COMMIT_FILE_PATH.exec(filePath);
+  if (commit?.[1]) return `커밋 ${commit[1].slice(0, 7)}`;
+  const pull = PULL_FILE_PATH.exec(filePath);
+  if (pull?.[1]) return `PR #${pull[1]}`;
+  return filePath;
 }

@@ -112,6 +112,14 @@ const INDICATOR_NAME_UI: Partial<Record<Ecosystem, { label: string; hint: string
     label: "브랜치 이름 또는 패턴",
     hint: "`*`는 임의의 문자열입니다. 이 종류의 항목이 있으면 스캔이 repo마다 브랜치 목록을 받습니다.",
   },
+  commit: {
+    label: "커밋 메시지에서 찾을 문자열",
+    hint: "글자 그대로 찾습니다(대소문자 무시). 최근에 push된 repo의 기본 브랜치의 최근 커밋에서만 찾습니다.",
+  },
+  pr: {
+    label: "PR 제목에서 찾을 문자열",
+    hint: "글자 그대로 찾습니다(대소문자 무시). 최근에 push된 repo의 최근 PR 50개의 제목에서만 찾습니다.",
+  },
 };
 
 const INCOMPLETE_DATE_ERROR = "incompleteDate";
