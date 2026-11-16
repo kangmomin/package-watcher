@@ -50,7 +50,7 @@ import { assignLockfiles, dirOf, readWorkspaceGlobs } from "../workspaces.ts";
 import { mapWithConcurrency, parseInput, toIso } from "./common.ts";
 import { isEntryActive, todayKst } from "./entryActivity.ts";
 import type { Notifier } from "./notifier.ts";
-import { needsSources, scanSources, sourceFileOf, type SourceFile } from "./scanSources.ts";
+import { needsSourceKind, scanSources, sourceFileOf, type SourceFile } from "./scanSources.ts";
 
 const NPM: Ecosystem = "npm";
 /** repo 동시 처리 수 */
@@ -311,8 +311,10 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       matches.push(...result.matches);
       fileCount += result.fileCount;
     }
-    if (sourceFiles.length > 0 && needsSources(activeEcosystems)) {
-      const result = await scanSources(org, client, repo, entryIndex, sourceFiles, logger);
+    // 보조 파일은 그 파일에서 나오는 종류의 활성 항목이 있을 때만 받는다.
+    const wantedSources = sourceFiles.filter((file) => needsSourceKind(file.kind, activeEcosystems));
+    if (wantedSources.length > 0) {
+      const result = await scanSources(org, client, repo, entryIndex, wantedSources, logger);
       matches.push(...result.matches);
       fileCount += result.fileCount;
     }

@@ -1,4 +1,5 @@
 import { SUPPORTED_ECOSYSTEMS } from "@pw/shared";
+import { ecosystemLabel } from "@/lib/format";
 import { blacklistEntryVariants } from "@pw/shared/fixtures";
 import { screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
@@ -35,7 +36,7 @@ describe("블랙리스트 — 필터", () => {
     await user.click(ecosystemSelect());
     const options = within(await screen.findByRole("listbox")).getAllByRole("option");
     expect(options.map((option) => option.textContent)).toEqual(
-      expect.arrayContaining(["전체", ...SUPPORTED_ECOSYSTEMS]),
+      expect.arrayContaining(["전체", ...SUPPORTED_ECOSYSTEMS.map(ecosystemLabel)]),
     );
     await user.click(within(screen.getByRole("listbox")).getByRole("option", { name: "go" }));
 

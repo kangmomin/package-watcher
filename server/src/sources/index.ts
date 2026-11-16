@@ -1,10 +1,10 @@
 import { isExcludedPath } from "../ecosystems/index.ts";
-import { extractDockerfileCommands } from "./dockerfile.ts";
+import { extractDockerfile } from "./dockerfile.ts";
 import { extractMcpCommands } from "./mcpConfig.ts";
-import { extractWorkflowCommands } from "./workflow.ts";
+import { extractActionFile, extractComposeImages, extractWorkflow } from "./workflow.ts";
 import type { SourceFacts, SourceKind } from "./types.ts";
 
-export type { CommandPackage, SourceFacts, SourceKind } from "./types.ts";
+export type { ActionRef, CommandPackage, ImageRef, SourceFacts, SourceKind } from "./types.ts";
 
 const WORKFLOW_DIR = ".github/workflows/";
 const COMPOSE = /^(?:docker-compose|compose)[^/]*\.ya?ml$/i;
@@ -19,6 +19,7 @@ export function sourceKindOf(path: string): SourceKind | null {
 
   const name = baseName(path);
   const lower = name.toLowerCase();
+  if (name === "action.yml" || name === "action.yaml") return "action";
   if (
     lower === "dockerfile" ||
     lower === "containerfile" ||
@@ -34,15 +35,17 @@ export function sourceKindOf(path: string): SourceKind | null {
 
 /** 보조 파일에서 사실을 뽑는다. 파일 형식이 깨졌으면 throw 한다(호출 쪽이 그 파일만 건너뛴다). */
 export function extractSource(kind: SourceKind, path: string, content: string): SourceFacts {
+  const none = { commands: [], actions: [], images: [] };
   switch (kind) {
     case "workflow":
-      return { path, kind, commands: extractWorkflowCommands(content) };
+      return { path, kind, ...extractWorkflow(content) };
+    case "action":
+      return { path, kind, ...extractActionFile(content) };
     case "dockerfile":
-      return { path, kind, commands: extractDockerfileCommands(content) };
+      return { path, kind, ...extractDockerfile(content) };
     case "mcp":
-      return { path, kind, commands: extractMcpCommands(content) };
+      return { path, kind, ...none, commands: extractMcpCommands(content) };
     case "compose":
-      // 이미지는 묶음 B 가 읽는다.
-      return { path, kind, commands: [] };
+      return { path, kind, ...extractComposeImages(content) };
   }
 }

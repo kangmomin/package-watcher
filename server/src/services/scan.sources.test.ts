@@ -302,7 +302,7 @@ describe("보조 파일 검출", () => {
     expect(t.logger.texts("warn").some((text) => text.includes(WF))).toBe(true);
   });
 
-  it("[SA-107] compose 는 받지 않지만 declaredCount 에는 센다", async () => {
+  it("[SA-107] 활성 항목이 npm 뿐이면 compose 는 받지 않지만 declaredCount 에는 센다", async () => {
     await entry("npm", "evil-cli");
     t.github.setRepos([{ name: "svc", files: { "docker-compose.yml": "services:\n  a:\n    image: x\n" } }]);
 

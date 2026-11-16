@@ -8,6 +8,7 @@
 import {
   blacklistCreateSchema,
   blacklistUpdateSchema,
+  categoryOf,
   ECOSYSTEM_RULES,
   kstDateOf,
   SEVERITIES,
@@ -33,6 +34,7 @@ import {
 } from "@/components/ui/dialog";
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { EcosystemSelectItems } from "@/components/EcosystemSelectItems";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useCreateBlacklistEntry, useUpdateBlacklistEntry } from "@/features/blacklist/hooks";
@@ -247,18 +249,14 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
               >
                 <SelectTrigger
                   id={fieldIds.ecosystem}
-                  className="w-40"
+                  className="w-44"
                   aria-required="true"
                   {...errorAria("ecosystem", entry !== null && hintIds.ecosystem)}
                 >
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {SUPPORTED_ECOSYSTEMS.map((ecosystem) => (
-                    <SelectItem key={ecosystem} value={ecosystem}>
-                      {ecosystem}
-                    </SelectItem>
-                  ))}
+                  <EcosystemSelectItems />
                 </SelectContent>
               </Select>
             )}
@@ -295,7 +293,12 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
             {...errorAria("versionRange", hintIds.versionRange)}
             {...form.register("versionRange")}
           />
-          <FieldDescription id={hintIds.versionRange}>{`예: ${rule.rangeExample}`}</FieldDescription>
+          <FieldDescription id={hintIds.versionRange}>
+            <span className="block">{`예: ${rule.rangeExample}`}</span>
+            {categoryOf(ecosystem) === "ci" && (
+              <span className="block">범위가 아니라 정확한 값을 쉼표로 나눠 적습니다</span>
+            )}
+          </FieldDescription>
           <FieldError id={errorId(fieldIds.versionRange)} errors={[errors.versionRange]} />
         </Field>
         <Field data-invalid={errors.severity ? true : undefined}>

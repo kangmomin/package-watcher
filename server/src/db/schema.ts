@@ -1,6 +1,6 @@
 import type { Db } from "./index.ts";
 
-export const LATEST_VERSION = 3;
+export const LATEST_VERSION = 4;
 
 // 시각은 모두 ISO 8601 UTC 문자열(`Date#toISOString`)로 저장한다. 문자열 정렬 = 시간 순서.
 // v1 스키마다. 새 DB 도 이것을 먼저 만든 뒤 v2 단계를 실행한다(마이그레이션 SQL 이 한 벌이다).
@@ -133,10 +133,83 @@ function migrateToV3(db: Db): void {
   db.exec(V3_SCAN_REPOS);
 }
 
+// v4: ecosystem 의 CHECK 를 없앤다. 종류가 늘 때마다 DB 를 다시 만들지 않도록 종류의 검증은 zod 가 한다.
+// SQLite 는 CHECK 를 지울 수 없어서 두 테이블을 다시 만든다.
+const V4_REBUILD = `
+CREATE TABLE blacklist_entries_v4 (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  ecosystem     TEXT NOT NULL DEFAULT 'npm',
+  name          TEXT NOT NULL,
+  version_range TEXT NOT NULL DEFAULT '',
+  reason        TEXT NOT NULL,
+  severity      TEXT NOT NULL DEFAULT 'medium' CHECK (${SEVERITY_CHECK}),
+  enabled       INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+  expires_at    TEXT,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  UNIQUE (ecosystem, name, version_range)
+);
+INSERT INTO blacklist_entries_v4
+    (id, ecosystem, name, version_range, reason, severity, enabled, expires_at, created_at, updated_at)
+  SELECT id, ecosystem, name, version_range, reason, severity, enabled, expires_at, created_at, updated_at
+  FROM blacklist_entries;
+DROP TABLE blacklist_entries;
+ALTER TABLE blacklist_entries_v4 RENAME TO blacklist_entries;
+
+CREATE TABLE findings_v4 (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo               TEXT NOT NULL,
+  file_path          TEXT NOT NULL,
+  package_name       TEXT NOT NULL,
+  version            TEXT NOT NULL,
+  dependency_type    TEXT NOT NULL CHECK (dependency_type IN ('direct', 'transitive')),
+  blacklist_entry_id INTEGER NOT NULL,
+  status             TEXT NOT NULL CHECK (status IN ('open', 'resolved', 'ignored')),
+  reason             TEXT NOT NULL,
+  html_url           TEXT NOT NULL,
+  first_seen_at      TEXT NOT NULL,
+  last_seen_at       TEXT NOT NULL,
+  resolved_at        TEXT,
+  notified_at        TEXT,
+  ecosystem          TEXT NOT NULL DEFAULT 'npm',
+  severity           TEXT NOT NULL DEFAULT 'medium' CHECK (${SEVERITY_CHECK})
+);
+INSERT INTO findings_v4
+    (id, repo, file_path, package_name, version, dependency_type, blacklist_entry_id, status, reason, html_url,
+     first_seen_at, last_seen_at, resolved_at, notified_at, ecosystem, severity)
+  SELECT id, repo, file_path, package_name, version, dependency_type, blacklist_entry_id, status, reason, html_url,
+     first_seen_at, last_seen_at, resolved_at, notified_at, ecosystem, severity
+  FROM findings;
+DROP TABLE findings;
+ALTER TABLE findings_v4 RENAME TO findings;
+CREATE UNIQUE INDEX findings_active_key
+  ON findings (repo, file_path, package_name, version, blacklist_entry_id)
+  WHERE status IN ('open', 'ignored');
+CREATE INDEX findings_status ON findings (status);
+CREATE INDEX findings_entry ON findings (blacklist_entry_id);
+CREATE INDEX findings_order ON findings (first_seen_at DESC, id DESC);
+`;
+
+const sequenceOf = (db: Db, table: string): number =>
+  db.prepare<[string], { seq: number }>("SELECT seq FROM sqlite_sequence WHERE name = ?").get(table)?.seq ?? 0;
+
+/** v4: 새 테이블로 옮기면 AUTOINCREMENT 순번이 새 최대 id 로 줄어드므로 두 테이블 모두 되돌린다(삭제된 id 의 재사용 방지). */
+function migrateToV4(db: Db): void {
+  const tables = ["blacklist_entries", "findings"] as const;
+  const previous = tables.map((table) => sequenceOf(db, table));
+  db.exec(V4_REBUILD);
+  tables.forEach((table, index) => {
+    const maxId = db.prepare<[], { max: number | null }>(`SELECT max(id) AS max FROM ${table}`).get()?.max ?? 0;
+    db.prepare("DELETE FROM sqlite_sequence WHERE name = ?").run(table);
+    db.prepare("INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)").run(table, Math.max(previous[index] ?? 0, maxId));
+  });
+}
+
 /** `version` 은 그 단계가 만드는 `user_version`. 순서대로 실행한다. */
 const STEPS: { version: number; run: (db: Db) => void }[] = [
   { version: 2, run: migrateToV2 },
   { version: 3, run: migrateToV3 },
+  { version: 4, run: migrateToV4 },
 ];
 
 /** 호출자가 연 트랜잭션 안에서 현재 버전보다 큰 단계를 순서대로 실행한다. 어느 단계든 실패하면 호출자가 롤백한다. */

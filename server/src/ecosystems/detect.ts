@@ -1,4 +1,4 @@
-import { ECOSYSTEM_RULES, type DependencyType } from "@pw/shared";
+import { ECOSYSTEM_RULES, type CiEcosystem, type DependencyType } from "@pw/shared";
 import type { EntryIndex } from "../matcher.ts";
 import { dirOf } from "../workspaces.ts";
 import type { FileEcosystem } from "./index.ts";
@@ -37,7 +37,7 @@ interface IndexedEntry {
  * lock 이 없는 하위 폴더가 담당 범위이고, 하위 폴더에 자기 lock 이 있으면 그 lock 이 담당한다.
  */
 export function detectEcosystem(
-  ecosystem: FileEcosystem,
+  ecosystem: FileEcosystem | CiEcosystem,
   manifests: ParsedManifest[],
   locks: ParsedLock[],
   index: EntryIndex<IndexedEntry>,

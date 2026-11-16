@@ -27,7 +27,7 @@ import {
 } from "../test/v2.ts";
 import type { Db } from "./index.ts";
 
-const LATEST_VERSION = 3;
+const LATEST_VERSION = 4;
 const backupPathOf = (dbPath: string): string => `${dbPath}.v0-backup`;
 
 const handles: Db[] = [];
@@ -219,7 +219,7 @@ describe("DB 마이그레이션 v1 → v2 (CT-22)", () => {
     expect(insertPlainEntry(db, "new-pkg")).toBe(6);
   });
 
-  it("[CT-22] 마이그레이션 후 findings 에 ecosystem = 'go' 는 들어가고 'foo' 는 CHECK 로 실패한다", () => {
+  it("[CT-22] 마이그레이션 후 findings 에 ecosystem = 'go' 와 'actions' 가 들어간다 (종류의 검증은 zod 가 한다)", () => {
     const path = createTempDbPath();
     createV1Database(path);
 
@@ -232,8 +232,8 @@ describe("DB 마이그레이션 v1 → v2 (CT-22)", () => {
        VALUES ('svc', 'go.mod', ?, 'v1.0.0', 'direct', 1, 'open', '사유', 'https://example.com', '${V1_SEEDED_AT}', '${V1_SEEDED_AT}', ?)`,
     );
     expect(() => insert.run("github.com/evil/tool", "go")).not.toThrow();
-    expect(() => insert.run("github.com/evil/other", "foo")).toThrow(/CHECK/);
-    expect(countRows(db, "findings")).toBe(4);
+    expect(() => insert.run("evil/action", "actions")).not.toThrow();
+    expect(countRows(db, "findings")).toBe(5);
   });
 
   it("[CT-22] 마이그레이션 직전에 백업 파일 package-watcher.db.v0-backup 이 생긴다 (내용은 v1 상태, 기존 백업 파일은 새 내용으로 교체)", () => {

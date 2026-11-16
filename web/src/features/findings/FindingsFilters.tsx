@@ -1,7 +1,8 @@
 // 대시보드 필터.
 // 상태 select = open(기본)/ignored/resolved/전체(파라미터 생략). repo·패키지 입력 = trim + 300ms debounce, 비면 생략.
 import { SEVERITIES, SUPPORTED_ECOSYSTEMS, type FindingStatus } from "@pw/shared";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
+import { EcosystemSelectItems } from "@/components/EcosystemSelectItems";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -19,6 +20,9 @@ interface FilterSelectProps<T extends string> {
   value: T | undefined;
   options: readonly T[];
   onChange: (value: T | undefined) => void;
+  /** 지정하면 옵션 목록(전체 제외)을 이것으로 그린다 — 그룹 표시용 */
+  renderOptions?: () => ReactNode;
+  triggerClassName?: string;
 }
 
 const FILTER_DEBOUNCE_MS = 300;
@@ -62,6 +66,8 @@ export function FindingsFilters({ filter, onFilterChange }: FindingsFiltersProps
         label="종류"
         value={filter.ecosystem}
         options={SUPPORTED_ECOSYSTEMS}
+        renderOptions={() => <EcosystemSelectItems />}
+        triggerClassName="w-44"
         onChange={(ecosystem) => onFilterChange({ ...filter, ecosystem })}
       />
       <FilterSelect
@@ -97,22 +103,39 @@ export function FindingsFilters({ filter, onFilterChange }: FindingsFiltersProps
   );
 }
 
-function FilterSelect<T extends string>({ id, label, value, options, onChange }: FilterSelectProps<T>) {
+function FilterSelect<T extends string>({
+  id,
+  label,
+  value,
+  options,
+  onChange,
+  renderOptions,
+  triggerClassName = "w-32",
+}: FilterSelectProps<T>) {
   return (
     <div className="flex flex-col gap-1.5">
       <Label htmlFor={id}>{label}</Label>
       {/* 선택한 값을 options 에서 찾는다: "전체"는 목록에 없으므로 undefined 가 된다. */}
       <Select value={value ?? ALL_OPTION} onValueChange={(next) => onChange(options.find((option) => option === next))}>
-        <SelectTrigger id={id} className="w-32">
+        <SelectTrigger id={id} className={triggerClassName}>
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          {options.map((option) => (
-            <SelectItem key={option} value={option}>
-              {option}
-            </SelectItem>
-          ))}
-          <SelectItem value={ALL_OPTION}>전체</SelectItem>
+          {renderOptions ? (
+            <>
+              <SelectItem value={ALL_OPTION}>전체</SelectItem>
+              {renderOptions()}
+            </>
+          ) : (
+            <>
+              {options.map((option) => (
+                <SelectItem key={option} value={option}>
+                  {option}
+                </SelectItem>
+              ))}
+              <SelectItem value={ALL_OPTION}>전체</SelectItem>
+            </>
+          )}
         </SelectContent>
       </Select>
     </div>

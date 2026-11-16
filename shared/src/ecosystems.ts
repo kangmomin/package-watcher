@@ -332,6 +332,64 @@ function compareMavenVersions(a: string[], b: string[]): number {
   return 0;
 }
 
+// ---------------------------------------------------------------- 정확한 값의 목록 (actions, docker)
+
+const REF_TOKEN = /^[A-Za-z0-9_][A-Za-z0-9._:+/-]*$/;
+const REF_MAX_LENGTH = 128;
+const REF_MAX_COUNT = 50;
+const HEX = /^[0-9a-f]+$/;
+
+/** `v1, v2` → ["v1", "v2"]. 빈 조각이 있으면 null. */
+function refTokens(range: string): string[] | null {
+  if (typeof range !== "string") return null;
+  const tokens = range.split(",").map((token) => token.trim());
+  if (tokens.length === 0 || tokens.length > REF_MAX_COUNT) return null;
+  return tokens.every((token) => token.length <= REF_MAX_LENGTH && REF_TOKEN.test(token)) ? tokens : null;
+}
+
+/**
+ * tag·commit SHA·digest 는 순서가 없으므로 범위가 아니라 정확한 값의 목록으로 비교한다.
+ * `isFull` 이 참인 버전(40자 SHA, sha256 digest)에는 `minPrefix` 자 이상의 앞부분도 일치로 본다 — 공지는 짧은 SHA 로 나온다.
+ */
+function refListRule(
+  message: string,
+  full: {
+    /** 버전이 전체 SHA·digest 이면 그 16진수 부분, 아니면 null */
+    ofVersion: (version: string) => string | null;
+    /** 목록의 값에서 비교할 16진수 부분 (앞부분일 수 있다), 아니면 null */
+    ofToken: (token: string) => string | null;
+    minPrefix: number;
+  },
+): Pick<EcosystemRule, "validateRange" | "satisfies" | "exactVersionOf"> {
+  return {
+    validateRange: (range) => (refTokens(range) === null ? message : null),
+    satisfies: safeSatisfies((version, range) => {
+      const tokens = refTokens(range);
+      if (tokens === null || version === "") return false;
+      const fullVersion = full.ofVersion(version.toLowerCase());
+      return tokens.some((token) => {
+        if (token === version) return true;
+        if (fullVersion === null) return false;
+        const prefix = full.ofToken(token.toLowerCase());
+        return prefix !== null && prefix.length >= full.minPrefix && fullVersion.startsWith(prefix);
+      });
+    }),
+    exactVersionOf: safeExact((spec) => spec),
+  };
+}
+
+const COMMIT_SHA = /^[0-9a-f]{40}$/;
+const DIGEST = /^sha256:([0-9a-f]{64})$/;
+const DIGEST_PREFIX = /^sha256:([0-9a-f]+)$/;
+
+/** Docker 이미지 저장소의 저장 형태: 소문자, Docker Hub 의 기본 registry 와 `library/` 를 뗀다. */
+export function normalizeImageName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/^(?:index\.)?docker\.io\//, "")
+    .replace(/^library\//, "");
+}
+
 // ---------------------------------------------------------------- 종류별 규칙
 
 const PYPI_RANGE_MESSAGE = "PEP 440 범위가 아닙니다 (예: <1.0,>=0.5)";
@@ -472,6 +530,53 @@ export const ECOSYSTEM_RULES: Record<Ecosystem, EcosystemRule> = {
     exactVersionOf: safeExact((spec) =>
       /^[[(]/.test(spec) || /[+$]/.test(spec) || spec.startsWith("latest.") ? null : spec,
     ),
+  },
+
+  actions: {
+    nameExample: "aquasecurity/trivy-action",
+    rangeExample: "v0.34.0, v0.34.1 또는 commit SHA (7자 이상)",
+    // GitHub 의 owner 와 repo 이름은 대소문자를 구분하지 않는다.
+    normalizeName: (name) => name.toLowerCase(),
+    validateName: nameValidator({
+      shape: /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/,
+      patternChars: /^[A-Za-z0-9._/*-]+$/,
+      maxLength: 140,
+      invalidMessage: "GitHub Action 이름 형식이 아닙니다 (owner/repo, 예: aquasecurity/trivy-action)",
+    }),
+    ...refListRule("tag 또는 commit SHA 를 쉼표로 나눠 적으십시오 (예: v0.34.0, v0.34.1)", {
+      ofVersion: (version) => (COMMIT_SHA.test(version) ? version : null),
+      ofToken: (token) => (HEX.test(token) ? token : null),
+      minPrefix: 7,
+    }),
+  },
+
+  docker: {
+    nameExample: "ghcr.io/berriai/litellm",
+    rangeExample: "v1.107.0, latest 또는 sha256:… (digest)",
+    normalizeName: normalizeImageName,
+    validateName: (name) => {
+      const error = nameValidator({
+        shape: /^[A-Za-z0-9][A-Za-z0-9._:-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/,
+        patternChars: /^[A-Za-z0-9._:/*-]+$/,
+        maxLength: 255,
+        invalidMessage: "Docker 이미지 이름 형식이 아닙니다 (예: ghcr.io/berriai/litellm, node)",
+      })(name);
+      if (error !== null) return error;
+      // `:` 은 registry 의 포트(첫 조각)에만 쓴다. 마지막 조각의 `:` 는 tag 다.
+      const last = name.slice(name.lastIndexOf("/") + 1);
+      if (last.includes(":")) return "tag 와 digest 는 이름이 아니라 버전 범위에 적으십시오";
+      // `docker.io/*`, `library/*` 는 접두를 떼면 `*` 가 되어 모든 이미지와 일치한다. 저장 형태로 다시 검사한다.
+      const stored = normalizeImageName(name);
+      if (stored.includes("*") && (stored.match(ALNUM)?.length ?? 0) < 2) {
+        return "패턴에 영문자·숫자가 2자 이상 있어야 합니다";
+      }
+      return null;
+    },
+    ...refListRule("tag 또는 digest 를 쉼표로 나눠 적으십시오 (예: v1.107.0, latest)", {
+      ofVersion: (version) => DIGEST.exec(version)?.[1] ?? null,
+      ofToken: (token) => DIGEST_PREFIX.exec(token)?.[1] ?? null,
+      minPrefix: 12,
+    }),
   },
 };
 

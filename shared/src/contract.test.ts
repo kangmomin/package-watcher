@@ -14,6 +14,7 @@ import {
   importResultSchema,
   blacklistUpdateSchema,
   ECOSYSTEMS,
+  ECOSYSTEM_CATEGORY,
   entryStatusOf,
   ERROR_CODES,
   ERROR_HTTP_STATUS,
@@ -265,8 +266,13 @@ describe("[CT-15] v2 fixture 와 상수", () => {
     expect(settingsSchema.safeParse(settingsWithoutMin).success).toBe(false);
   });
 
-  it("상수: 종류 7개, 입력도 7개, 심각도는 높은 순", () => {
-    expect(ECOSYSTEMS).toEqual(["npm", "go", "pypi", "nuget", "cargo", "pub", "maven"]);
+  it("상수: 종류 9개(패키지 7 + CI 2), 입력도 같다, 심각도는 높은 순", () => {
+    expect(ECOSYSTEMS).toEqual(["npm", "go", "pypi", "nuget", "cargo", "pub", "maven", "actions", "docker"]);
+    expect(ECOSYSTEMS.map((ecosystem) => ECOSYSTEM_CATEGORY[ecosystem])).toEqual([
+      ...Array.from({ length: 7 }, () => "package"),
+      "ci",
+      "ci",
+    ]);
     expect(SUPPORTED_ECOSYSTEMS).toEqual([...ECOSYSTEMS]);
     expect(SEVERITIES).toEqual(["critical", "high", "medium", "low"]);
     const ranks = SEVERITIES.map((severity) => SEVERITY_RANK[severity]);

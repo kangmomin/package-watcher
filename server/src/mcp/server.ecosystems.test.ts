@@ -30,7 +30,7 @@ afterEach(async () => {
 });
 
 describe("/mcp — 여러 종류", () => {
-  it("[ME-15] add_blacklist_entry 의 입력 설명이 7개 종류와 종류별 범위 예시를 안내한다", async () => {
+  it("[ME-15] add_blacklist_entry 의 입력 설명이 모든 종류와 종류별 범위 예시를 안내한다", async () => {
     const client = await connect();
     const { tools } = await client.listTools();
     const tool = tools.find((item) => item.name === "add_blacklist_entry");
@@ -46,6 +46,46 @@ describe("/mcp — 여러 종류", () => {
     for (const word of ["go", "pypi", "nuget", "cargo", "pub", "maven"]) {
       expect(`${properties.name?.description} ${properties.ecosystem?.description}`).toContain(word);
     }
+  });
+
+  it("[SB-60] tool 은 13개 그대로이고 ecosystem enum 에 actions·docker 와 범위의 문법 설명이 있다", async () => {
+    const client = await connect();
+    const { tools } = await client.listTools();
+    const properties = (tools.find((item) => item.name === "add_blacklist_entry")?.inputSchema.properties ??
+      {}) as Record<string, { enum?: string[]; description?: string }>;
+
+    expect(tools).toHaveLength(13);
+    expect(properties.ecosystem?.enum).toEqual(expect.arrayContaining(["actions", "docker"]));
+    expect(properties.versionRange?.description).toContain("sha256");
+    expect(properties.versionRange?.description).toContain("쉼표");
+    expect(properties.name?.description).toContain("owner/repo");
+  });
+
+  it("[SB-61] add_blacklist_entry 로 actions·docker 를 등록하고 이름을 정규화하며 잘못된 범위는 거부한다", async () => {
+    const client = await connect();
+
+    const action = await call(client, "add_blacklist_entry", {
+      ecosystem: "actions",
+      name: "Aquasecurity/Trivy-Action",
+      versionRange: "v0.34.0, v0.34.1",
+      reason: "변조",
+    });
+    const image = await call(client, "add_blacklist_entry", {
+      ecosystem: "docker",
+      name: "docker.io/library/Node",
+      versionRange: "20",
+      reason: "x",
+    });
+    const bad = await call(client, "add_blacklist_entry", {
+      ecosystem: "docker",
+      name: "node:20",
+      reason: "x",
+    });
+
+    expect(blacklistEntrySchema.parse(action.json)).toMatchObject({ name: "aquasecurity/trivy-action" });
+    expect(blacklistEntrySchema.parse(image.json)).toMatchObject({ ecosystem: "docker", name: "node" });
+    expect(bad.isError).toBe(true);
+    expect(toolErrorSchema.parse(bad.json).details).toHaveProperty("name");
   });
 
   it("[ME-15] add_blacklist_entry 로 go 항목을 등록하고, 이름·범위는 종류의 규칙으로 검증한다", async () => {
