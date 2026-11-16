@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   RateLimitedError,
   type GitHubClient,
+  type RecentBranch,
   type RepoInfo,
   type RepoTree,
 } from "../github/client.ts";
@@ -13,9 +14,34 @@ export interface FakeRepoInput {
   archived?: boolean;
   fork?: boolean;
   defaultBranch?: string;
+  /** 마지막 push 시각. 기본 null — 브랜치를 조회하지 않는다 */
+  pushedAt?: string | null;
 }
 
-export type FakeMethod = "listOrgRepos" | "getRepo" | "getTree" | "getFile" | "listBranches";
+export type FakeMethod =
+  | "listOrgRepos"
+  | "getRepo"
+  | "getTree"
+  | "getFile"
+  | "listBranches"
+  | "listRecentBranches";
+
+/** 기본 브랜치 외의 브랜치 1개 */
+export interface FakeBranchInput {
+  /** 최신 커밋의 시각(ISO) */
+  committedAt: string;
+  /** 그 브랜치의 전체 파일 (경로 → 내용). 기본 브랜치와 같은 (경로, 내용)이면 같은 blob 이다 */
+  files?: Record<string, string>;
+}
+
+interface BranchState {
+  name: string;
+  sha: string;
+  committedAt: string;
+  files: Map<string, string>;
+  truncated: boolean;
+  treeError: Error | null;
+}
 
 export interface FakeCall {
   method: FakeMethod;
@@ -44,6 +70,10 @@ interface RepoState {
   fileErrors: Map<string, Error>;
   branches: string[];
   branchError: Error | null;
+  pushedAt: string | null;
+  /** 기본 브랜치 외의 브랜치 (listRecentBranches·getTree 가 읽는다) */
+  heads: Map<string, BranchState>;
+  recentError: Error | null;
 }
 
 interface PendingGate {
@@ -94,6 +124,9 @@ export class FakeGitHubClient implements GitHubClient {
       fileErrors: new Map(),
       branches: [],
       branchError: null,
+      pushedAt: input.pushedAt ?? null,
+      heads: new Map(),
+      recentError: null,
     });
   }
 
@@ -136,8 +169,47 @@ export class FakeGitHubClient implements GitHubClient {
     this.mustGet(name).branchError = error;
   }
 
+  setPushedAt(name: string, pushedAt: string | null): void {
+    this.mustGet(name).pushedAt = pushedAt;
+  }
+
+  /** 기본 브랜치 외의 브랜치를 만들거나 바꾼다 */
+  setHead(name: string, branch: string, input: FakeBranchInput): void {
+    const state = this.mustGet(name);
+    const previous = state.heads.get(branch);
+    state.heads.set(branch, {
+      name: branch,
+      sha: `c${createHash("sha1").update(`${name}\0${branch}`).digest("hex").slice(0, 20)}`,
+      committedAt: input.committedAt,
+      files: new Map(Object.entries(input.files ?? {})),
+      truncated: previous?.truncated ?? false,
+      treeError: previous?.treeError ?? null,
+    });
+  }
+
+  removeHead(name: string, branch: string): void {
+    this.mustGet(name).heads.delete(branch);
+  }
+
+  failRecentBranches(name: string, error: Error): void {
+    this.mustGet(name).recentError = error;
+  }
+
+  failHeadTree(name: string, branch: string, error: Error): void {
+    this.mustGetHead(name, branch).treeError = error;
+  }
+
+  truncateHead(name: string, branch: string): void {
+    this.mustGetHead(name, branch).truncated = true;
+  }
+
   clearFailures(name: string): void {
     const state = this.mustGet(name);
+    state.recentError = null;
+    for (const head of state.heads.values()) {
+      head.truncated = false;
+      head.treeError = null;
+    }
     state.branchError = null;
     state.treeError = null;
     state.truncated = false;
@@ -201,6 +273,14 @@ export class FakeGitHubClient implements GitHubClient {
     await this.enter("getTree", org, repo, ref);
     const state = this.repos.get(repo);
     if (!state) throw new Error(`GitHub API 오류 (404): ${repo}`);
+    const head = [...state.heads.values()].find((candidate) => candidate.sha === ref);
+    if (head) {
+      if (head.treeError) throw head.treeError;
+      return {
+        entries: [...head.files].map(([path, content]) => ({ path, sha: blobSha(repo, path, content) })),
+        truncated: head.truncated,
+      };
+    }
     if (state.treeError) throw state.treeError;
     return {
       entries: [...state.files].map(([path, content]) => ({
@@ -221,6 +301,14 @@ export class FakeGitHubClient implements GitHubClient {
       if (error) throw error;
       return content;
     }
+    for (const head of state.heads.values()) {
+      for (const [path, content] of head.files) {
+        if (blobSha(repo, path, content) !== sha) continue;
+        const error = state.fileErrors.get(path);
+        if (error) throw error;
+        return content;
+      }
+    }
     throw new Error(`GitHub API 오류 (404): blob ${sha}`);
   }
 
@@ -230,6 +318,18 @@ export class FakeGitHubClient implements GitHubClient {
     if (!state) throw new Error(`GitHub API 오류 (404): ${repo}`);
     if (state.branchError) throw state.branchError;
     return [...state.branches];
+  }
+
+  async listRecentBranches(org: string, repo: string, sinceIso: string): Promise<RecentBranch[]> {
+    await this.enter("listRecentBranches", org, repo, sinceIso);
+    const state = this.repos.get(repo);
+    if (!state) return [];
+    if (state.recentError) throw state.recentError;
+    return [...state.heads.values()]
+      .filter((head) => Date.parse(head.committedAt) >= Date.parse(sinceIso))
+      .sort((a, b) => Date.parse(b.committedAt) - Date.parse(a.committedAt))
+      .slice(0, 20)
+      .map(({ name, committedAt, sha }) => ({ name, committedAt, sha }));
   }
 
   private async enter(
@@ -254,6 +354,12 @@ export class FakeGitHubClient implements GitHubClient {
     if (this.exhausted) throw new RateLimitedError();
   }
 
+  private mustGetHead(name: string, branch: string): BranchState {
+    const head = this.mustGet(name).heads.get(branch);
+    if (!head) throw new Error(`가짜 브랜치가 없습니다: ${name}@${branch}`);
+    return head;
+  }
+
   private mustGet(name: string): RepoState {
     const state = this.repos.get(name);
     if (!state) throw new Error(`가짜 repo 가 없습니다: ${name}`);
@@ -269,6 +375,7 @@ export function repoInfo(org: string, name: string, overrides: Partial<RepoInfo>
     archived: false,
     fork: false,
     defaultBranch: "main",
+    pushedAt: null,
     ...overrides,
   };
 }
@@ -278,6 +385,7 @@ function toInfo(org: string, state: RepoState): RepoInfo {
     archived: state.archived,
     fork: state.fork,
     defaultBranch: state.defaultBranch,
+    pushedAt: state.pushedAt,
   });
 }
 

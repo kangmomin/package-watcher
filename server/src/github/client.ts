@@ -1,3 +1,4 @@
+import { BRANCH_SCAN_MAX_BRANCHES } from "@pw/shared";
 import { Octokit, RequestError } from "octokit";
 
 export interface RepoInfo {
@@ -8,6 +9,8 @@ export interface RepoInfo {
   archived: boolean;
   fork: boolean;
   defaultBranch: string;
+  /** 마지막 push 시각(ISO). 알 수 없으면 null */
+  pushedAt: string | null;
 }
 
 export interface TreeEntry {
@@ -35,6 +38,17 @@ export interface GitHubClient {
   getFile(org: string, repo: string, sha: string): Promise<string>;
   /** 모든 브랜치 이름(모든 페이지, 최대 10,000개 — 넘으면 throw). 빈 repo(409)는 `[]`, 404 는 throw. */
   listBranches(org: string, repo: string): Promise<string[]>;
+  /**
+   * 기본 브랜치를 뺀, `sinceIso` 이후에 커밋이 있는 브랜치를 최근 순으로 최대 `BRANCH_SCAN_MAX_BRANCHES` 개(GraphQL 1회).
+   * 최근 100개 브랜치만 본다. repo 가 없거나 비었으면 `[]`. `sha` 는 그 브랜치의 최신 커밋(tree 조회에 쓴다).
+   */
+  listRecentBranches(org: string, repo: string, sinceIso: string): Promise<RecentBranch[]>;
+}
+
+export interface RecentBranch {
+  name: string;
+  committedAt: string;
+  sha: string;
 }
 
 /** primary rate limit 소진. 기다리지 않고 throw 한다(스캔은 남은 repo 를 "RATE_LIMITED" 로 실패 처리). */
@@ -57,6 +71,51 @@ export const MAX_RETRIES = 2;
 export const SECONDARY_RETRY_AFTER_LIMIT_S = 60;
 /** 5xx·네트워크 오류만 재시도한다. 409(빈 repo)를 포함한 4xx 는 모두 재시도하지 않는다. */
 export const DO_NOT_RETRY = Array.from({ length: 100 }, (_, index) => 400 + index);
+/** 최근 순 100개만 본다(정렬이 최신순이라 20개를 고르기에 충분하다) */
+export const RECENT_BRANCHES_QUERY = `
+query($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {
+    defaultBranchRef { name }
+    refs(refPrefix: "refs/heads/", first: 100, orderBy: {field: TAG_COMMIT_DATE, direction: DESC}) {
+      nodes { name target { ... on Commit { oid committedDate } } }
+    }
+  }
+}`;
+
+/** GraphQL 은 rate limit 도 200 응답의 `errors[].type` 으로 알린다 */
+function isGraphqlRateLimit(error: unknown): boolean {
+  const { errors, message } = (error ?? {}) as { errors?: unknown; message?: unknown };
+  if (Array.isArray(errors) && errors.some((item) => (item as { type?: unknown } | null)?.type === "RATE_LIMITED")) {
+    return true;
+  }
+  return typeof message === "string" && /graphql rate limit/i.test(message);
+}
+
+/** GraphQL 응답에서 조건에 맞는 브랜치를 고른다. 형식이 맞지 않는 노드는 건너뛴다. */
+export function pickRecentBranches(data: unknown, sinceIso: string): RecentBranch[] {
+  const repository = (data as { repository?: unknown } | null)?.repository as
+    | { defaultBranchRef?: { name?: unknown } | null; refs?: { nodes?: unknown } | null }
+    | null
+    | undefined;
+  const nodes = repository?.refs?.nodes;
+  if (!repository || !Array.isArray(nodes)) return [];
+  const defaultName = repository.defaultBranchRef?.name;
+  const since = Date.parse(sinceIso);
+  const found: RecentBranch[] = [];
+  for (const node of nodes as ({ name?: unknown; target?: { oid?: unknown; committedDate?: unknown } | null } | null)[]) {
+    const name = node?.name;
+    const sha = node?.target?.oid;
+    const committedAt = node?.target?.committedDate;
+    if (typeof name !== "string" || typeof sha !== "string" || typeof committedAt !== "string") continue;
+    if (name === defaultName) continue;
+    const time = Date.parse(committedAt);
+    if (Number.isNaN(time) || time < since) continue;
+    found.push({ name, committedAt, sha });
+  }
+  found.sort((a, b) => Date.parse(b.committedAt) - Date.parse(a.committedAt));
+  return found.slice(0, BRANCH_SCAN_MAX_BRANCHES);
+}
+
 const SYMLINK_MODE = "120000";
 const MAX_BRANCH_PAGES = 100;
 const MAX_BRANCHES = MAX_BRANCH_PAGES * 100;
@@ -67,6 +126,7 @@ interface RepoResponse {
   archived?: boolean;
   fork: boolean;
   default_branch?: string;
+  pushed_at?: string | null;
 }
 
 function toRepoInfo(data: RepoResponse): RepoInfo {
@@ -76,6 +136,7 @@ function toRepoInfo(data: RepoResponse): RepoInfo {
     archived: data.archived ?? false,
     fork: data.fork,
     defaultBranch: data.default_branch ?? "HEAD",
+    pushedAt: data.pushed_at ?? null,
   };
 }
 
@@ -197,6 +258,22 @@ export function createOctokitClient(options: OctokitClientOptions): GitHubClient
         }
         return names;
       }),
+
+    listRecentBranches: async (org, repo, sinceIso) => {
+      let data: unknown;
+      try {
+        data = await octokit.graphql(RECENT_BRANCHES_QUERY, { owner: org, name: repo });
+      } catch (error) {
+        if (isGraphqlRateLimit(error)) throw new RateLimitedError();
+        // repo 가 없으면 `repository: null` 과 NOT_FOUND 오류가 함께 온다 — 실패가 아니라 브랜치 없음이다.
+        const errors = (error as { errors?: unknown } | null)?.errors;
+        if (Array.isArray(errors) && errors.length > 0 && errors.every((item) => (item as { type?: unknown } | null)?.type === "NOT_FOUND")) {
+          return [];
+        }
+        throw translateError(error);
+      }
+      return pickRecentBranches(data, sinceIso);
+    },
 
     getFile: (org, repo, sha) =>
       call(async () => {

@@ -183,6 +183,8 @@ export interface SettingsBody {
   scanIntervalHours: number;
   digestTime: string;
   recipients: string[];
+  /** 생략하면 저장하지 않는다(기본 7) */
+  branchScanDays?: number;
 }
 
 export const DEFAULT_SETTINGS: SettingsBody = {

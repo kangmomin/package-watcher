@@ -17,6 +17,8 @@ import { ACTIVE_ENTRY_SQL } from "../services/entryActivity.ts";
 /** 검출 키. 활성(open/ignored) 행에 대해 유일하다. */
 export interface FindingKey {
   repo: string;
+  /** 검출한 브랜치. 기본 브랜치는 빈 문자열 */
+  ref: string;
   filePath: string;
   packageName: string;
   version: string;
@@ -87,6 +89,7 @@ export interface FindingsRepository {
 interface FindingRow {
   id: number;
   repo: string;
+  ref: string;
   file_path: string;
   ecosystem: Ecosystem;
   package_name: string;
@@ -103,7 +106,7 @@ interface FindingRow {
 }
 
 const COLUMNS =
-  "id, repo, file_path, ecosystem, package_name, version, severity, dependency_type, blacklist_entry_id, " +
+  "id, repo, ref, file_path, ecosystem, package_name, version, severity, dependency_type, blacklist_entry_id, " +
   "status, reason, html_url, first_seen_at, resolved_at, notified_at";
 const ACTIVE = "status IN ('open', 'ignored')";
 const ecosystemsOf = (category: EcosystemCategory): string[] =>
@@ -119,6 +122,7 @@ function toFinding(row: FindingRow): Finding {
   return {
     id: row.id,
     repo: row.repo,
+    ref: row.ref,
     filePath: row.file_path,
     ecosystem: row.ecosystem,
     packageName: row.package_name,
@@ -161,9 +165,9 @@ export function createFindingsRepository(db: Db): FindingsRepository {
        AND ${SEVERITY_RANK_SQL} >= ? ${ORDER}`,
   );
   const insertStmt = db.prepare<unknown[], FindingRow>(
-    `INSERT INTO findings (repo, file_path, ecosystem, package_name, version, severity, dependency_type,
+    `INSERT INTO findings (repo, ref, file_path, ecosystem, package_name, version, severity, dependency_type,
        blacklist_entry_id, status, reason, html_url, first_seen_at, last_seen_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?) RETURNING ${COLUMNS}`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?) RETURNING ${COLUMNS}`,
   );
   const touchStmt = db.prepare<[string, string, number]>(
     "UPDATE findings SET dependency_type = ?, last_seen_at = ? WHERE id = ?",
@@ -258,6 +262,7 @@ export function createFindingsRepository(db: Db): FindingsRepository {
     insertOpen(finding, now) {
       const row = insertStmt.get(
         finding.repo,
+        finding.ref,
         finding.filePath,
         finding.ecosystem,
         finding.packageName,

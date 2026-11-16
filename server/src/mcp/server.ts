@@ -255,7 +255,7 @@ export function createMcpServer(services: AppServices, logger: Logger = consoleL
 
   register(
     "list_findings",
-    "검출 목록을 조회한다 (GET /api/findings). 기본 목록(category·excludeCategory 없음)에는 위험한 설정(policy)이 섞인다. 검출만 보려면 excludeCategory: \"policy\" 를 준다. 결과: Page<Finding>",
+    "검출 목록을 조회한다 (GET /api/findings). 기본 목록(category·excludeCategory 없음)에는 위험한 설정(policy)이 섞인다. 검출만 보려면 excludeCategory: \"policy\" 를 준다. 각 검출의 ref 는 검출한 브랜치다(기본 브랜치는 빈 문자열). 결과: Page<Finding>",
     FINDINGS_QUERY,
     (args) => services.findings.list(args),
   );
@@ -358,7 +358,7 @@ export function createMcpServer(services: AppServices, logger: Logger = consoleL
   );
   register(
     "get_settings",
-    "설정과 연결 상태를 조회한다 (GET /api/settings, 읽기 전용). 결과: Settings",
+    "설정과 연결 상태를 조회한다 (GET /api/settings, 읽기 전용). branchScanDays 는 기본 브랜치 외에 최근 이 일수 안에 커밋이 있는 브랜치도 스캔하는 기간이다(0 = 끔). 결과: Settings",
     NO_INPUT,
     () => services.settings.get(),
   );

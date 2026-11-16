@@ -1,4 +1,6 @@
 import {
+  BRANCH_SCAN_DAYS_DEFAULT,
+  BRANCH_SCAN_DAYS_MAX,
   DIGEST_TIMEZONE,
   digestTimeSchema,
   scanIntervalHoursSchema,
@@ -6,11 +8,13 @@ import {
   toDetails,
   type Severity,
 } from "@pw/shared";
-import type { z } from "zod";
+import { z } from "zod";
 import type { TokenSource } from "../config.ts";
 import { AppError } from "../errors.ts";
 import { stringArray } from "../lockfiles/common.ts";
 import type { SettingsRepository } from "../repositories/settings.ts";
+
+const branchScanDaysSchema = z.number().int().min(0).max(BRANCH_SCAN_DAYS_MAX);
 
 export const HOUR_MS = 60 * 60 * 1000;
 export const DEFAULT_SCAN_INTERVAL_HOURS = 24;
@@ -62,6 +66,7 @@ export interface StoredSettings {
   recipients: string[];
   notifyMinSeverity: Severity;
   feedEnabled: boolean;
+  branchScanDays: number;
 }
 
 /** 저장된 설정. 값이 없거나 깨졌으면 기본값을 쓴다. */
@@ -69,7 +74,9 @@ export function readStoredSettings(settings: SettingsRepository): StoredSettings
   const interval = scanIntervalHoursSchema.safeParse(Number(settings.get("scan_interval_hours")));
   const digestTime = digestTimeSchema.safeParse(settings.get("digest_time"));
   const minSeverity = severitySchema.safeParse(settings.get("notify_min_severity"));
+  const branchDays = branchScanDaysSchema.safeParse(Number(settings.get("branch_scan_days")));
   return {
+    branchScanDays: settings.get("branch_scan_days") !== null && branchDays.success ? branchDays.data : BRANCH_SCAN_DAYS_DEFAULT,
     // 기본 켬. 저장된 값이 "false" 일 때만 끈다.
     feedEnabled: settings.get("feed_enabled") !== "false",
     notifyMinSeverity: minSeverity.success ? minSeverity.data : DEFAULT_NOTIFY_MIN_SEVERITY,

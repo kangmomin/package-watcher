@@ -8,8 +8,21 @@ import { RowHeaderCell } from "@/components/RowHeaderCell";
 import { ScanRepoStatusBadge } from "@/components/ScanRepoStatusBadge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { useScanRepos } from "@/features/scans/hooks";
 import type { ScanReposFilter } from "@/lib/api";
 import { scanRepoStatusLabel } from "@/lib/format";
@@ -75,7 +88,10 @@ export function ScanReposPanel({ scanId, running, total, describedBy }: ScanRepo
           <Select
             value={filter.status ?? ALL_OPTION}
             onValueChange={(next) =>
-              changeFilter({ ...filter, status: SCAN_REPO_STATUSES.find((status) => status === next) })
+              changeFilter({
+                ...filter,
+                status: SCAN_REPO_STATUSES.find((status) => status === next),
+              })
             }
           >
             <SelectTrigger id={`${id}-status`} className="w-32">
@@ -160,17 +176,29 @@ function ScanReposTable({ items, describedBy }: { items: ScanRepo[]; describedBy
         </TableHeader>
         <TableBody>
           {items.map((item) => {
-            const count = (value: number) => (NO_COUNT_STATUSES.includes(item.status) ? "-" : value);
+            const count = (value: number) =>
+              NO_COUNT_STATUSES.includes(item.status) ? "-" : value;
             return (
               <TableRow key={item.repo}>
                 <RowHeaderCell className="font-mono">{item.repo}</RowHeaderCell>
                 <TableCell>
                   <ScanRepoStatusBadge status={item.status} />
                 </TableCell>
-                <TableCell className="text-right tabular-nums">{count(item.openFindingCount)}</TableCell>
-                <TableCell className="text-right tabular-nums">{count(item.newFindingCount)}</TableCell>
-                <TableCell className="text-right tabular-nums">{count(item.fileCount)}</TableCell>
-                <TableCell className="whitespace-normal text-muted-foreground">{item.error}</TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {count(item.openFindingCount)}
+                </TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {count(item.newFindingCount)}
+                </TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {count(item.fileCount)}
+                  {item.branchCount > 0 && (
+                    <span className="ml-2 text-xs text-muted-foreground">{`브랜치 ${item.branchCount}개`}</span>
+                  )}
+                </TableCell>
+                <TableCell className="whitespace-normal text-muted-foreground">
+                  {item.error}
+                </TableCell>
               </TableRow>
             );
           })}

@@ -230,6 +230,7 @@ ALTER TABLE blacklist_entries ADD COLUMN source TEXT NOT NULL DEFAULT 'manual';
 ALTER TABLE blacklist_entries ADD COLUMN external_id TEXT;
 
 ALTER TABLE findings ADD COLUMN ref TEXT NOT NULL DEFAULT '';
+ALTER TABLE scan_repos ADD COLUMN branch_count INTEGER NOT NULL DEFAULT 0;
 DROP INDEX findings_active_key;
 CREATE UNIQUE INDEX findings_active_key
   ON findings (repo, ref, file_path, package_name, version, blacklist_entry_id)
