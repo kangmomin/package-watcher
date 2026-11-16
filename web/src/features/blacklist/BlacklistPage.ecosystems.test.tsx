@@ -113,12 +113,12 @@ function schemaMessage(ecosystem: string, field: "name" | "versionRange", name: 
 }
 
 describe("블랙리스트 종류 — 종류 select", () => {
-  it("[ME-20] 추가 Dialog 의 종류 select 는 활성이고 옵션은 SUPPORTED_ECOSYSTEMS 순서의 9개이며 기본값은 npm 이다", async () => {
+  it("[ME-20] 추가 Dialog 의 종류 select 는 활성이고 옵션은 SUPPORTED_ECOSYSTEMS 순서의 12개이며 기본값은 npm 이다", async () => {
     setupServer();
     const { user } = await renderBlacklist();
 
     const dialog = await openAddDialog(user);
-    expect(SUPPORTED_ECOSYSTEMS).toHaveLength(9);
+    expect(SUPPORTED_ECOSYSTEMS).toHaveLength(12);
     expect(dialog.ecosystem).toBeEnabled();
     expect(dialog.ecosystem).toHaveTextContent("npm");
     await user.click(dialog.ecosystem);

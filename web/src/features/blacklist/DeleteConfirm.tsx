@@ -1,7 +1,7 @@
 // 삭제 확인 Dialog.
 // 요청 중 [삭제] 비활성 + 닫기 불가. 성공 또는 NOT_FOUND → 닫기, 그 외 → 열어 둠.
 // 열어 두는 오류는 toast 에 더해 Dialog 안에도 role="alert" 로 표시한다(다음 [삭제]·닫기에 지운다).
-import type { BlacklistEntry } from "@pw/shared";
+import { usesVersionRange, type BlacklistEntry } from "@pw/shared";
 import { useState } from "react";
 import { toast } from "sonner";
 import {
@@ -67,8 +67,8 @@ export function DeleteConfirm({ entry, onOpenChange }: DeleteConfirmProps) {
           <AlertDialogDescription>
             {shown && (
               <>
-                <span className="font-mono">{shown.name}</span> {shown.versionRange ?? ALL_VERSIONS_LABEL} 항목을
-                삭제합니다. 이 항목의 open·ignored 검출은 resolved 로 바뀝니다.
+                <span className="font-mono">{shown.name}</span>{" "}
+                {usesVersionRange(shown.ecosystem) && <>{shown.versionRange ?? ALL_VERSIONS_LABEL} </>}항목을 삭제합니다. 이 항목의 open·ignored 검출은 resolved 로 바뀝니다.
               </>
             )}
           </AlertDialogDescription>

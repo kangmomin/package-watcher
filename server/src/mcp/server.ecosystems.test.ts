@@ -61,6 +61,29 @@ describe("/mcp — 여러 종류", () => {
     expect(properties.name?.description).toContain("owner/repo");
   });
 
+  it("[SC-61] tool 은 13개 그대로이고 ecosystem enum 과 설명에 path·content·branch 와 범위를 쓰지 않는다는 안내가 있다", async () => {
+    const client = await connect();
+    const { tools } = await client.listTools();
+    const properties = (tools.find((item) => item.name === "add_blacklist_entry")?.inputSchema.properties ??
+      {}) as Record<string, { enum?: string[]; description?: string }>;
+
+    expect(tools).toHaveLength(13);
+    expect(properties.ecosystem?.enum).toEqual(expect.arrayContaining(["path", "content", "branch"]));
+    expect(properties.name?.description).toContain("브랜치");
+    expect(properties.versionRange?.description).toContain("범위를 쓰지 않는다");
+
+    const entry = await call(client, "add_blacklist_entry", { ecosystem: "path", name: ".ci-*.sh", reason: "흔적" });
+    expect(blacklistEntrySchema.parse(entry.json)).toMatchObject({ ecosystem: "path", versionRange: null });
+    const rejected = await call(client, "add_blacklist_entry", {
+      ecosystem: "branch",
+      name: "wfx-docs",
+      versionRange: "<1.0.0",
+      reason: "x",
+    });
+    expect(rejected.isError).toBe(true);
+    expect(toolErrorSchema.parse(rejected.json).details).toHaveProperty("versionRange");
+  });
+
   it("[SB-61] add_blacklist_entry 로 actions·docker 를 등록하고 이름을 정규화하며 잘못된 범위는 거부한다", async () => {
     const client = await connect();
 

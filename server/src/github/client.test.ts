@@ -162,3 +162,59 @@ describe("createOctokitClient (fetch mock)", () => {
     expect(Date.now() - started).toBeLessThan(5_000);
   });
 });
+
+describe("listBranches (fetch mock)", () => {
+  const branchPath = "/repos/my-org/svc/branches";
+
+  it("[SC-50] Link 헤더의 모든 페이지를 받아 이름 배열로 반환하고 per_page 는 100 이다", async () => {
+    const mock = createFetchMock(({ url }) => {
+      if (url.pathname !== branchPath) return NOT_FOUND;
+      const page = url.searchParams.get("page") ?? "1";
+      if (page === "1") {
+        const next = `${API}${branchPath}?per_page=100&page=2`;
+        return {
+          status: 200,
+          body: [{ name: "main" }, { name: "wfx-docs" }],
+          headers: { link: `<${next}>; rel="next", <${next}>; rel="last"` },
+        };
+      }
+      return { status: 200, body: [{ name: "chore/x" }] };
+    });
+    const client = createOctokitClient({ token: "test-token", fetch: mock.fetch });
+
+    await expect(client.listBranches("my-org", "svc")).resolves.toEqual(["main", "wfx-docs", "chore/x"]);
+    expect(mock.calls[0]?.url.searchParams.get("per_page")).toBe("100");
+  });
+
+  it("[SC-51] 빈 repo(409)는 빈 배열이고 404 와 그 외 오류는 throw 한다", async () => {
+    const mock = createFetchMock(({ url }) => {
+      if (url.pathname === "/repos/my-org/empty/branches") return { status: 409, body: { message: "empty" } };
+      if (url.pathname === "/repos/my-org/gone/branches") return NOT_FOUND;
+      return { status: 500, body: { message: "boom" } };
+    });
+    const client = createOctokitClient({ token: "test-token", fetch: mock.fetch });
+
+    await expect(client.listBranches("my-org", "empty")).resolves.toEqual([]);
+    await expect(client.listBranches("my-org", "gone")).rejects.toThrow(/404/);
+    await expect(client.listBranches("my-org", "bad")).rejects.toThrow(/500/);
+  });
+});
+
+describe("listBranches 상한 (fetch mock)", () => {
+  const page = (n: number) => Array.from({ length: 100 }, (_, i) => ({ name: "b" + n + "-" + i }));
+  const pageOf = (url: URL) => Number(url.searchParams.get("page") ?? "1");
+  const next = { link: '<https://api.github.com/x?page=2>; rel="next"' };
+
+  it("[SC-79] 10,000개까지는 받고 넘으면 자르지 않고 throw 한다", async () => {
+    const exact = createFetchMock(({ url }) =>
+      pageOf(url) < 100 ? { status: 200, body: page(pageOf(url)), headers: next } : { status: 200, body: page(100) },
+    );
+    const ok = await createOctokitClient({ token: "t", fetch: exact.fetch }).listBranches("my-org", "svc");
+    expect(ok).toHaveLength(10_000);
+
+    const over = createFetchMock(({ url }) => ({ status: 200, body: page(pageOf(url)), headers: next }));
+    await expect(createOctokitClient({ token: "t", fetch: over.fetch }).listBranches("my-org", "svc")).rejects.toThrow(
+      "브랜치가 너무 많습니다(10,000개 초과)",
+    );
+  }, 60_000);
+});

@@ -15,7 +15,7 @@ export interface FakeRepoInput {
   defaultBranch?: string;
 }
 
-export type FakeMethod = "listOrgRepos" | "getRepo" | "getTree" | "getFile";
+export type FakeMethod = "listOrgRepos" | "getRepo" | "getTree" | "getFile" | "listBranches";
 
 export interface FakeCall {
   method: FakeMethod;
@@ -42,6 +42,8 @@ interface RepoState {
   truncated: boolean;
   treeError: Error | null;
   fileErrors: Map<string, Error>;
+  branches: string[];
+  branchError: Error | null;
 }
 
 interface PendingGate {
@@ -90,6 +92,8 @@ export class FakeGitHubClient implements GitHubClient {
       truncated: false,
       treeError: null,
       fileErrors: new Map(),
+      branches: [],
+      branchError: null,
     });
   }
 
@@ -123,8 +127,18 @@ export class FakeGitHubClient implements GitHubClient {
     this.mustGet(name).fileErrors.set(path, error);
   }
 
+  /** 브랜치 목록 (기본 `[]`) */
+  setBranches(name: string, branches: string[]): void {
+    this.mustGet(name).branches = [...branches];
+  }
+
+  failBranches(name: string, error: Error): void {
+    this.mustGet(name).branchError = error;
+  }
+
   clearFailures(name: string): void {
     const state = this.mustGet(name);
+    state.branchError = null;
     state.treeError = null;
     state.truncated = false;
     state.fileErrors.clear();
@@ -208,6 +222,14 @@ export class FakeGitHubClient implements GitHubClient {
       return content;
     }
     throw new Error(`GitHub API 오류 (404): blob ${sha}`);
+  }
+
+  async listBranches(org: string, repo: string): Promise<string[]> {
+    await this.enter("listBranches", org, repo, null);
+    const state = this.repos.get(repo);
+    if (!state) throw new Error(`GitHub API 오류 (404): ${repo}`);
+    if (state.branchError) throw state.branchError;
+    return [...state.branches];
   }
 
   private async enter(

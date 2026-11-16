@@ -266,12 +266,19 @@ describe("[CT-15] v2 fixture 와 상수", () => {
     expect(settingsSchema.safeParse(settingsWithoutMin).success).toBe(false);
   });
 
-  it("상수: 종류 9개(패키지 7 + CI 2), 입력도 같다, 심각도는 높은 순", () => {
-    expect(ECOSYSTEMS).toEqual(["npm", "go", "pypi", "nuget", "cargo", "pub", "maven", "actions", "docker"]);
+  it("상수: 종류 12개(패키지 7 + CI 2 + 흔적 3), 입력도 같다, 심각도는 높은 순", () => {
+    expect(ECOSYSTEMS).toEqual([
+      ...["npm", "go", "pypi", "nuget", "cargo", "pub", "maven"],
+      ...["actions", "docker"],
+      ...["path", "content", "branch"],
+    ]);
     expect(ECOSYSTEMS.map((ecosystem) => ECOSYSTEM_CATEGORY[ecosystem])).toEqual([
       ...Array.from({ length: 7 }, () => "package"),
       "ci",
       "ci",
+      "indicator",
+      "indicator",
+      "indicator",
     ]);
     expect(SUPPORTED_ECOSYSTEMS).toEqual([...ECOSYSTEMS]);
     expect(SEVERITIES).toEqual(["critical", "high", "medium", "low"]);

@@ -390,6 +390,45 @@ export function normalizeImageName(name: string): string {
     .replace(/^library\//, "");
 }
 
+// ---------------------------------------------------------------- 침해의 흔적 (path, content, branch)
+
+const NO_RANGE_MESSAGE = "이 종류는 버전 범위를 쓰지 않습니다. 비워 두십시오";
+const PATTERN_TOO_BROAD = "패턴에 영문자·숫자가 2자 이상 있어야 합니다";
+const INVALID_PATTERN_CHARS = "패턴에 쓸 수 없는 문자가 있습니다";
+/** 제어 문자(줄바꿈 포함)가 있는가. 정규식에 제어 문자를 적지 않으려고 코드 값으로 본다. */
+function hasControlChar(text: string): boolean {
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}
+// `?`(glob 으로 오해한다), `\` (경로 구분자는 `/` 만 쓴다)
+const PATH_FORBIDDEN = /[?\\]/;
+const BRANCH_CHARS = /^[A-Za-z0-9._/+@*-]+$/;
+/** `content` 의 문자열 길이. 짧은 문자열은 거의 모든 파일과 일치한다. */
+export const CONTENT_MIN_LENGTH = 6;
+export const CONTENT_MAX_LENGTH = 200;
+
+/** 범위를 쓰지 않는 종류의 공통 부분. 범위를 주면 오류이고 어떤 버전도 "만족"하지 않는다. */
+const NO_RANGE: Pick<EcosystemRule, "rangeExample" | "validateRange" | "satisfies" | "exactVersionOf"> = {
+  rangeExample: "",
+  validateRange: () => NO_RANGE_MESSAGE,
+  satisfies: () => false,
+  exactVersionOf: () => null,
+};
+
+function indicatorPattern(options: { empty: string; maxLength: number; invalid: (name: string) => boolean }) {
+  return (name: string): string | null => {
+    if (typeof name !== "string" || name === "") return options.empty;
+    if (name.length > options.maxLength) return `${options.maxLength}자 이하로 입력하십시오`;
+    if (options.invalid(name)) return INVALID_PATTERN_CHARS;
+    // `*`, `*/*` 처럼 거의 모든 것과 일치하는 값을 막는다 (패턴이 아니어도 2자는 있어야 한다).
+    if ((name.match(ALNUM)?.length ?? 0) < 2) return PATTERN_TOO_BROAD;
+    return null;
+  };
+}
+
 // ---------------------------------------------------------------- 종류별 규칙
 
 const PYPI_RANGE_MESSAGE = "PEP 440 범위가 아닙니다 (예: <1.0,>=0.5)";
@@ -577,6 +616,46 @@ export const ECOSYSTEM_RULES: Record<Ecosystem, EcosystemRule> = {
       ofToken: (token) => DIGEST_PREFIX.exec(token)?.[1] ?? null,
       minPrefix: 12,
     }),
+  },
+
+  path: {
+    nameExample: ".github/workflows/github_actions_security.yml 또는 .ci-*.sh",
+    // 경로는 대소문자를 구분한다.
+    normalizeName: identity,
+    validateName: indicatorPattern({
+      empty: "파일 경로 또는 패턴을 입력하십시오",
+      maxLength: 255,
+      invalid: (name) => hasControlChar(name) || PATH_FORBIDDEN.test(name) || name.startsWith("/"),
+    }),
+    ...NO_RANGE,
+  },
+
+  content: {
+    nameExample: "193.32.204.199 또는 git-tanstack.com",
+    normalizeName: identity,
+    validateName: (name) => {
+      if (typeof name !== "string" || name === "") return "찾을 문자열을 입력하십시오";
+      if (name.length < CONTENT_MIN_LENGTH || name.length > CONTENT_MAX_LENGTH) {
+        return `문자열은 ${CONTENT_MIN_LENGTH}~${CONTENT_MAX_LENGTH}자입니다`;
+      }
+      if (hasControlChar(name)) return "문자열에 줄바꿈이나 제어 문자를 쓸 수 없습니다";
+      // 부분 일치로 찾는 글자 그대로의 문자열이다. `*` 를 패턴으로 오해하지 않게 받지 않는다.
+      if (name.includes("*")) return "문자열에 * 를 쓸 수 없습니다 (패턴이 아니라 글자 그대로 찾습니다)";
+      if ((name.match(ALNUM)?.length ?? 0) < 2) return "문자열에 영문자·숫자가 2자 이상 있어야 합니다";
+      return null;
+    },
+    ...NO_RANGE,
+  },
+
+  branch: {
+    nameExample: "wfx-docs 또는 chore/*",
+    normalizeName: identity,
+    validateName: indicatorPattern({
+      empty: "브랜치 이름 또는 패턴을 입력하십시오",
+      maxLength: 255,
+      invalid: (name) => !BRANCH_CHARS.test(name),
+    }),
+    ...NO_RANGE,
   },
 };
 

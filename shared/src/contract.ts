@@ -45,8 +45,13 @@ export const CI_ECOSYSTEMS = ["actions", "docker"] as const;
  * 블랙리스트 항목의 종류 전체. 필드 이름은 `ecosystem` 이지만 패키지가 아닌 종류도 들어간다 (화면에는 "종류").
  * DB 는 v4 부터 이 목록을 CHECK 하지 않는다 — 검증은 이 스키마가 한다.
  */
-export const ECOSYSTEMS = [...PACKAGE_ECOSYSTEMS, ...CI_ECOSYSTEMS] as const;
-export const ECOSYSTEM_CATEGORIES = ["package", "ci"] as const;
+/**
+ * 침해의 흔적. 패키지가 아니라 저장소 자체를 본다: 파일 경로, 파일 내용의 문자열, 브랜치 이름.
+ * 버전 범위를 쓰지 않는다 (항상 null).
+ */
+export const INDICATOR_ECOSYSTEMS = ["path", "content", "branch"] as const;
+export const ECOSYSTEMS = [...PACKAGE_ECOSYSTEMS, ...CI_ECOSYSTEMS, ...INDICATOR_ECOSYSTEMS] as const;
+export const ECOSYSTEM_CATEGORIES = ["package", "ci", "indicator"] as const;
 export type EcosystemCategory = (typeof ECOSYSTEM_CATEGORIES)[number];
 /** 입력으로 받는 종류. 검사기가 있는 종류만 넣는다 (지금은 전부). */
 // 길이가 고정된 tuple 타입으로 내보내지 않는다 — 쓰는 쪽의 `length === 1` 같은 비교가 타입 오류가 된다.
@@ -60,6 +65,7 @@ export type Ecosystem = z.infer<typeof ecosystemSchema>;
 export type Severity = z.infer<typeof severitySchema>;
 export type PackageEcosystem = (typeof PACKAGE_ECOSYSTEMS)[number];
 export type CiEcosystem = (typeof CI_ECOSYSTEMS)[number];
+export type IndicatorEcosystem = (typeof INDICATOR_ECOSYSTEMS)[number];
 export const ECOSYSTEM_CATEGORY: Record<Ecosystem, EcosystemCategory> = {
   npm: "package",
   go: "package",
@@ -70,8 +76,13 @@ export const ECOSYSTEM_CATEGORY: Record<Ecosystem, EcosystemCategory> = {
   maven: "package",
   actions: "ci",
   docker: "ci",
+  path: "indicator",
+  content: "indicator",
+  branch: "indicator",
 };
 export const categoryOf = (ecosystem: Ecosystem): EcosystemCategory => ECOSYSTEM_CATEGORY[ecosystem];
+/** 이 종류의 항목이 버전 범위를 가질 수 있는가. false 이면 범위는 항상 null 이고 화면은 입력을 숨긴다. */
+export const usesVersionRange = (ecosystem: Ecosystem): boolean => categoryOf(ecosystem) !== "indicator";
 export const SEVERITY_RANK: Record<Severity, number> = { critical: 4, high: 3, medium: 2, low: 1 };
 
 export const findingStatusSchema = z.enum(FINDING_STATUSES);
@@ -287,7 +298,7 @@ export type ApiError = z.infer<typeof apiErrorSchema>;
 
 // ---------------------------------------------------------------- 요청
 
-/** 이름에 `*` 가 있으면 패턴이다. `*` 는 `/` 를 포함한 임의의 문자열과 일치한다. */
+/** 이름에 `*` 가 있으면 패턴이다. `*` 는 `/` 를 포함한 임의의 문자열과 일치한다. (`content` 는 `*` 를 받지 않는다.) */
 export function isNamePattern(name: string): boolean {
   return name.includes("*");
 }

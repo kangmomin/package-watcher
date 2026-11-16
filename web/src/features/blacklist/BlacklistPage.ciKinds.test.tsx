@@ -22,9 +22,11 @@ const BLACKLIST = "/api/blacklist";
 const FINDINGS = "/api/findings";
 const PACKAGE_LABELS = ["npm", "go", "pypi", "nuget", "cargo", "pub", "maven"];
 const CI_LABELS = ["GitHub Actions", "Docker 이미지"];
+const INDICATOR_LABELS = ["파일 경로", "파일 내용", "브랜치 이름"];
 const GROUPS = [
   { label: "패키지", options: PACKAGE_LABELS },
   { label: "CI·이미지", options: CI_LABELS },
+  { label: "침해의 흔적", options: INDICATOR_LABELS },
 ];
 const RANGE_NOTE = "범위가 아니라 정확한 값을 쉼표로 나눠 적습니다";
 

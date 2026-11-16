@@ -1,6 +1,6 @@
 // 종류(ecosystem)별 규칙: 이름, 정규화, 범위 문법, 버전 비교, 선언 spec 의 정확한 버전.
 import { describe, expect, it } from "vitest";
-import { ECOSYSTEMS, type Ecosystem } from "./contract.ts";
+import { ECOSYSTEMS, usesVersionRange, type Ecosystem } from "./contract.ts";
 import { ECOSYSTEM_RULES, normalizeEntryName, validateEntryFields } from "./ecosystems.ts";
 
 const rule = (ecosystem: Ecosystem) => ECOSYSTEM_RULES[ecosystem];
@@ -17,10 +17,16 @@ describe("[ME-01] 이름 규칙", () => {
     expect(Object.keys(ECOSYSTEM_RULES).sort()).toEqual([...ECOSYSTEMS].sort());
     for (const ecosystem of ECOSYSTEMS) {
       const { nameExample, rangeExample, validateName, validateRange } = rule(ecosystem);
+      if (!usesVersionRange(ecosystem)) {
+        // 범위를 쓰지 않는 종류: 범위의 예시가 없고 어떤 값도 받지 않는다. 이름의 예시는 [SC-01] 이 본다.
+        expect(rangeExample, `${ecosystem} rangeExample`).toBe("");
+        expect(validateRange("1.0.0"), `${ecosystem} 범위`).toEqual(expect.any(String));
+        continue;
+      }
       expect(validateName(nameExample), `${ecosystem} nameExample`).toBeNull();
       expect(rangeExample.length, `${ecosystem} rangeExample`).toBeGreaterThan(0);
       // 예시 1줄은 "A, B" 처럼 여러 예를 담을 수 있다. 첫 번째 예는 그대로 입력할 수 있어야 한다.
-      const first = RANGE_EXAMPLE_FIRST[ecosystem];
+      const first = RANGE_EXAMPLE_FIRST[ecosystem] ?? "";
       expect(rangeExample.startsWith(first), `${ecosystem} rangeExample 의 첫 예`).toBe(true);
       expect(validateRange(first), `${ecosystem} 첫 예`).toBeNull();
     }
@@ -100,7 +106,8 @@ describe("[ME-01] 이름 규칙", () => {
   });
 
   it("패턴의 메시지는 묶음 1 그대로다 (모든 종류)", () => {
-    for (const ecosystem of ECOSYSTEMS) {
+    // content 는 패턴이 아니라 글자 그대로의 문자열이라 `*` 자체를 받지 않는다.
+    for (const ecosystem of ECOSYSTEMS.filter((value) => value !== "content")) {
       expect(rule(ecosystem).validateName("ab?*")).toBe("패턴에 쓸 수 없는 문자가 있습니다");
       expect(rule(ecosystem).validateName("*")).toBe("패턴에 영문자·숫자가 2자 이상 있어야 합니다");
     }
@@ -108,7 +115,7 @@ describe("[ME-01] 이름 규칙", () => {
 });
 
 /** 계획의 표에 있는 예. 화면이 `rangeExample` 을 그대로 보여 준다. */
-const RANGE_EXAMPLE_FIRST: Record<Ecosystem, string> = {
+const RANGE_EXAMPLE_FIRST: Partial<Record<Ecosystem, string>> = {
   npm: "<4.17.21",
   go: "<v0.4.30",
   pypi: "<1.0,>=0.5",
@@ -674,5 +681,69 @@ describe("[SB-01] actions·docker: 정확한 값의 목록", () => {
     expect(rule("actions").exactVersionOf("v4")).toBe("v4");
     expect(rule("docker").exactVersionOf(" 18-alpine ")).toBe("18-alpine");
     expect(rule("docker").exactVersionOf("")).toBeNull();
+  });
+});
+
+describe("[SC-01] 침해의 흔적: path, content, branch", () => {
+  const NO_RANGE = "이 종류는 버전 범위를 쓰지 않습니다. 비워 두십시오";
+  const VALID_NAME = { path: "ab-cd", content: "abcdef", branch: "ab-cd" } as const;
+
+  it("세 종류 모두 버전 범위를 쓰지 않는다", () => {
+    for (const ecosystem of ["path", "content", "branch"] as const) {
+      expect(usesVersionRange(ecosystem)).toBe(false);
+      expect(rule(ecosystem).validateRange("v1")).toBe(NO_RANGE);
+      expect(rule(ecosystem).satisfies("v1", "v1")).toBe(false);
+      expect(rule(ecosystem).exactVersionOf("v1")).toBeNull();
+      expect(validateEntryFields(ecosystem, VALID_NAME[ecosystem], null)).toEqual({});
+      expect(validateEntryFields(ecosystem, VALID_NAME[ecosystem], "v1")).toEqual({ versionRange: NO_RANGE });
+    }
+    expect(usesVersionRange("npm")).toBe(true);
+    expect(usesVersionRange("docker")).toBe(true);
+  });
+
+  it("path: 경로와 패턴. 제어 문자, ?, 역슬래시, 맨 앞의 / 는 거부", () => {
+    const { validateName, normalizeName } = rule("path");
+    for (const name of [
+      ".ci-*.sh",
+      ".github/workflows/github_actions_security.yml",
+      "docs/wfx-audit.md",
+      "*/router_init.js",
+      "한글 폴더/파일 (1).txt",
+      ".claude/setup.mjs",
+    ]) {
+      expect(validateName(name), name).toBeNull();
+    }
+    for (const name of ["", "/abs/path", "a\\b", "what?.sh", "ab\ncd", "*", "*/*", "a".repeat(256)]) {
+      expect(validateName(name), JSON.stringify(name)).toEqual(expect.any(String));
+    }
+    expect(normalizeName("Docs/README.md")).toBe("Docs/README.md");
+  });
+
+  it("content: 6~200자의 글자 그대로의 문자열. * 와 줄바꿈은 거부", () => {
+    const { validateName } = rule("content");
+    for (const name of ["193.32.204.199", "git-tanstack.com", "api/workflow/receive?inj=", "a b c d e f"]) {
+      expect(validateName(name), name).toBeNull();
+    }
+    for (const name of ["", "abcde", "a".repeat(201), "abc\ndef", "evil-*-pkg", "......", "------x"]) {
+      expect(validateName(name), JSON.stringify(name)).toEqual(expect.any(String));
+    }
+  });
+
+  it("branch: 이름과 패턴. 공백과 git 이 받지 않는 문자는 거부", () => {
+    const { validateName } = rule("branch");
+    for (const name of ["wfx-docs", "chore/*", "release/v1.2", "feature/a_b+c@d"]) {
+      expect(validateName(name), name).toBeNull();
+    }
+    for (const name of ["", "has space", "a~b", "a:b", "*", "x", "a".repeat(256)]) {
+      expect(validateName(name), JSON.stringify(name)).toEqual(expect.any(String));
+    }
+  });
+
+  it("이름의 예시는 자기 규칙을 통과한다 ('또는' 으로 나눈 각 예)", () => {
+    for (const ecosystem of ["path", "content", "branch"] as const) {
+      for (const example of rule(ecosystem).nameExample.split(" 또는 ")) {
+        expect(rule(ecosystem).validateName(example), `${ecosystem}: ${example}`).toBeNull();
+      }
+    }
   });
 });

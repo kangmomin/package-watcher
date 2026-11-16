@@ -18,6 +18,10 @@ export const DEFAULT_DIGEST_TIME = "09:00";
 /** 기본값 low = 모든 검출을 즉시 알린다(v1 동작과 같다) */
 export const DEFAULT_NOTIFY_MIN_SEVERITY: Severity = "low";
 
+/** 신뢰할 수 없는 문자열(경로 등)의 제어 문자를 `?` 로 바꾼다 — 메일·로그에서 줄을 위조하지 못하게 한다. */
+// eslint-disable-next-line no-control-regex
+export const printable = (text: string): string => text.replace(/[\u0000-\u001f\u007f\u0085\u2028\u2029]/g, "?");
+
 export const toIso = (date: Date): string => date.toISOString();
 export const addMs = (date: Date, ms: number): Date => new Date(date.getTime() + ms);
 

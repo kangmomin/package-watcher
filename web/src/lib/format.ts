@@ -48,6 +48,9 @@ export function formatCardTime(iso: string): string {
   return `${year}-${month}-${day} ${hour}:${minute}`;
 }
 
+/** 값이 없거나 쓰지 않는 칸의 표시 */
+export const NOT_APPLICABLE_LABEL = "—";
+
 /** 블랙리스트 versionRange 가 null 일 때의 표시 */
 export const ALL_VERSIONS_LABEL = "(모든 버전)";
 
@@ -93,8 +96,15 @@ const ECOSYSTEM_LABELS: Record<Ecosystem, string> = {
   maven: "maven",
   actions: "GitHub Actions",
   docker: "Docker 이미지",
+  path: "파일 경로",
+  content: "파일 내용",
+  branch: "브랜치 이름",
 };
-const ECOSYSTEM_CATEGORY_LABELS: Record<EcosystemCategory, string> = { package: "패키지", ci: "CI·이미지" };
+const ECOSYSTEM_CATEGORY_LABELS: Record<EcosystemCategory, string> = {
+  package: "패키지",
+  ci: "CI·이미지",
+  indicator: "침해의 흔적",
+};
 
 export function ecosystemLabel(ecosystem: Ecosystem): string {
   return ECOSYSTEM_LABELS[ecosystem];
@@ -103,3 +113,7 @@ export function ecosystemLabel(ecosystem: Ecosystem): string {
 export function ecosystemCategoryLabel(category: EcosystemCategory): string {
   return ECOSYSTEM_CATEGORY_LABELS[category];
 }
+
+/** `—` 의 스크린 리더용 텍스트 (칸의 뜻에 따라 다르다) */
+export const NOT_APPLICABLE_SR_TEXT = "해당 없음";
+export const NO_VERSION_SR_TEXT = "버전 없음";

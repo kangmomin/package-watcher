@@ -35,8 +35,8 @@ const TEXT = {
 const FINDINGS = "/api/findings";
 const SUMMARY = "/api/summary";
 
-/** 열 순서: repo | 파일 경로 | 종류 | 패키지@버전 | 심각도 | 직접/전이 | 상태 | ⋮ */
-const HEADERS = ["repo", "파일 경로", "종류", "패키지@버전", "심각도", "직접/전이", "상태"];
+/** 열 순서: repo | 파일 경로 | 종류 | 대상 | 심각도 | 직접/전이 | 상태 | ⋮ */
+const HEADERS = ["repo", "파일 경로", "종류", "대상", "심각도", "직접/전이", "상태"];
 const COLUMN = { repo: 0, filePath: 1, ecosystem: 2, package: 3, severity: 4, dependencyType: 5, status: 6 } as const;
 
 function makeFindings(count: number, firstId: number): Finding[] {
@@ -89,7 +89,7 @@ async function goToSecondPage(server: FetchMock, user: ReturnType<typeof renderW
 }
 
 describe("대시보드 v2 — 검출 표", () => {
-  it("[CT-18] 표의 열 순서는 repo | 파일 경로 | 종류 | 패키지@버전 | 심각도 | 직접/전이 | 상태 다 (v1 의 '종류' 는 '직접/전이' 로 바뀐다)", async () => {
+  it("[CT-18] 표의 열 순서는 repo | 파일 경로 | 종류 | 대상 | 심각도 | 직접/전이 | 상태 다 (v1 의 '종류' 는 '직접/전이' 로 바뀐다)", async () => {
     setupServer();
     renderWithProviders(<DashboardPage />);
     await findRowWith(findingCritical.repo);
