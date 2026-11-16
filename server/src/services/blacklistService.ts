@@ -1,4 +1,8 @@
 import {
+  POLICY_CREATE_MESSAGE,
+  POLICY_DELETE_MESSAGE,
+  POLICY_ECOSYSTEM,
+  POLICY_RENAME_MESSAGE,
   kstDateOf,
   normalizeEntryName,
   toDetails,
@@ -68,6 +72,8 @@ export interface BlacklistServiceDeps {
 }
 
 export const DUPLICATE_MESSAGE = "같은 종류·이름·버전 범위의 항목이 이미 있습니다";
+
+const policyDeleteError = (): AppError => new AppError("INVALID_STATE", POLICY_DELETE_MESSAGE);
 
 function notFound(): AppError {
   return new AppError("NOT_FOUND", "블랙리스트 항목을 찾을 수 없습니다");
@@ -143,6 +149,10 @@ export function createBlacklistService(deps: BlacklistServiceDeps): BlacklistSer
       });
     }
     const data = parseInput(blacklistUpdateSchema, input);
+    // 내장 검사의 이름은 검사의 id 라서 바꿀 수 없다 (형식 검증보다 먼저 — 안내 문구가 가려지지 않게).
+    if (current.ecosystem === POLICY_ECOSYSTEM && data.name !== current.name) {
+      throw new AppError("VALIDATION_ERROR", "입력값이 올바르지 않습니다 (name)", { name: POLICY_RENAME_MESSAGE });
+    }
     const invalid = validateEntryFields(current.ecosystem, data.name, data.versionRange);
     if (Object.keys(invalid).length > 0) {
       throw new AppError(
@@ -202,6 +212,12 @@ export function createBlacklistService(deps: BlacklistServiceDeps): BlacklistSer
     get: (id) => mustGet(id, todayKst(clock)),
     create(input) {
       const today = todayKst(clock);
+      // 내장 검사는 서버가 만든다. 이름 검증 오류에 가려지지 않게 스키마보다 먼저 거부한다.
+      if ((input as { ecosystem?: unknown } | null)?.ecosystem === POLICY_ECOSYSTEM) {
+        throw new AppError("VALIDATION_ERROR", "입력값이 올바르지 않습니다 (ecosystem)", {
+          ecosystem: POLICY_CREATE_MESSAGE,
+        });
+      }
       const data = parseInput(blacklistCreateSchema, input);
       assertExpiresAt(data, undefined, today);
       assertUnique(data, null, today);
@@ -221,7 +237,7 @@ export function createBlacklistService(deps: BlacklistServiceDeps): BlacklistSer
       );
     },
     remove(id) {
-      mustGet(id, todayKst(clock));
+      if (mustGet(id, todayKst(clock)).ecosystem === POLICY_ECOSYSTEM) throw policyDeleteError();
       repos.transaction(() => {
         repos.findings.resolveByBlacklistEntry(id, toIso(clock.now()));
         repos.blacklist.remove(id);
@@ -239,6 +255,10 @@ export function createBlacklistService(deps: BlacklistServiceDeps): BlacklistSer
           "NOT_FOUND",
           `블랙리스트 항목을 찾을 수 없습니다 (id: ${shown}${missing.length > 10 ? " 외" : ""})`,
         );
+      }
+      // 일괄 삭제에 내장 검사가 1개라도 있으면 아무것도 지우지 않는다.
+      if (action === "delete" && entries.some(({ entry }) => entry?.ecosystem === POLICY_ECOSYSTEM)) {
+        throw policyDeleteError();
       }
       repos.transaction(() => {
         for (const { id, entry } of entries) {
@@ -293,7 +313,10 @@ export function createBlacklistService(deps: BlacklistServiceDeps): BlacklistSer
 
         const existing = repos.blacklist.findByKey(data.ecosystem, data.name, data.versionRange, today);
         const problem = expiresAtProblem(data, existing?.expiresAt, today);
-        if (problem !== null) {
+        if (data.ecosystem === POLICY_ECOSYSTEM && existing === null) {
+          // 내장 검사는 새로 만들 수 없다. 기존 항목과 키가 같은 행(켬·끔·심각도 변경)만 받는다.
+          errors.push({ row: item.row, field: "ecosystem", message: POLICY_CREATE_MESSAGE });
+        } else if (problem !== null) {
           errors.push({ row: item.row, field: "expiresAt", message: problem });
         } else if (existing === null) {
           created += 1;

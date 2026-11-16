@@ -50,8 +50,18 @@ export const CI_ECOSYSTEMS = ["actions", "docker"] as const;
  * 버전 범위를 쓰지 않는다 (항상 null).
  */
 export const INDICATOR_ECOSYSTEMS = ["path", "content", "branch"] as const;
-export const ECOSYSTEMS = [...PACKAGE_ECOSYSTEMS, ...CI_ECOSYSTEMS, ...INDICATOR_ECOSYSTEMS] as const;
-export const ECOSYSTEM_CATEGORIES = ["package", "ci", "indicator"] as const;
+/**
+ * 위험한 설정의 보고. 항목은 서버가 만드는 내장 검사(`POLICY_CHECKS`)이고 이름 = 검사의 id 다.
+ * 사용자는 켬·끔과 심각도만 바꾼다. 추가·삭제·이름 변경은 할 수 없다. 버전 범위를 쓰지 않는다.
+ */
+export const POLICY_ECOSYSTEM = "policy";
+export const ECOSYSTEMS = [
+  ...PACKAGE_ECOSYSTEMS,
+  ...CI_ECOSYSTEMS,
+  ...INDICATOR_ECOSYSTEMS,
+  POLICY_ECOSYSTEM,
+] as const;
+export const ECOSYSTEM_CATEGORIES = ["package", "ci", "indicator", "policy"] as const;
 export type EcosystemCategory = (typeof ECOSYSTEM_CATEGORIES)[number];
 /** 입력으로 받는 종류. 검사기가 있는 종류만 넣는다 (지금은 전부). */
 // 길이가 고정된 tuple 타입으로 내보내지 않는다 — 쓰는 쪽의 `length === 1` 같은 비교가 타입 오류가 된다.
@@ -79,10 +89,84 @@ export const ECOSYSTEM_CATEGORY: Record<Ecosystem, EcosystemCategory> = {
   path: "indicator",
   content: "indicator",
   branch: "indicator",
+  policy: "policy",
 };
 export const categoryOf = (ecosystem: Ecosystem): EcosystemCategory => ECOSYSTEM_CATEGORY[ecosystem];
 /** 이 종류의 항목이 버전 범위를 가질 수 있는가. false 이면 범위는 항상 null 이고 화면은 입력을 숨긴다. */
-export const usesVersionRange = (ecosystem: Ecosystem): boolean => categoryOf(ecosystem) !== "indicator";
+export const usesVersionRange = (ecosystem: Ecosystem): boolean => {
+  const category = categoryOf(ecosystem);
+  return category === "package" || category === "ci";
+};
+export const ecosystemCategorySchema = z.enum(ECOSYSTEM_CATEGORIES);
+/** 사용자가 항목을 추가·삭제할 수 있는 종류인가. `policy` 는 서버가 만든다. */
+export const isUserManagedEcosystem = (ecosystem: Ecosystem): boolean => ecosystem !== POLICY_ECOSYSTEM;
+export const POLICY_CREATE_MESSAGE = "위험한 설정의 검사는 추가할 수 없습니다. 내장 검사의 켬·끔과 심각도만 바꿀 수 있습니다";
+export const POLICY_DELETE_MESSAGE = "위험한 설정의 검사는 삭제할 수 없습니다. 끄려면 비활성으로 바꾸십시오";
+export const POLICY_RENAME_MESSAGE = "위험한 설정의 검사는 이름을 바꿀 수 없습니다";
+
+/**
+ * 내장 검사. 블랙리스트 없이 "위험한 설정"을 보고한다. 서버가 시작할 때 없는 것만 `policy` 항목으로 넣는다.
+ * `subject` = 검출의 `packageName` 에 들어가는 것 (화면의 "대상").
+ */
+export const POLICY_CHECKS = [
+  {
+    id: "unpinned-action",
+    title: "commit SHA 로 고정하지 않은 외부 action",
+    description: "tag 와 브랜치는 공격자가 다른 커밋으로 옮길 수 있습니다. 외부 action 은 40자 commit SHA 로 고정하십시오.",
+    severity: "medium",
+  },
+  {
+    id: "missing-lockfile",
+    title: "lock 파일이 없는 package.json",
+    description: "lock 파일이 없으면 설치할 때마다 버전이 달라지고, 악성 버전이 나온 시점에 바로 받습니다.",
+    severity: "medium",
+  },
+  {
+    id: "non-registry-dependency",
+    title: "registry 밖에서 받는 npm 의존성",
+    description: "git·http URL 또는 .tgz 파일의 의존성은 registry 의 검사와 이 도구의 이름 대조를 거치지 않습니다.",
+    severity: "medium",
+  },
+  {
+    id: "unpinned-exec",
+    title: "버전 없이 실행하는 패키지 (npx, uvx 등)",
+    description: "버전이 없으면 실행할 때마다 최신 버전을 받아서 실행합니다. 정확한 버전을 적으십시오.",
+    severity: "medium",
+  },
+  {
+    id: "curl-pipe-shell",
+    title: "내려받은 script 를 바로 실행 (curl | sh)",
+    description: "내려받은 내용을 확인하지 않고 실행합니다. 버전이 고정된 파일을 받고 checksum 을 확인하십시오.",
+    severity: "medium",
+  },
+  {
+    id: "workflow-no-permissions",
+    title: "permissions 가 없는 workflow",
+    description: "permissions 가 없으면 GITHUB_TOKEN 이 저장소의 기본 권한을 가집니다. 필요한 권한만 적으십시오.",
+    severity: "low",
+  },
+  {
+    id: "unpinned-image",
+    title: "tag 가 없거나 latest 인 Docker 이미지",
+    description: "latest 는 빌드할 때마다 다른 이미지가 될 수 있습니다. 버전 tag 또는 digest 로 고정하십시오.",
+    severity: "low",
+  },
+  {
+    id: "committed-node-modules",
+    title: "커밋된 node_modules",
+    description: "커밋된 node_modules 의 패키지는 lock 파일과 다를 수 있고 이 도구가 버전을 읽지 않습니다.",
+    severity: "low",
+  },
+  {
+    id: "suspicious-filename",
+    title: "제어 문자가 든 파일 이름",
+    description: "보이지 않는 문자가 든 파일 이름은 화면에서 다른 파일처럼 보일 수 있습니다.",
+    severity: "low",
+  },
+] as const satisfies readonly { id: string; title: string; description: string; severity: Severity }[];
+export type PolicyCheckId = (typeof POLICY_CHECKS)[number]["id"];
+export const POLICY_CHECK_IDS = POLICY_CHECKS.map((check) => check.id) as readonly PolicyCheckId[];
+export const policyCheckOf = (id: string) => POLICY_CHECKS.find((check) => check.id === id);
 export const SEVERITY_RANK: Record<Severity, number> = { critical: 4, high: 3, medium: 2, low: 1 };
 
 export const findingStatusSchema = z.enum(FINDING_STATUSES);
@@ -245,7 +329,9 @@ export const scanRepoSchema = z.object({
 export type ScanRepo = z.infer<typeof scanRepoSchema>;
 
 export const summarySchema = z.object({
+  /** open 검출의 수. `policy`(위험한 설정)는 세지 않는다 — `policyOpenCount` 가 따로 센다. */
   openCount: countSchema,
+  policyOpenCount: countSchema,
   ignoredCount: countSchema,
   lastScan: scanSchema.nullable(),
   nextScanAt: isoDateSchema.nullable(),
@@ -502,6 +588,10 @@ export const findingsQuerySchema = z.object({
   package: textFilter,
   /** 정확히 일치하는 값만 반환한다 ("이상" 이 아니다). */
   ecosystem: ecosystemSchema.optional(),
+  /** 그 분류의 검출만. */
+  category: ecosystemCategorySchema.optional(),
+  /** 그 분류를 뺀 검출. 화면의 "검출" 탭이 `policy` 를 뺄 때 쓴다. */
+  excludeCategory: ecosystemCategorySchema.optional(),
   severity: severitySchema.optional(),
   page: pageParam.default(1),
   limit: limitParam(FINDINGS_MAX_LIMIT).default(FINDINGS_DEFAULT_LIMIT),

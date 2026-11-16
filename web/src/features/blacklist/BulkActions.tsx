@@ -2,7 +2,7 @@
 // [켜기]·[끄기] 는 바로 실행하고, [삭제] 는 건수를 보여 주는 확인 Dialog 뒤에 실행한다.
 // 건수 span 은 항상 렌더해 두어야 스크린 리더가 변경을 읽는다(aria-live).
 import { BULK_MAX_IDS, type BulkAction } from "@pw/shared";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { toast } from "sonner";
 import {
   AlertDialog,
@@ -22,6 +22,8 @@ export interface BulkActionsProps {
   ids: number[];
   /** 요청한 id 를 선택에서 뺀다 */
   onClear: (removed: number[]) => void;
+  /** 선택에 내장 검사(policy)가 있다 — 삭제할 수 없다 */
+  hasBuiltIn?: boolean;
   /** 목록이 아직 확인되지 않았다(필터 변경 직후) */
   disabled?: boolean;
   /** 요청 상태를 화면(체크박스)과 나누기 위해 화면이 만든 mutation 을 받는다 */
@@ -34,11 +36,14 @@ const SUCCESS_MESSAGE: Record<BulkAction, (count: number) => string> = {
   delete: (count) => `${count}건을 삭제했습니다`,
 };
 
+const BUILT_IN_DELETE_HINT = "내장 검사가 선택돼 있어서 삭제할 수 없습니다";
+
 function sameIds(a: number[], b: number[]): boolean {
   return a.length === b.length && a.every((id, index) => id === b[index]);
 }
 
-export function BulkActions({ ids, onClear, disabled = false, bulk }: BulkActionsProps) {
+export function BulkActions({ ids, onClear, hasBuiltIn = false, disabled = false, bulk }: BulkActionsProps) {
+  const builtInHintId = useId();
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   // 확인 Dialog 가 닫히는 동안 건수가 0 으로 바뀌지 않게 연 시점의 건수를 쓴다.
   const [confirmIds, setConfirmIds] = useState<number[]>([]);
@@ -84,7 +89,8 @@ export function BulkActions({ ids, onClear, disabled = false, bulk }: BulkAction
             variant="outline"
             size="sm"
             className="text-destructive hover:text-destructive"
-            disabled={buttonsDisabled}
+            disabled={buttonsDisabled || hasBuiltIn}
+            aria-describedby={hasBuiltIn ? builtInHintId : undefined}
             onClick={() => {
               setConfirmIds(ids);
               setConfirmingDelete(true);
@@ -92,6 +98,11 @@ export function BulkActions({ ids, onClear, disabled = false, bulk }: BulkAction
           >
             삭제
           </Button>
+          {hasBuiltIn && (
+            <span id={builtInHintId} className="text-sm text-muted-foreground">
+              {BUILT_IN_DELETE_HINT}
+            </span>
+          )}
           {tooMany && (
             <span className="text-sm text-destructive">
               한 번에 {BULK_MAX_IDS}건까지 처리할 수 있습니다

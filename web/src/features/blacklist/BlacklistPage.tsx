@@ -1,7 +1,7 @@
 // 블랙리스트 `/blacklist`.
 // 구성: 필터 + [가져오기] [내보내기] [항목 추가] + 일괄 버튼 줄 + BlacklistTable + BlacklistDialog(추가/수정 공용) + DeleteConfirm + ImportDialog.
 // empty = 필터가 없으면 "블랙리스트가 비어 있습니다", 있으면 "조건에 맞는 항목이 없습니다".
-import type { BlacklistEntry } from "@pw/shared";
+import { isUserManagedEcosystem, type BlacklistEntry } from "@pw/shared";
 import { PlusIcon, UploadIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { DataState } from "@/components/DataState";
@@ -80,6 +80,7 @@ export function BlacklistPage() {
       <BulkActions
         ids={selectedIds}
         onClear={clearSelected}
+        hasBuiltIn={items.some((entry) => visibleSelected.has(entry.id) && !isUserManagedEcosystem(entry.ecosystem))}
         disabled={blacklist.isPlaceholderData}
         bulk={bulk}
       />

@@ -9,6 +9,7 @@ import {
   type EntryStatus,
   type ScanRepoStatus,
   type ScanTrigger,
+  policyCheckOf,
 } from "@pw/shared";
 
 // hourCycle h23: 자정을 "24" 가 아니라 "00" 으로 쓴다.
@@ -99,11 +100,13 @@ const ECOSYSTEM_LABELS: Record<Ecosystem, string> = {
   path: "파일 경로",
   content: "파일 내용",
   branch: "브랜치 이름",
+  policy: "위험한 설정",
 };
 const ECOSYSTEM_CATEGORY_LABELS: Record<EcosystemCategory, string> = {
   package: "패키지",
   ci: "CI·이미지",
   indicator: "침해의 흔적",
+  policy: "위험한 설정",
 };
 
 export function ecosystemLabel(ecosystem: Ecosystem): string {
@@ -117,3 +120,11 @@ export function ecosystemCategoryLabel(category: EcosystemCategory): string {
 /** `—` 의 스크린 리더용 텍스트 (칸의 뜻에 따라 다르다) */
 export const NOT_APPLICABLE_SR_TEXT = "해당 없음";
 export const NO_VERSION_SR_TEXT = "버전 없음";
+
+/** policy 검출·항목을 검사 이름을 모를 때(목록을 못 받음) 표시하는 이름 */
+export const POLICY_FALLBACK_LABEL = "위험한 설정";
+
+/** 내장 검사의 표시 이름. 알 수 없는 id 는 그대로 보인다. */
+export function policyCheckTitle(id: string): string {
+  return policyCheckOf(id)?.title ?? id;
+}

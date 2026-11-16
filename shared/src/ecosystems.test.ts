@@ -18,7 +18,7 @@ describe("[ME-01] 이름 규칙", () => {
     for (const ecosystem of ECOSYSTEMS) {
       const { nameExample, rangeExample, validateName, validateRange } = rule(ecosystem);
       if (!usesVersionRange(ecosystem)) {
-        // 범위를 쓰지 않는 종류: 범위의 예시가 없고 어떤 값도 받지 않는다. 이름의 예시는 [SC-01] 이 본다.
+        // 범위를 쓰지 않는 종류: 범위의 예시가 없고 어떤 값도 받지 않는다. 이름의 예시는 [SC-01], [SD-01] 이 본다.
         expect(rangeExample, `${ecosystem} rangeExample`).toBe("");
         expect(validateRange("1.0.0"), `${ecosystem} 범위`).toEqual(expect.any(String));
         continue;
@@ -107,7 +107,8 @@ describe("[ME-01] 이름 규칙", () => {
 
   it("패턴의 메시지는 묶음 1 그대로다 (모든 종류)", () => {
     // content 는 패턴이 아니라 글자 그대로의 문자열이라 `*` 자체를 받지 않는다.
-    for (const ecosystem of ECOSYSTEMS.filter((value) => value !== "content")) {
+    // policy 의 이름은 내장 검사의 id 라서 패턴이 없다.
+    for (const ecosystem of ECOSYSTEMS.filter((value) => value !== "content" && value !== "policy")) {
       expect(rule(ecosystem).validateName("ab?*")).toBe("패턴에 쓸 수 없는 문자가 있습니다");
       expect(rule(ecosystem).validateName("*")).toBe("패턴에 영문자·숫자가 2자 이상 있어야 합니다");
     }
@@ -744,6 +745,17 @@ describe("[SC-01] 침해의 흔적: path, content, branch", () => {
       for (const example of rule(ecosystem).nameExample.split(" 또는 ")) {
         expect(rule(ecosystem).validateName(example), `${ecosystem}: ${example}`).toBeNull();
       }
+    }
+  });
+});
+
+describe("[SD-01] 위험한 설정: policy", () => {
+  it("범위를 쓰지 않고, 이름은 검사 id 의 형식이다", () => {
+    expect(usesVersionRange("policy")).toBe(false);
+    expect(rule("policy").validateRange("v1")).toEqual(expect.any(String));
+    expect(rule("policy").validateName(rule("policy").nameExample)).toBeNull();
+    for (const name of ["", "Unpinned", "a", "has space", "x*", "a".repeat(65)]) {
+      expect(rule("policy").validateName(name), JSON.stringify(name)).toEqual(expect.any(String));
     }
   });
 });

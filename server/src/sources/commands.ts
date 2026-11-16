@@ -369,10 +369,27 @@ const npmList = (list: string[], tool: string): CommandPackage[] =>
 const pypiList = (list: string[], tool: string, make = pypiPackage): CommandPackage[] =>
   list.flatMap((raw) => make(raw, tool) ?? []);
 
+/**
+ * 받아서 바로 실행하는 패키지(npx, dlx, exec, uvx, pipx run)의 객체. install·add 는 넣지 않는다.
+ * 필드로 두지 않는 것은 `CommandPackage` 의 모양(기존 호출자와 테스트가 통째로 비교한다)을 바꾸지 않으려는 것이다.
+ */
+const RUN_PACKAGES = new WeakSet<CommandPackage>();
+
+/** 이 패키지는 설치가 아니라 받아서 바로 실행하는 명령에서 나왔는가 */
+export const isRunCommand = (pkg: CommandPackage): boolean => RUN_PACKAGES.has(pkg);
+
 /** 도구가 첫 위치 인자(또는 대체 플래그)를 패키지로 보는 실행형 */
-function runPackages(args: Args, make: (raw: string) => CommandPackage | null): CommandPackage[] {
+function runPackages(
+  args: Args,
+  make: (raw: string) => CommandPackage | null,
+  run = false,
+): CommandPackage[] {
   const main = args.replace.length > 0 ? args.replace : args.positionals.slice(0, 1);
-  return [...main, ...args.extra].flatMap((raw) => make(raw) ?? []);
+  return [...main, ...args.extra].flatMap((raw) => {
+    const pkg = make(raw);
+    if (pkg && run) RUN_PACKAGES.add(pkg);
+    return pkg ? [pkg] : [];
+  });
 }
 
 /** 도구 이름 뒤, 하위 명령 앞의 전역 플래그(`npm --prefix x install`)를 건너뛴 위치 */
@@ -401,10 +418,10 @@ function interpretNpmTool(tokens: string[], tool: string): CommandPackage[] {
   }
   if (sub === undefined) return [];
   if ((tool === "pnpm" || tool === "yarn") && sub === "dlx") {
-    return runPackages(readArgs(tokens, at + 1, DLX_FLAGS), (raw) => npmPackage(raw, tool));
+    return runPackages(readArgs(tokens, at + 1, DLX_FLAGS), (raw) => npmPackage(raw, tool), true);
   }
   if ((tool === "npm" && sub === "exec") || (tool === "bun" && sub === "x")) {
-    return runPackages(readArgs(tokens, at + 1, NPX_FLAGS), (raw) => npmPackage(raw, tool));
+    return runPackages(readArgs(tokens, at + 1, NPX_FLAGS), (raw) => npmPackage(raw, tool), true);
   }
   const installs = tool === "yarn" ? sub === "add" : NPM_INSTALL_VERBS.has(sub);
   return installs ? npmList(readArgs(tokens, at + 1, INSTALL_FLAGS).positionals, tool) : [];
@@ -422,17 +439,17 @@ function interpret(tokens: string[], depth: number): CommandPackage[] {
   }
 
   if (tool === "npx" || tool === "pnpx" || tool === "bunx") {
-    return runPackages(readArgs(tokens, 1, NPX_FLAGS), (raw) => npmPackage(raw, tool));
+    return runPackages(readArgs(tokens, 1, NPX_FLAGS), (raw) => npmPackage(raw, tool), true);
   }
   if (tool === "npm" || tool === "pnpm" || tool === "bun" || tool === "yarn") return interpretNpmTool(tokens, tool);
 
   if (tool === "uvx") {
-    return runPackages(readArgs(tokens, 1, UVX_FLAGS), (raw) => atPackage(raw, tool));
+    return runPackages(readArgs(tokens, 1, UVX_FLAGS), (raw) => atPackage(raw, tool), true);
   }
   if (tool === "uv") {
     if (sub === "tool" && (third === "run" || third === "install")) {
       const args = readArgs(tokens, 3, third === "run" ? UVX_FLAGS : { ...UVX_FLAGS, stopAtFirst: false });
-      return runPackages(args, (raw) => atPackage(raw, "uv"));
+      return runPackages(args, (raw) => atPackage(raw, "uv"), third === "run");
     }
     if (sub === "pip" && third === "install") {
       return pypiList(readArgs(tokens, 3, PIP_FLAGS).positionals, "uv");
@@ -446,7 +463,7 @@ function interpret(tokens: string[], depth: number): CommandPackage[] {
   if (tool === "pipenv" && sub === "install") return pypiList(readArgs(tokens, 2, PIP_FLAGS).positionals, "pipenv");
   if (tool === "pipx" && (sub === "run" || sub === "install")) {
     const args = readArgs(tokens, 2, sub === "run" ? PIPX_RUN_FLAGS : PIPX_INSTALL_FLAGS);
-    return runPackages(args, (raw) => pypiPackage(raw, tool));
+    return runPackages(args, (raw) => pypiPackage(raw, tool), sub === "run");
   }
   if (/^pip[\d.]*$/.test(tool) && sub === "install") {
     return pypiList(readArgs(tokens, 2, PIP_FLAGS).positionals, tool);

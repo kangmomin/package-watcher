@@ -38,9 +38,15 @@ export interface SourceRefs {
   commands: CommandPackage[];
   actions: ActionRef[];
   images: ImageRef[];
+  /** 셸 스크립트(run·RUN)에 `curl … | sh` 가 있다 (없으면 생략) */
+  curlPipe?: boolean;
 }
 
 export interface SourceFacts extends SourceRefs {
   path: string;
   kind: SourceKind;
+  /** `curl … | sh` 형태의 설치가 있는가 (workflow·action.yml·Dockerfile) */
+  hasCurlPipeShell: boolean;
+  /** workflow 에 최상위 `permissions` 도 없고 모든 job 에 있지도 않다 (workflow 가 아니면 false) */
+  missingPermissions: boolean;
 }

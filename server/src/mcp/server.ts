@@ -6,10 +6,12 @@ import {
   BLACKLIST_FILE_VERSION,
   BULK_ACTIONS,
   BULK_MAX_IDS,
+  ECOSYSTEM_CATEGORIES,
   ECOSYSTEMS,
   ENTRY_STATUSES,
   IMPORT_MAX_BYTES,
   IMPORT_MAX_ROWS,
+  POLICY_CHECK_IDS,
   ECOSYSTEM_RULES,
   FINDING_STATUSES,
   FINDINGS_DEFAULT_LIMIT,
@@ -44,6 +46,17 @@ const FINDINGS_QUERY = loose({
   repo: field({ type: "string", description: "repo 이름 부분 일치(대소문자 무시)" }),
   package: field({ type: "string", description: "패키지 이름 부분 일치(대소문자 무시)" }),
   ecosystem: field({ type: "string", enum: ECOSYSTEMS, description: "정확히 일치하는 종류만. 생략하면 모든 종류" }),
+  category: field({
+    type: "string",
+    enum: ECOSYSTEM_CATEGORIES,
+    description:
+      "그 분류의 검출만 (package: 패키지, ci: actions·docker, indicator: 침해의 흔적, policy: 위험한 설정). 생략하면 모든 분류",
+  }),
+  excludeCategory: field({
+    type: "string",
+    enum: ECOSYSTEM_CATEGORIES,
+    description: "그 분류를 뺀 검출. 예: policy 를 빼면 위험한 설정을 제외한 검출. category 와 함께 쓰면 둘 다 적용한다",
+  }),
   severity: field({
     type: "string",
     enum: SEVERITIES,
@@ -74,7 +87,9 @@ const perEcosystem = (pick: (rule: EcosystemRule) => string): string =>
 const NAME = field({
   type: "string",
   description:
-    "패키지 이름(actions 는 owner/repo, docker 는 이미지 저장소, path 는 파일 경로 또는 `*` 패턴, content 는 파일 내용에서 찾을 글자 그대로의 문자열 6~200자, branch 는 브랜치 이름 또는 `*` 패턴). 종류의 규칙을 따른다 (예: " +
+    "패키지 이름(actions 는 owner/repo, docker 는 이미지 저장소, path 는 파일 경로 또는 `*` 패턴, content 는 파일 내용에서 찾을 글자 그대로의 문자열 6~200자, branch 는 브랜치 이름 또는 `*` 패턴, policy 는 내장 검사의 id 이고 추가·삭제·이름 변경은 할 수 없다: " +
+    POLICY_CHECK_IDS.join(", ") +
+    "). 종류의 규칙을 따른다 (예: " +
     perEcosystem((rule) => rule.nameExample) +
     "). `*` 가 있으면 패턴. pypi 는 PEP 503, nuget 은 소문자로 정규화해서 저장·비교하고 그 외는 대소문자를 구분한다",
 });
@@ -91,7 +106,7 @@ const ECOSYSTEM = field({
   type: "string",
   enum: SUPPORTED_ECOSYSTEMS,
   description:
-    "종류. 패키지(npm, go, pypi, nuget, cargo, pub, maven)와 CI(actions: workflow 의 uses, docker: Dockerfile·compose·workflow 의 이미지), 침해의 흔적(path: repo 의 파일 경로, content: 받은 파일 내용의 문자열, branch: 브랜치 이름). 기본 npm. 등록한 뒤에는 바꿀 수 없다 (바꾸려면 새 항목으로 등록)",
+    "종류. 패키지(npm, go, pypi, nuget, cargo, pub, maven)와 CI(actions: workflow 의 uses, docker: Dockerfile·compose·workflow 의 이미지), 침해의 흔적(path: repo 의 파일 경로, content: 받은 파일 내용의 문자열, branch: 브랜치 이름), 위험한 설정(policy: 서버가 만든 내장 검사 9개 — 추가·삭제할 수 없고 켬·끔과 심각도만 바꾼다. add_blacklist_entry 에 주면 VALIDATION_ERROR). 기본 npm. 등록한 뒤에는 바꿀 수 없다 (바꾸려면 새 항목으로 등록)",
 });
 const SEVERITY = field({ type: "string", enum: SEVERITIES, description: "심각도. 기본 medium" });
 const ENABLED = field({ type: "boolean", description: "켜기. 기본 true" });
@@ -219,7 +234,7 @@ export function createMcpServer(services: AppServices, logger: Logger = consoleL
 
   register(
     "list_findings",
-    "검출 목록을 조회한다 (GET /api/findings). 결과: Page<Finding>",
+    "검출 목록을 조회한다 (GET /api/findings). 기본 목록(category·excludeCategory 없음)에는 위험한 설정(policy)이 섞인다. 검출만 보려면 excludeCategory: \"policy\" 를 준다. 결과: Page<Finding>",
     FINDINGS_QUERY,
     (args) => services.findings.list(args),
   );

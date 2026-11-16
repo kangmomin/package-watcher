@@ -15,6 +15,10 @@ import {
   blacklistUpdateSchema,
   ECOSYSTEMS,
   ECOSYSTEM_CATEGORY,
+  POLICY_CHECKS,
+  POLICY_CHECK_IDS,
+  isUserManagedEcosystem,
+  policyCheckOf,
   entryStatusOf,
   ERROR_CODES,
   ERROR_HTTP_STATUS,
@@ -266,11 +270,47 @@ describe("[CT-15] v2 fixture 와 상수", () => {
     expect(settingsSchema.safeParse(settingsWithoutMin).success).toBe(false);
   });
 
-  it("상수: 종류 12개(패키지 7 + CI 2 + 흔적 3), 입력도 같다, 심각도는 높은 순", () => {
+  it("[SD-02] 내장 검사 9개: id 는 서로 다르고 policy 의 이름 규칙을 통과한다", () => {
+    expect(POLICY_CHECK_IDS).toEqual([
+      "unpinned-action",
+      "missing-lockfile",
+      "non-registry-dependency",
+      "unpinned-exec",
+      "curl-pipe-shell",
+      "workflow-no-permissions",
+      "unpinned-image",
+      "committed-node-modules",
+      "suspicious-filename",
+    ]);
+    expect(new Set(POLICY_CHECK_IDS).size).toBe(9);
+    for (const check of POLICY_CHECKS) {
+      expect(ECOSYSTEM_RULES.policy.validateName(check.id), check.id).toBeNull();
+      expect(check.title.length).toBeGreaterThan(0);
+      // 설명은 항목의 사유(500자 이하)로 저장한다.
+      expect(check.description.length).toBeLessThanOrEqual(500);
+      expect(SEVERITIES).toContain(check.severity);
+    }
+    expect(policyCheckOf("unpinned-image")?.severity).toBe("low");
+    expect(policyCheckOf("nope")).toBeUndefined();
+    expect(isUserManagedEcosystem("policy")).toBe(false);
+    expect(isUserManagedEcosystem("path")).toBe(true);
+  });
+
+  it("[SD-03] 검출 query 의 category·excludeCategory, summary 의 policyOpenCount", () => {
+    expect(findingsQuerySchema.parse({ category: "policy" }).category).toBe("policy");
+    expect(findingsQuerySchema.parse({ excludeCategory: "policy" }).excludeCategory).toBe("policy");
+    expect(findingsQuerySchema.safeParse({ category: "nope" }).success).toBe(false);
+    expect(summarySchema.safeParse(fx.summaryDefault).success).toBe(true);
+    const { policyOpenCount: _count, ...withoutCount } = fx.summaryDefault;
+    expect(summarySchema.safeParse(withoutCount).success).toBe(false);
+  });
+
+  it("상수: 종류 13개(패키지 7 + CI 2 + 흔적 3 + 설정 1), 입력도 같다, 심각도는 높은 순", () => {
     expect(ECOSYSTEMS).toEqual([
       ...["npm", "go", "pypi", "nuget", "cargo", "pub", "maven"],
       ...["actions", "docker"],
       ...["path", "content", "branch"],
+      "policy",
     ]);
     expect(ECOSYSTEMS.map((ecosystem) => ECOSYSTEM_CATEGORY[ecosystem])).toEqual([
       ...Array.from({ length: 7 }, () => "package"),
@@ -279,6 +319,7 @@ describe("[CT-15] v2 fixture 와 상수", () => {
       "indicator",
       "indicator",
       "indicator",
+      "policy",
     ]);
     expect(SUPPORTED_ECOSYSTEMS).toEqual([...ECOSYSTEMS]);
     expect(SEVERITIES).toEqual(["critical", "high", "medium", "low"]);

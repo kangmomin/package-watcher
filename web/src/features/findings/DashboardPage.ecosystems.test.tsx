@@ -1,5 +1,5 @@
 // 여러 종류(ecosystem) 지원: 대시보드의 종류 필터 옵션이 7개가 된다.
-import { SUPPORTED_ECOSYSTEMS } from "@pw/shared";
+import { isUserManagedEcosystem, SUPPORTED_ECOSYSTEMS } from "@pw/shared";
 import { findingsPage, pageOf, summaryDefault } from "@pw/shared/fixtures";
 import { screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
@@ -24,8 +24,11 @@ describe("대시보드 종류 — 필터", () => {
     const options = within(await screen.findByRole("listbox")).getAllByRole("option");
     const texts = options.map((option) => option.textContent?.trim() ?? "");
     expect(texts).toContain("전체");
-    expect(texts.filter((text) => text !== "전체")).toEqual(SUPPORTED_ECOSYSTEMS.map(ecosystemLabel));
-    expect(SUPPORTED_ECOSYSTEMS).toHaveLength(12);
+    expect(texts.filter((text) => text !== "전체")).toEqual(
+      SUPPORTED_ECOSYSTEMS.filter(isUserManagedEcosystem).map(ecosystemLabel),
+    );
+    // 검출 탭의 종류 필터에는 위험한 설정(policy)이 없다.
+    expect(SUPPORTED_ECOSYSTEMS.filter(isUserManagedEcosystem)).toHaveLength(12);
     await user.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("listbox")).not.toBeInTheDocument());
 
@@ -33,6 +36,7 @@ describe("대시보드 종류 — 필터", () => {
     await waitFor(() =>
       expect(server.requests("GET", FINDINGS).at(-1)?.query).toEqual({
         status: "open",
+        excludeCategory: "policy",
         ecosystem: "go",
         page: "1",
         limit: "50",

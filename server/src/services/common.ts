@@ -115,3 +115,17 @@ export async function mapWithConcurrency<T, R>(
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
   return results;
 }
+
+/** 검출에 남기는 버전의 최대 길이 */
+const MAX_VERSION_LENGTH = 128;
+
+/** 제어 문자를 빼고 128자로 자른다 (원문이 그대로 DB·화면·메일에 간다). */
+export function cleanVersion(version: string): string {
+  let out = "";
+  for (const char of version) {
+    const code = char.charCodeAt(0);
+    if (code >= 0x20 && code !== 0x7f) out += char;
+    if (out.length >= MAX_VERSION_LENGTH) break;
+  }
+  return out;
+}

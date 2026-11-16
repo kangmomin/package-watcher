@@ -647,6 +647,17 @@ export const ECOSYSTEM_RULES: Record<Ecosystem, EcosystemRule> = {
     ...NO_RANGE,
   },
 
+  policy: {
+    nameExample: "unpinned-action",
+    normalizeName: identity,
+    // 내장 검사의 id 인지는 서버가 확인한다 (contract.ts 가 이 파일을 import 하므로 여기서 목록을 볼 수 없다).
+    validateName: (name) =>
+      typeof name === "string" && /^[a-z][a-z0-9-]{1,63}$/.test(name)
+        ? null
+        : "내장 검사의 id 형식이 아닙니다 (예: unpinned-action)",
+    ...NO_RANGE,
+  },
+
   branch: {
     nameExample: "wfx-docs 또는 chore/*",
     normalizeName: identity,

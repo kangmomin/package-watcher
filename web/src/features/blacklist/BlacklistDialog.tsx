@@ -9,6 +9,7 @@ import {
   blacklistCreateSchema,
   blacklistUpdateSchema,
   categoryOf,
+  isUserManagedEcosystem,
   ECOSYSTEM_RULES,
   kstDateOf,
   SEVERITIES,
@@ -48,6 +49,7 @@ import { useCreateBlacklistEntry, useUpdateBlacklistEntry } from "@/features/bla
 import { useSettings } from "@/features/settings/hooks";
 import type { ApiRequestError } from "@/lib/api";
 import { errorToastMessage, hasErrorCode } from "@/lib/errors";
+import { policyCheckTitle } from "@/lib/format";
 import {
   applyServerFieldErrors,
   errorId,
@@ -181,6 +183,8 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
   const rule = ECOSYSTEM_RULES[ecosystem];
   const showRange = usesVersionRange(ecosystem);
   const indicatorUi = INDICATOR_NAME_UI[ecosystem];
+  // 내장 검사: 이름(= 검사 id)을 바꿀 수 없다. 서버도 거부한다.
+  const isBuiltIn = !isUserManagedEcosystem(ecosystem);
   const normalizesName = ecosystem === "pypi" || ecosystem === "nuget";
 
   // 종류가 바뀌면 이미 오류가 표시된 이름·범위만 새 종류의 규칙으로 다시 검증한다.
@@ -272,7 +276,9 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
       <DialogHeader>
         <DialogTitle>{entry ? "블랙리스트 항목 수정" : "블랙리스트 항목 추가"}</DialogTitle>
         <DialogDescription>
-          종류·이름·버전 범위가 같은 항목은 하나만 둘 수 있습니다.
+          {isBuiltIn
+            ? "내장 검사입니다. 켬·끔, 심각도, 사유, 만료일만 바꿀 수 있습니다."
+            : "종류·이름·버전 범위가 같은 항목은 하나만 둘 수 있습니다."}
         </DialogDescription>
       </DialogHeader>
       <p className="text-sm text-muted-foreground">* 표시는 필수 항목입니다</p>
@@ -309,7 +315,8 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <EcosystemSelectItems />
+                  {/* 등록은 policy 를 고를 수 없다. 내장 검사를 수정할 때만 현재 값을 보이려고 넣는다. */}
+                  <EcosystemSelectItems includePolicy={entry !== null && isBuiltIn} />
                 </SelectContent>
               </Select>
             )}
@@ -324,24 +331,31 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
         <Field data-invalid={errors.name ? true : undefined}>
           <FieldLabel htmlFor={fieldIds.name}>
             {indicatorUi?.label ?? "이름"}
-            <span aria-hidden="true">*</span>
+            {!isBuiltIn && <span aria-hidden="true">*</span>}
           </FieldLabel>
           <Input
             id={fieldIds.name}
             autoComplete="off"
-            aria-required="true"
+            aria-required={isBuiltIn ? undefined : "true"}
+            readOnly={isBuiltIn}
+            aria-readonly={isBuiltIn ? "true" : undefined}
             {...errorAria("name", hintIds.name)}
             {...form.register("name")}
           />
           <FieldDescription id={hintIds.name}>
-            {indicatorUi ? (
+            {isBuiltIn ? (
+              <>
+                <span className="block font-medium text-foreground">{policyCheckTitle(form.getValues("name"))}</span>
+                <span className="block">내장 검사의 id 라서 바꿀 수 없습니다. 켬·끔과 심각도만 바꿀 수 있습니다</span>
+              </>
+            ) : indicatorUi ? (
               <span className="block">{indicatorUi.hint}</span>
             ) : (
               <span className="block">
                 <code>*</code> 로 패턴을 쓸 수 있습니다
               </span>
             )}
-            <span className="block">{`예: ${rule.nameExample}`}</span>
+            {!isBuiltIn && <span className="block">{`예: ${rule.nameExample}`}</span>}
             {normalizesName && (
               <span className="block">저장할 때 이름을 소문자 표준 형태로 바꿉니다</span>
             )}

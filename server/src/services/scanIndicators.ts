@@ -49,8 +49,8 @@ function longestLiteral(pattern: string): string {
   return best;
 }
 
-/** 항목마다 검출 수를 세어 상한을 넘으면 버리고, 넘은 항목마다 경고를 1줄만 남긴다. */
-function createLimiter(logger: Logger, where: string, label: string) {
+/** 항목마다 검출 수를 세어 상한을 넘으면 버리고, 넘은 항목마다 경고를 1줄만 남긴다. (policy 검사도 쓴다) */
+export function createLimiter(logger: Logger, where: string, label: string) {
   const counts = new Map<number, number>();
   return (entry: BlacklistEntry): boolean => {
     const count = (counts.get(entry.id) ?? 0) + 1;
@@ -77,6 +77,8 @@ export interface IndicatorRules {
     where: string,
     files: ReadonlyMap<string, string>,
     logger: Logger,
+    /** 크기 때문에 검사하지 못한 파일의 경로를 담는다 (그 파일의 기존 검출을 resolve 하지 않게) */
+    skipped?: Set<string>,
   ): Promise<IndicatorMatch[]>;
   matchBranches(repo: string, where: string, branches: string[], logger: Logger): IndicatorMatch[];
 }
@@ -122,7 +124,7 @@ export function createIndicatorRules(snapshot: BlacklistEntry[]): IndicatorRules
       return matches;
     },
 
-    async matchContents(repo, where, files, logger) {
+    async matchContents(repo, where, files, logger, skipped) {
       const allow = createLimiter(logger, where, "content");
       const matches: IndicatorMatch[] = [];
       // 받은 순서(다운로드 완료 순)가 아니라 경로 순으로 검사해서 상한에서 남는 파일이 항상 같다.
@@ -131,6 +133,7 @@ export function createIndicatorRules(snapshot: BlacklistEntry[]): IndicatorRules
         await yieldToLoop();
         if (content.length > MAX_CONTENT_SCAN_LENGTH) {
           logger.warn(printable(`파일이 너무 커서 content 검사를 건너뜁니다: ${where}/${path}`));
+          skipped?.add(path);
           continue;
         }
         // 소문자 변환은 파일마다 1번만 한다 (항목이 수백 개여도 비용이 늘지 않게).

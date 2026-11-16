@@ -22,6 +22,7 @@ import {
   type BulkInput,
   type BulkResult,
   type Ecosystem,
+  type EcosystemCategory,
   type EntryStatus,
   type ErrorCode,
   type Finding,
@@ -74,6 +75,10 @@ export interface FindingsFilter {
   repo?: string;
   package?: string;
   ecosystem?: Ecosystem;
+  /** 그 분류의 검출만 ("위험한 설정" 탭) */
+  category?: EcosystemCategory;
+  /** 그 분류를 뺀 검출 ("검출" 탭) */
+  excludeCategory?: EcosystemCategory;
   severity?: Severity;
 }
 
@@ -163,11 +168,11 @@ export function exportBlacklistUrl(format: BlacklistFileFormat, filter: Blacklis
 
 export const api = {
   getSummary: (): Promise<Summary> => request(summarySchema, "GET", "/api/summary"),
-  listFindings: ({ status, repo, package: pkg, ecosystem, severity, page, limit }: FindingsParams): Promise<Page<Finding>> =>
+  listFindings: ({ status, repo, package: pkg, ecosystem, category, excludeCategory, severity, page, limit }: FindingsParams): Promise<Page<Finding>> =>
     request(
       findingsPageSchema,
       "GET",
-      withQuery("/api/findings", { status, repo, package: pkg, ecosystem, severity, page, limit }),
+      withQuery("/api/findings", { status, repo, package: pkg, ecosystem, category, excludeCategory, severity, page, limit }),
     ),
   setFindingStatus: (id: number, input: FindingStatusInput): Promise<Finding> =>
     request(findingSchema, "PATCH", `/api/findings/${id}`, input),
