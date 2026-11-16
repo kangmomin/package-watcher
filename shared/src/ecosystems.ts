@@ -564,7 +564,13 @@ export const ECOSYSTEM_RULES: Record<Ecosystem, EcosystemRule> = {
       if (error !== null) return error;
       // `:` 은 registry 의 포트(첫 조각)에만 쓴다. 마지막 조각의 `:` 는 tag 다.
       const last = name.slice(name.lastIndexOf("/") + 1);
-      return last.includes(":") ? "tag 와 digest 는 이름이 아니라 버전 범위에 적으십시오" : null;
+      if (last.includes(":")) return "tag 와 digest 는 이름이 아니라 버전 범위에 적으십시오";
+      // `docker.io/*`, `library/*` 는 접두를 떼면 `*` 가 되어 모든 이미지와 일치한다. 저장 형태로 다시 검사한다.
+      const stored = normalizeImageName(name);
+      if (stored.includes("*") && (stored.match(ALNUM)?.length ?? 0) < 2) {
+        return "패턴에 영문자·숫자가 2자 이상 있어야 합니다";
+      }
+      return null;
     },
     ...refListRule("tag 또는 digest 를 쉼표로 나눠 적으십시오 (예: v1.107.0, latest)", {
       ofVersion: (version) => DIGEST.exec(version)?.[1] ?? null,

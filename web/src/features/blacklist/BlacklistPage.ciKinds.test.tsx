@@ -267,3 +267,73 @@ describe("새 종류 — 표의 표시", () => {
     expect(within(row).getByText("GitHub Actions")).toBeInTheDocument();
   });
 });
+
+describe("새 종류 — 종류 전환과 필터", () => {
+  /** 그 종류의 스키마가 내는 오류 문구. 통과하면 undefined. */
+  function messageOrNone(ecosystem: string, field: "name" | "versionRange", name: string, versionRange: string) {
+    const result = blacklistCreateSchema.safeParse({ ecosystem, name, versionRange, reason: "r" });
+    return result.success ? undefined : result.error.issues.find((item) => item.path[0] === field)?.message;
+  }
+
+  it("[SB-62] npm 의 범위 오류는 종류를 actions 로 바꾸면 actions 규칙에 맞는 결과로 바뀐다", async () => {
+    setupServer();
+    const { user } = await renderBlacklist();
+    const d = await openAddDialog(user);
+
+    const range = ">>1";
+    const npmMessage = schemaMessage("npm", "versionRange", "lodash", range);
+    await fill(user, d, "lodash", range);
+    await expectFieldError(d.range, npmMessage);
+
+    await chooseOption(user, d.ecosystem, "GitHub Actions");
+    const after = messageOrNone("actions", "versionRange", "lodash", range);
+    await waitFor(() => {
+      if (after) expect(d.range).toHaveAccessibleDescription(containing(after));
+      else expect(d.range).not.toHaveAccessibleDescription(containing(npmMessage));
+    });
+    expect(within(d.dialog).queryByText(npmMessage)).not.toBeInTheDocument();
+  });
+
+  it("[SB-62] docker 의 이름 오류(node:18)는 종류를 npm 으로 바꾸면 npm 규칙에 맞는 결과로 바뀐다", async () => {
+    setupServer();
+    const { user } = await renderBlacklist();
+    const d = await openAddDialog(user);
+
+    await chooseOption(user, d.ecosystem, "Docker 이미지");
+    const dockerMessage = schemaMessage("docker", "name", "node:18", "");
+    await fill(user, d, "node:18");
+    await expectFieldError(d.name, dockerMessage);
+
+    await chooseOption(user, d.ecosystem, "npm");
+    const after = messageOrNone("npm", "name", "node:18", "");
+    await waitFor(() => {
+      if (after) expect(d.name).toHaveAccessibleDescription(containing(after));
+      else expect(within(d.dialog).queryByText(dockerMessage)).not.toBeInTheDocument();
+    });
+    expect(within(d.dialog).queryByText(dockerMessage)).not.toBeInTheDocument();
+  });
+
+  it("[SB-63] 필터에서 docker 를 고르면 내보내기 링크(JSON·CSV)에 ecosystem=docker 가 붙는다", async () => {
+    setupServer();
+    const { user } = await renderBlacklist();
+
+    await chooseOption(user, screen.getByRole("combobox", { name: "종류" }), "Docker 이미지");
+    await user.click(await screen.findByRole("button", { name: /내보내기/ }));
+    for (const format of ["JSON", "CSV"]) {
+      const href = (await screen.findByRole("menuitem", { name: format })).getAttribute("href") ?? "";
+      expect(new URL(href, "http://localhost").searchParams.get("ecosystem")).toBe("docker");
+    }
+  });
+
+  it("[SB-64] 검출 필터에서 actions 를 고르면 select 트리거에 GitHub Actions 가 표시된다", async () => {
+    setupFetchMock()
+      .on("GET", "/api/summary", reply.json(summaryDefault))
+      .on("GET", FINDINGS, reply.json(pageOf(findingsPage.items, { total: 1, page: 1, limit: 50 })));
+    const { user } = renderWithProviders(<DashboardPage />);
+    await findRowWith("api");
+
+    const filter = screen.getByRole("combobox", { name: "종류" });
+    await chooseOption(user, filter, "GitHub Actions");
+    await waitFor(() => expect(filter).toHaveTextContent("GitHub Actions"));
+  });
+});

@@ -626,6 +626,14 @@ describe("[SB-01] actions·docker: 정확한 값의 목록", () => {
     expect(rule("docker").validateName("ghcr.io/berriai/litellm:v1.107.0")).toEqual(expect.any(String));
   });
 
+  it("docker 패턴: 기본 접두를 뗀 뒤에 거의 모든 이미지와 일치하는 패턴은 거부", () => {
+    expect(rule("docker").validateName("docker.io/*")).toBe("패턴에 영문자·숫자가 2자 이상 있어야 합니다");
+    expect(rule("docker").validateName("library/*")).toBe("패턴에 영문자·숫자가 2자 이상 있어야 합니다");
+    expect(rule("docker").validateName("docker.io/library/*")).toEqual(expect.any(String));
+    expect(rule("docker").validateName("ghcr.io/*")).toBeNull();
+    expect(rule("docker").validateName("docker.io/bitnami/*")).toBeNull();
+  });
+
   it.each(["actions", "docker"] as const)("%s 범위: 쉼표로 나눈 값, 빈 조각·공백·51개는 거부", (ecosystem) => {
     const { validateRange } = rule(ecosystem);
     expect(validateRange("v1")).toBeNull();
