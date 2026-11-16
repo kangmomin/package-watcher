@@ -15,7 +15,7 @@ const post = (body: Record<string, unknown>) =>
   t.request("POST", "/api/blacklist", { reason: "x", ...body });
 
 describe("POST /api/blacklist — 종류별 이름과 범위", () => {
-  it("[v2-EC-02][ME-14] 7개 종류 모두 그 종류의 올바른 이름·범위로 201", async () => {
+  it("[v2-EC-02][ME-14] 9개 종류 모두 그 종류의 올바른 이름·범위로 201", async () => {
     const valid: [string, string, string | null][] = [
       ["npm", "@evil/pkg", "<2.0.0"],
       ["go", "github.com/evil/mod", ">=v1.0.0 <v2.0.0"],
@@ -24,12 +24,14 @@ describe("POST /api/blacklist — 종류별 이름과 범위", () => {
       ["cargo", "evil-crate", ">=1, <2"],
       ["pub", "evil_pub", "^1.2.3"],
       ["maven", "com.evil:lib", "(,1.5]"],
+      ["actions", "evil/action", "v1, 0123456"],
+      ["docker", "ghcr.io/evil/img", "v1.0, latest"],
     ];
     for (const [ecosystem, name, versionRange] of valid) {
       const res = await post({ ecosystem, name, versionRange });
       expect(res.status, `${ecosystem}: ${res.text}`).toBe(201);
     }
-    expect(await listEntries(t)).toHaveLength(7);
+    expect(await listEntries(t)).toHaveLength(9);
   });
 
   it("[v2-EC-02][ME-14] 다른 종류의 문법(이름이나 범위)은 400 details.name / details.versionRange", async () => {

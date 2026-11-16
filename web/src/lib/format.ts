@@ -1,7 +1,15 @@
 // 표시 형식.
 // 계약: 모든 시각은 Asia/Seoul 로 표시한다(실행 환경의 TZ 와 무관). 표 = MM-dd HH:mm, 카드 = yyyy-MM-dd HH:mm.
 // 라벨: direct/transitive = 직접/전이, scheduled/manual = 자동/수동.
-import { DIGEST_TIMEZONE, type DependencyType, type EntryStatus, type ScanRepoStatus, type ScanTrigger } from "@pw/shared";
+import {
+  DIGEST_TIMEZONE,
+  type DependencyType,
+  type Ecosystem,
+  type EcosystemCategory,
+  type EntryStatus,
+  type ScanRepoStatus,
+  type ScanTrigger,
+} from "@pw/shared";
 
 // hourCycle h23: 자정을 "24" 가 아니라 "00" 으로 쓴다.
 const kstFormatter = new Intl.DateTimeFormat("en-US", {
@@ -72,4 +80,26 @@ const SCAN_REPO_STATUS_LABELS: Record<ScanRepoStatus, string> = {
 
 export function scanRepoStatusLabel(status: ScanRepoStatus): string {
   return SCAN_REPO_STATUS_LABELS[status];
+}
+
+// 종류 라벨. 기존 패키지 종류는 지금까지 화면이 쓰던 표기(id 그대로)를 유지한다.
+const ECOSYSTEM_LABELS: Record<Ecosystem, string> = {
+  npm: "npm",
+  go: "go",
+  pypi: "pypi",
+  nuget: "nuget",
+  cargo: "cargo",
+  pub: "pub",
+  maven: "maven",
+  actions: "GitHub Actions",
+  docker: "Docker 이미지",
+};
+const ECOSYSTEM_CATEGORY_LABELS: Record<EcosystemCategory, string> = { package: "패키지", ci: "CI·이미지" };
+
+export function ecosystemLabel(ecosystem: Ecosystem): string {
+  return ECOSYSTEM_LABELS[ecosystem];
+}
+
+export function ecosystemCategoryLabel(category: EcosystemCategory): string {
+  return ECOSYSTEM_CATEGORY_LABELS[category];
 }

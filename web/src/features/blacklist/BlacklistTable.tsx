@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { ALL_VERSIONS_LABEL, entryStatusLabel } from "@/lib/format";
+import { ALL_VERSIONS_LABEL, ecosystemLabel, entryStatusLabel } from "@/lib/format";
 
 export interface BlacklistTableProps {
   items: BlacklistEntry[];
@@ -89,7 +89,7 @@ export function BlacklistTable({
                     onCheckedChange={(checked) => onToggle(entry.id, checked === true)}
                   />
                 </TableCell>
-                <TableCell>{entry.ecosystem}</TableCell>
+                <TableCell>{ecosystemLabel(entry.ecosystem)}</TableCell>
                 <RowHeaderCell id={nameId} className="font-mono text-xs font-medium">
                   {entry.name}
                 </RowHeaderCell>

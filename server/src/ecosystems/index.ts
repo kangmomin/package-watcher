@@ -1,4 +1,4 @@
-import type { Ecosystem } from "@pw/shared";
+import type { PackageEcosystem } from "@pw/shared";
 import { cargoSupport } from "./cargo.ts";
 import { goSupport } from "./go.ts";
 import { mavenSupport } from "./maven.ts";
@@ -9,7 +9,7 @@ import type { EcosystemSupport, FileRole } from "./types.ts";
 
 export type { DeclaredDependency, EcosystemSupport, FileRole, LockedPackage } from "./types.ts";
 
-export type FileEcosystem = Exclude<Ecosystem, "npm">;
+export type FileEcosystem = Exclude<PackageEcosystem, "npm">;
 
 /** npm 은 lockfiles/ 와 scanService 가 그대로 처리한다. */
 export const ECOSYSTEM_SUPPORT: Record<FileEcosystem, EcosystemSupport> = {

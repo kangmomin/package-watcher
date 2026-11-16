@@ -207,13 +207,13 @@ describe("블랙리스트 v2 — 표", () => {
 });
 
 describe("블랙리스트 v2 — 추가 Dialog", () => {
-  it("[CT-16][v2-AC-01] 추가 Dialog 의 기본값: 종류 npm(활성, 옵션 7개), 심각도 medium, 켜기 체크, 만료일 빈 값", async () => {
+  it("[CT-16][v2-AC-01] 추가 Dialog 의 기본값: 종류 npm(활성, 옵션 9개), 심각도 medium, 켜기 체크, 만료일 빈 값", async () => {
     setupServer();
     const { user } = await renderBlacklist();
 
     const dialog = await openAddDialog(user);
     expect(dialog.ecosystem).toHaveTextContent("npm");
-    expect(SUPPORTED_ECOSYSTEMS).toHaveLength(7);
+    expect(SUPPORTED_ECOSYSTEMS).toHaveLength(9);
     expect(dialog.ecosystem).toBeEnabled();
     expect(dialog.severity).toHaveTextContent("medium");
     expect(dialog.enabled).toBeChecked();

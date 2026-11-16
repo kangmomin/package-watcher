@@ -2,6 +2,7 @@
 // "전체" = 그 필터 파라미터 생략. 이름 입력 = trim + 300ms debounce, 비면 생략.
 import { ENTRY_STATUSES, SUPPORTED_ECOSYSTEMS, type EntryStatus } from "@pw/shared";
 import { useEffect, useId, useState } from "react";
+import { EcosystemSelectItems } from "@/components/EcosystemSelectItems";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -49,16 +50,12 @@ export function BlacklistFilters({ filter, onFilterChange }: BlacklistFiltersPro
             })
           }
         >
-          <SelectTrigger id={`${id}-ecosystem`} className="w-32">
+          <SelectTrigger id={`${id}-ecosystem`} className="w-44">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {SUPPORTED_ECOSYSTEMS.map((option) => (
-              <SelectItem key={option} value={option}>
-                {option}
-              </SelectItem>
-            ))}
             <SelectItem value={ALL_OPTION}>전체</SelectItem>
+            <EcosystemSelectItems />
           </SelectContent>
         </Select>
       </div>

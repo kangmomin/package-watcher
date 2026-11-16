@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { usePendingFindingIds, useSetFindingStatus, type SetFindingStatusVariables } from "@/features/findings/hooks";
-import { dependencyTypeLabel } from "@/lib/format";
+import { dependencyTypeLabel, ecosystemLabel } from "@/lib/format";
 
 export interface FindingsTableProps {
   items: Finding[];
@@ -65,7 +65,7 @@ export function FindingsTable({ items }: FindingsTableProps) {
                 <TableCell className="max-w-64 truncate" title={finding.filePath}>
                   {finding.filePath}
                 </TableCell>
-                <TableCell>{finding.ecosystem}</TableCell>
+                <TableCell>{ecosystemLabel(finding.ecosystem)}</TableCell>
                 <TableCell id={packageId} className="font-mono text-xs">
                   {`${finding.packageName}@${finding.version}`}
                 </TableCell>

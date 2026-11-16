@@ -15,6 +15,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { DashboardPage } from "@/features/findings/DashboardPage";
 import { reply, setupFetchMock, type FetchMock, type ReplyFactory } from "@/test/fetchMock";
+import { ecosystemLabel } from "@/lib/format";
 import { renderWithProviders } from "@/test/render";
 import { chooseOption, findRowWith, getRowWith } from "@/test/ui";
 
@@ -150,7 +151,7 @@ describe("대시보드 v2 — 종류·심각도 필터", () => {
     await user.click(ecosystemFilter());
     const ecosystems = await optionTexts();
     expect(ecosystems).toContain(TEXT.all);
-    expect(ecosystems.filter((text) => text !== TEXT.all)).toEqual([...SUPPORTED_ECOSYSTEMS]);
+    expect(ecosystems.filter((text) => text !== TEXT.all)).toEqual(SUPPORTED_ECOSYSTEMS.map(ecosystemLabel));
   });
 
   it("[CT-18][v2-AC-03] 심각도 필터를 바꾸면 severity= 와 page=1 로 다시 요청하고, '전체' 는 파라미터를 생략한다", async () => {

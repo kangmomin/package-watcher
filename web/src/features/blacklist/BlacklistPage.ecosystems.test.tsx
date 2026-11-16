@@ -19,6 +19,7 @@ import type { UserEvent } from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { BlacklistPage } from "@/features/blacklist/BlacklistPage";
 import { reply, setupFetchMock, type FetchMock } from "@/test/fetchMock";
+import { ecosystemLabel } from "@/lib/format";
 import { renderWithProviders } from "@/test/render";
 import { chooseOption, containing, expectFieldError, findRowWith, findToast, getRowWith } from "@/test/ui";
 
@@ -112,17 +113,17 @@ function schemaMessage(ecosystem: string, field: "name" | "versionRange", name: 
 }
 
 describe("블랙리스트 종류 — 종류 select", () => {
-  it("[ME-20] 추가 Dialog 의 종류 select 는 활성이고 옵션은 SUPPORTED_ECOSYSTEMS 순서의 7개이며 기본값은 npm 이다", async () => {
+  it("[ME-20] 추가 Dialog 의 종류 select 는 활성이고 옵션은 SUPPORTED_ECOSYSTEMS 순서의 9개이며 기본값은 npm 이다", async () => {
     setupServer();
     const { user } = await renderBlacklist();
 
     const dialog = await openAddDialog(user);
-    expect(SUPPORTED_ECOSYSTEMS).toHaveLength(7);
+    expect(SUPPORTED_ECOSYSTEMS).toHaveLength(9);
     expect(dialog.ecosystem).toBeEnabled();
     expect(dialog.ecosystem).toHaveTextContent("npm");
     await user.click(dialog.ecosystem);
     const options = within(await screen.findByRole("listbox")).getAllByRole("option");
-    expect(options.map((option) => option.textContent?.trim())).toEqual([...SUPPORTED_ECOSYSTEMS]);
+    expect(options.map((option) => option.textContent?.trim())).toEqual(SUPPORTED_ECOSYSTEMS.map(ecosystemLabel));
   });
 
   it("[ME-20][v2-AC-10] go 를 골라 저장하면 요청 본문에 ecosystem 과 입력한 이름·범위가 들어간다", async () => {

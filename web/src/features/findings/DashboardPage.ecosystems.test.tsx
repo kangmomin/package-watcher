@@ -5,13 +5,14 @@ import { screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { DashboardPage } from "@/features/findings/DashboardPage";
 import { reply, setupFetchMock } from "@/test/fetchMock";
+import { ecosystemLabel } from "@/lib/format";
 import { renderWithProviders } from "@/test/render";
 import { chooseOption, findRowWith } from "@/test/ui";
 
 const FINDINGS = "/api/findings";
 
 describe("대시보드 종류 — 필터", () => {
-  it("[ME-24] 종류 필터의 옵션은 전체 + 7개 종류이고, go 를 고르면 ecosystem=go 와 page=1 로 요청한다", async () => {
+  it("[ME-24] 종류 필터의 옵션은 전체 + 9개 종류이고, go 를 고르면 ecosystem=go 와 page=1 로 요청한다", async () => {
     const server = setupFetchMock()
       .on("GET", "/api/summary", reply.json(summaryDefault))
       .on("GET", FINDINGS, reply.json(pageOf(findingsPage.items, { total: 1, page: 1, limit: 50 })));
@@ -23,8 +24,8 @@ describe("대시보드 종류 — 필터", () => {
     const options = within(await screen.findByRole("listbox")).getAllByRole("option");
     const texts = options.map((option) => option.textContent?.trim() ?? "");
     expect(texts).toContain("전체");
-    expect(texts.filter((text) => text !== "전체")).toEqual([...SUPPORTED_ECOSYSTEMS]);
-    expect(SUPPORTED_ECOSYSTEMS).toHaveLength(7);
+    expect(texts.filter((text) => text !== "전체")).toEqual(SUPPORTED_ECOSYSTEMS.map(ecosystemLabel));
+    expect(SUPPORTED_ECOSYSTEMS).toHaveLength(9);
     await user.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("listbox")).not.toBeInTheDocument());
 

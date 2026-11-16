@@ -60,14 +60,14 @@ const backupFilesIn = (dbPath: string): string[] =>
     .filter((name) => name.includes("backup"))
     .sort();
 
-describe("DB 마이그레이션 v3 (scan_repos)", () => {
+describe("DB 마이그레이션 v3(최신은 v4) (scan_repos)", () => {
   it("[SP-08] v2 DB → v3: 행 보존, 백업 v2-backup(v2 상태 그대로), 예전 스캔의 repoStats 는 null", async () => {
     const path = createTempDbPath();
     createV2Database(path);
 
     const { db, migratedFrom, backupPath } = open(path);
 
-    expect(userVersionOf(db)).toBe(3);
+    expect(userVersionOf(db)).toBe(4);
     expect(migratedFrom).toBe(2);
     expect(backupPath).toBe(`${path}.v2-backup`);
     expect(backupFilesIn(path)).toEqual(["package-watcher.db.v2-backup"]);
@@ -102,13 +102,13 @@ describe("DB 마이그레이션 v3 (scan_repos)", () => {
     expect((await listScans(t)).items.map((scan) => scan.repoStats)).toEqual([null]);
   });
 
-  it("[SP-08] v0(v1) DB → v3: 한 번에 최신으로 올라가고 백업은 v0-backup", () => {
+  it("[SP-08] v0(v1) DB → 최신: 한 번에 최신으로 올라가고 백업은 v0-backup", () => {
     const path = createTempDbPath();
     createV1Database(path);
 
     const { db, migratedFrom, backupPath } = open(path);
 
-    expect(userVersionOf(db)).toBe(3);
+    expect(userVersionOf(db)).toBe(4);
     expect(migratedFrom).toBe(0);
     expect(backupPath).toBe(`${path}.v0-backup`);
     expect(backupFilesIn(path)).toEqual(["package-watcher.db.v0-backup"]);
@@ -118,12 +118,12 @@ describe("DB 마이그레이션 v3 (scan_repos)", () => {
     expect(countRows(db, "scans")).toBe(1);
   });
 
-  it("[SP-08] 새 DB → v3: 백업 없음, 테이블·인덱스·제약이 있다", () => {
+  it("[SP-08] 새 DB → 최신: 백업 없음, 테이블·인덱스·제약이 있다", () => {
     const path = createTempDbPath();
 
     const { db, migratedFrom, backupPath } = open(path);
 
-    expect(userVersionOf(db)).toBe(3);
+    expect(userVersionOf(db)).toBe(4);
     expect(migratedFrom).toBeNull();
     expect(backupPath).toBeNull();
     expect(backupFilesIn(path)).toEqual([]);
@@ -167,7 +167,7 @@ describe("DB 마이그레이션 v3 (scan_repos)", () => {
 
     const second = open(path);
 
-    expect(userVersionOf(second.db)).toBe(3);
+    expect(userVersionOf(second.db)).toBe(4);
     expect(second.migratedFrom).toBeNull();
     expect(second.backupPath).toBeNull();
   });

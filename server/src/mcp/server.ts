@@ -71,7 +71,7 @@ const perEcosystem = (pick: (rule: EcosystemRule) => string): string =>
 const NAME = field({
   type: "string",
   description:
-    "패키지 이름. 종류의 규칙을 따른다 (예: " +
+    "패키지 이름(actions 는 owner/repo, docker 는 이미지 저장소). 종류의 규칙을 따른다 (예: " +
     perEcosystem((rule) => rule.nameExample) +
     "). `*` 가 있으면 패턴. pypi 는 PEP 503, nuget 은 소문자로 정규화해서 저장·비교하고 그 외는 대소문자를 구분한다",
 });
@@ -81,12 +81,14 @@ const VERSION_RANGE = field({
   description:
     "종류의 버전 범위 문법 (예: " +
     perEcosystem((rule) => rule.rangeExample) +
-    "). null 또는 빈 문자열 = 모든 버전",
+    "). actions·docker 는 semver 가 아니라 쉼표로 나눈 정확한 tag·commit SHA(7자 이상의 앞부분 허용)·digest(sha256:…) 의 목록. " +
+    "null 또는 빈 문자열 = 모든 버전",
 });
 const ECOSYSTEM = field({
   type: "string",
   enum: SUPPORTED_ECOSYSTEMS,
-  description: "패키지 종류. 기본 npm. 등록한 뒤에는 바꿀 수 없다 (바꾸려면 새 항목으로 등록)",
+  description:
+    "종류. 패키지(npm, go, pypi, nuget, cargo, pub, maven)와 CI(actions: workflow 의 uses, docker: Dockerfile·compose·workflow 의 이미지). 기본 npm. 등록한 뒤에는 바꿀 수 없다 (바꾸려면 새 항목으로 등록)",
 });
 const SEVERITY = field({ type: "string", enum: SEVERITIES, description: "심각도. 기본 medium" });
 const ENABLED = field({ type: "boolean", description: "켜기. 기본 true" });

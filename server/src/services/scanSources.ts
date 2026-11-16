@@ -1,11 +1,18 @@
-import type { BlacklistEntry, DependencyType } from "@pw/shared";
+import { ECOSYSTEM_RULES, type BlacklistEntry, type DependencyType } from "@pw/shared";
 import { detectEcosystem } from "../ecosystems/detect.ts";
 import type { DeclaredDependency } from "../ecosystems/types.ts";
 import type { GitHubClient, RepoInfo, TreeEntry } from "../github/client.ts";
 import { errorMessage } from "../lockfiles/common.ts";
 import type { Logger } from "../logger.ts";
 import { matchExact, type EntryIndex } from "../matcher.ts";
-import { extractSource, sourceKindOf, type CommandPackage, type SourceKind } from "../sources/index.ts";
+import {
+  extractSource,
+  sourceKindOf,
+  type ActionRef,
+  type CommandPackage,
+  type ImageRef,
+  type SourceKind,
+} from "../sources/index.ts";
 import { mapWithConcurrency } from "./common.ts";
 
 /** repo 1개 안의 파일 동시 조회 수 */
@@ -14,6 +21,8 @@ const FILE_CONCURRENCY = 4;
 const MAX_SOURCE_LENGTH = 1_048_576;
 /** 파일 1개에서 검출에 쓰는 명령 수의 상한 */
 const MAX_COMMANDS_PER_FILE = 5000;
+/** 파일 1개에서 검출에 쓰는 action·이미지 수의 상한(각각) */
+const MAX_REFS_PER_FILE = 5000;
 /** 검출에 남기는 버전의 최대 길이 */
 const MAX_VERSION_LENGTH = 128;
 
@@ -47,12 +56,23 @@ export const sourceFileOf = (entry: TreeEntry): SourceFile | null => {
   return kind ? { ...entry, kind } : null;
 };
 
-/**
- * 보조 파일을 받아야 하는가: 그 파일에서 나오는 종류(명령의 npm·pypi)의 활성 항목이 있을 때만.
- * 이후 묶음이 이미지·내용 검색·설정 검사를 이 조건에 더한다.
- */
+/** 파일 종류마다 그 파일에서 나오는 결과의 종류(명령은 npm·pypi, action, 이미지)의 활성 항목이 있을 때만 받는다. */
+const KIND_ECOSYSTEMS: Record<SourceKind, readonly string[]> = {
+  workflow: ["npm", "pypi", "actions", "docker"],
+  action: ["npm", "pypi", "actions", "docker"],
+  dockerfile: ["npm", "pypi", "docker"],
+  compose: ["docker"],
+  mcp: ["npm", "pypi"],
+};
+
+/** 이 종류의 보조 파일을 받아야 하는가 (GitHub 요청을 늘리지 않는다). */
+export function needsSourceKind(kind: SourceKind, activeEcosystems: ReadonlySet<string>): boolean {
+  return KIND_ECOSYSTEMS[kind].some((ecosystem) => activeEcosystems.has(ecosystem));
+}
+
+/** 보조 파일을 하나라도 받아야 하는가 */
 export function needsSources(activeEcosystems: ReadonlySet<string>): boolean {
-  return activeEcosystems.has("npm") || activeEcosystems.has("pypi");
+  return (Object.keys(KIND_ECOSYSTEMS) as SourceKind[]).some((kind) => needsSourceKind(kind, activeEcosystems));
 }
 
 /** 검출에 남기는 버전: 정확한 버전이거나 원문의 버전 부분(`latest`, `^1.0` 등), 없으면 "" */
@@ -111,8 +131,64 @@ function detectCommands(
   return matches;
 }
 
+function detectActions(
+  repo: string,
+  path: string,
+  actions: ActionRef[],
+  entryIndex: EntryIndex<BlacklistEntry>,
+): SourceMatch[] {
+  const deps: DeclaredDependency[] = actions.map((action) => ({
+    name: action.name,
+    spec: action.ref,
+    dependencyType: "direct",
+  }));
+  const seen = new Set<string>();
+  const matches: SourceMatch[] = [];
+  for (const found of detectEcosystem("actions", [{ path, deps }], [], entryIndex)) {
+    const key = [found.packageName, found.version, found.blacklistEntryId].join("\u0000");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    matches.push({ repo, ...found, version: cleanVersion(found.version) });
+  }
+  return matches;
+}
+
+/** tag 와 digest 를 둘 다 비교한다. 둘 다 일치해도 이미지 1개당 1건(tag 우선). 범위가 없으면 이름만으로 일치한다. */
+function detectImages(
+  repo: string,
+  path: string,
+  images: ImageRef[],
+  entryIndex: EntryIndex<BlacklistEntry>,
+): SourceMatch[] {
+  const satisfies = ECOSYSTEM_RULES.docker.satisfies;
+  const seen = new Set<string>();
+  const matches: SourceMatch[] = [];
+  for (const image of images) {
+    for (const entry of entryIndex.match("docker", image.name)) {
+      let version: string | null;
+      if (entry.versionRange === null) version = image.tag || image.digest;
+      else if (image.tag !== "" && satisfies(image.tag, entry.versionRange)) version = image.tag;
+      else if (image.digest !== "" && satisfies(image.digest, entry.versionRange)) version = image.digest;
+      else version = null;
+      if (version === null) continue;
+      const key = [image.name, version, entry.id].join("\u0000");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      matches.push({
+        repo,
+        filePath: path,
+        packageName: image.name,
+        version: cleanVersion(version),
+        dependencyType: "direct",
+        blacklistEntryId: entry.id,
+      });
+    }
+  }
+  return matches;
+}
+
 /**
- * 보조 파일(workflow, Dockerfile, MCP 설정)을 받아 명령의 패키지를 검출한다.
+ * 보조 파일(workflow, action.yml, Dockerfile, compose, MCP 설정)을 받아 명령의 패키지를 검출한다.
  * 조회 실패는 throw(repo 실패)지만 파싱 실패는 그 파일만 건너뛰고 경고한다 — workflow 의 YAML 오류 1개로
  * 그 repo 의 패키지 검사가 사라지면 안 된다.
  */
@@ -123,9 +199,10 @@ export async function scanSources(
   entryIndex: EntryIndex<BlacklistEntry>,
   files: SourceFile[],
   logger: Logger,
+  activeEcosystems?: ReadonlySet<string>,
 ): Promise<{ matches: SourceMatch[]; fileCount: number }> {
-  // compose 는 이미지를 읽는 묶음 전까지 받지 않는다.
-  const fetchable = files.filter((file) => file.kind !== "compose");
+  // 호출자가 활성 종류를 주면 그 종류에서 쓸 수 있는 파일만 받는다.
+  const fetchable = activeEcosystems ? files.filter((file) => needsSourceKind(file.kind, activeEcosystems)) : files;
   const contents = await mapWithConcurrency(fetchable, FILE_CONCURRENCY, (file) =>
     client.getFile(org, repo.name, file.sha),
   );
@@ -138,12 +215,18 @@ export async function scanSources(
       return;
     }
     try {
-      let commands = extractSource(file.kind, file.path, content).commands;
-      if (commands.length > MAX_COMMANDS_PER_FILE) {
-        logger.warn(`보조 파일의 명령이 ${MAX_COMMANDS_PER_FILE}개를 넘어 앞의 것만 검사합니다: ${where}`);
-        commands = commands.slice(0, MAX_COMMANDS_PER_FILE);
-      }
+      const facts = extractSource(file.kind, file.path, content);
+      const limit = <T>(items: T[], max: number, label: string): T[] => {
+        if (items.length <= max) return items;
+        logger.warn(`보조 파일의 ${label}이(가) ${max}개를 넘어 앞의 것만 검사합니다: ${where}`);
+        return items.slice(0, max);
+      };
+      const commands = limit(facts.commands, MAX_COMMANDS_PER_FILE, "명령");
+      const actions = limit(facts.actions, MAX_REFS_PER_FILE, "action");
+      const images = limit(facts.images, MAX_REFS_PER_FILE, "이미지");
       for (const match of detectCommands(repo.name, file.path, commands, entryIndex)) matches.push(match);
+      for (const match of detectActions(repo.name, file.path, actions, entryIndex)) matches.push(match);
+      for (const match of detectImages(repo.name, file.path, images, entryIndex)) matches.push(match);
     } catch (error) {
       logger.warn(`보조 파일을 해석하지 못해 건너뜁니다: ${where}: ${errorMessage(error)}`);
     }

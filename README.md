@@ -97,8 +97,8 @@ Docker 로 실행할 때는 `.env` 에 `PORT`, `HOST`, `DATA_DIR`, `WEB_DIST_DIR
 
 | 필드 | 설명 |
 |------|------|
-| `ecosystem` | 패키지 종류(`npm`, `go`, `pypi`, `nuget`, `cargo`, `pub`, `maven`, 기본 `npm`). 같은 이름·버전 범위라도 종류가 다르면 다른 항목이다. **등록한 뒤에는 바꿀 수 없다**(PUT 으로 다른 종류를 보내면 400, 새 항목으로 등록한다) |
-| `name` | 패키지 이름 또는 `*` 패턴. 종류마다 이름 규칙과 비교 방법이 다르다(아래 표) |
+| `ecosystem` | 종류. 패키지(`npm`, `go`, `pypi`, `nuget`, `cargo`, `pub`, `maven`, 기본 `npm`)와 CI(`actions`, `docker`). 같은 이름·버전 범위라도 종류가 다르면 다른 항목이다. **등록한 뒤에는 바꿀 수 없다**(PUT 으로 다른 종류를 보내면 400, 새 항목으로 등록한다) |
+| `name` | 패키지 이름(`actions` 는 `owner/repo`, `docker` 는 이미지 저장소) 또는 `*` 패턴. 종류마다 이름 규칙과 비교 방법이 다르다(아래 표) |
 | `versionRange` | 그 종류의 범위 문법(아래 표). 비우면 모든 버전 |
 | `severity` | `critical` > `high` > `medium` > `low`. 기본 `medium`. 대시보드는 심각도가 높은 검출부터 보여 준다 |
 | `enabled` | 끄면 검사에서 제외하고, 그 항목의 검출(무시한 것 포함)은 즉시 `resolved` 가 된다. 다시 켜면 다음 스캔에서 새 검출(과 메일)이 생긴다 |
@@ -116,15 +116,18 @@ Docker 로 실행할 때는 `.env` 에 `PORT`, `HOST`, `DATA_DIR`, `WEB_DIST_DIR
 | `cargo` | `Cargo.toml`, `Cargo.lock` | 대소문자 구분 | Cargo 요구식: `<1.2.0`, `>=1, <2`, `=1.2.3` (연산자 없는 `1.2` 는 `^1.2`) |
 | `pub` | `pubspec.yaml`, `pubspec.lock` | 대소문자 구분 | pub 제약: `>=1.0.0 <2.0.0`, `^1.2.3` |
 | `maven` | `pom.xml`, `gradle/libs.versions.toml`, `build.gradle`, `build.gradle.kts` | `group:name`, 대소문자 구분 | 구간 표기: `[1.0,2.0)`, `(,1.5]`, `[1.2.3]` |
+| `actions` | `.github/workflows/*.yml\|yaml` 의 `uses`(step, job 의 재사용 workflow), `action.yml\|yaml`(composite) | `owner/repo`, 소문자로 저장. `owner/*` 패턴 가능. `owner/repo/path@ref` 는 앞의 두 조각만 이름이다. `./` 로컬 action 과 `${{ }}` 는 건너뛴다 | **정확한 값의 목록**(semver 아님): `v0.34.0, v0.34.1` 또는 commit SHA(전체, 또는 7자 이상의 앞부분). ref 가 없는 `uses: owner/repo` 는 범위 없는 항목에만 일치한다 |
+| `docker` | `Dockerfile*`·`*.Dockerfile`·`Containerfile` 의 `FROM`·`COPY --from`, compose(`docker-compose*.yml`, `compose*.yml`)의 `image`, workflow 의 `container`·`services.*.image`·`docker://`, `action.yml` 의 `runs.image` | 이미지 저장소, 소문자. `docker.io/`·`library/` 는 뗀다(`docker.io/library/node` → `node`). tag·digest 는 이름이 아니라 범위에 적는다 | **정확한 tag 또는 digest 의 목록**: `v1.107.0, latest`, `sha256:…`(전체, 또는 12자 이상의 앞부분). 이미지의 tag 와 digest 를 둘 다 비교하고 tag 가 없으면 `latest` |
 
 `*` 패턴은 종류의 이름 규칙으로 정규화한 이름 전체와 비교한다(pypi·nuget 은 대소문자 무시).
 
 **스캔이 파일을 읽는 방법:**
 - 위 표의 선언 파일이나 아래 보조 파일이 1개라도 있는 repo 는 검사 대상이다. 둘 다 0개인 repo 만 `건너뜀`이다.
 - **블랙리스트에 활성 항목(켜짐, 만료 전)이 있는 종류의 파일만 받는다.** 예를 들어 `npm` 항목만 있으면 `go.mod` 의 내용은 받지 않고, 그 파일만 있는 repo 는 `통과`다. 화면의 "읽은 파일 수"는 실제로 받은 파일 수다.
-- **보조 파일**은 명령으로 실행·설치하는 패키지를 찾는다. `npm` 또는 `pypi` 의 활성 항목이 있을 때만 받는다(없으면 받지 않고 읽은 파일 수에도 세지 않는다).
+- **보조 파일**은 명령으로 실행·설치하는 패키지, action, 이미지를 찾는다. 그 파일에서 나오는 종류의 활성 항목이 있을 때만 받는다(없으면 받지 않고 읽은 파일 수에도 세지 않는다).
   - `.github/workflows/*.yml|yaml` 의 `run`, `Dockerfile*`·`*.Dockerfile`·`Containerfile` 의 `RUN`(JSON 배열·heredoc 포함), MCP 설정(`.mcp.json`, `mcp.json`, `.cursor/mcp.json`, `.vscode/mcp.json`)의 `command`+`args`.
   - `npx`·`pnpm dlx`·`yarn dlx`·`bunx`·`npm i <pkg>` 등은 `npm`, `uvx`·`pipx`·`pip install <pkg>` 등은 `pypi` 로 비교한다. 검출은 항상 `direct` 이고 `filePath` 는 보조 파일이다.
+  - `actions`·`docker` 의 활성 항목이 있으면 workflow·`action.yml` 을, `docker` 는 Dockerfile·compose 도 받는다(compose 는 `docker` 가 활성일 때만, MCP 설정은 `npm`·`pypi` 가 활성일 때만 받는다). Dockerfile 의 앞 stage 이름을 가리키는 `FROM`·`scratch` 는 건너뛰고, `$VAR` 는 같은 파일의 `ARG` 기본값(compose 는 `${VAR:-기본값}`)으로 풀 수 있을 때만 읽는다. 검출의 `version` 은 일치한 tag(없으면 digest)다. 파일당 action·이미지는 5000개까지 검사한다.
   - 정확한 버전(`pkg@1.2.3`, `pkg==1.2.3`)은 범위와 비교한다. **버전 없는 실행(`pkg`, `pkg@latest`, 범위)은 버전 범위가 없는 항목에만 일치한다.** 어느 버전을 받을지 알 수 없기 때문이다.
   - 파일 형식이 깨져 해석하지 못하면 그 파일만 건너뛰고(로그에 경고) repo 는 실패하지 않는다. 파일 조회 실패는 repo 실패다.
 - lock 파일이 있으면 lock 의 정확한 버전으로 비교한다. lock 이 담당하는 선언 파일은 같은 폴더와, 같은 종류의 lock 이 없는 하위 폴더의 선언 파일이다(하위 폴더에 같은 종류의 lock 이 있으면 그 lock 이 담당한다). lock 의 패키지는 담당 선언 파일에 이름이 있으면 `direct`, 없으면 `transitive` 다(`packages.lock.json` 과 `pubspec.lock` 은 lock 이 알려 주는 값을 쓴다). `go.mod` 에서 `// indirect` 가 붙은 줄은 `transitive` 다.
@@ -200,10 +203,10 @@ pypi,foo-bar,">=1.0,<2.0",medium,"쉼표, ""큰따옴표""",false,
 
 ## 업그레이드와 백업
 
-새 버전을 처음 띄울 때 기존 DB 는 **자동으로 마이그레이션**된다(항목·검출·설정과 `id` 는 그대로, DB 버전은 3). v1 DB 의 새 필드는 `npm`/`medium`/켬/만료 없음이고, 예전 스캔은 repo 별 기록 없이 남는다. 마이그레이션 직전에 같은 폴더에 백업 파일을 만든다:
+새 버전을 처음 띄울 때 기존 DB 는 **자동으로 마이그레이션**된다(항목·검출·설정과 `id` 는 그대로, DB 버전은 4). v1 DB 의 새 필드는 `npm`/`medium`/켬/만료 없음이고, 예전 스캔은 repo 별 기록 없이 남는다. v3 에서 v4 로 올라갈 때는 새 종류(`actions`, `docker`)를 위해 항목·검출 테이블을 다시 만든다(행·`id`·순번은 그대로). 마이그레이션 직전에 같은 폴더에 백업 파일을 만든다:
 
-- `package-watcher.db.v{n}-backup` — Docker 에서는 volume 의 `/data/package-watcher.db.v{n}-backup`. 파일 이름의 `v{n}` 은 마이그레이션 직전 DB 의 버전이다(v1 이미지의 DB 는 `v0`, 이전 버전(v2) 이미지의 DB 는 `v2`). 같은 이름이 이미 있으면 새 내용으로 덮어쓴다.
-- 마이그레이션을 했다는 로그 한 줄(`DB 를 v2 에서 v3 로 마이그레이션했습니다. 백업: …`)이 남는다.
+- `package-watcher.db.v{n}-backup` — Docker 에서는 volume 의 `/data/package-watcher.db.v{n}-backup`. 파일 이름의 `v{n}` 은 마이그레이션 직전 DB 의 버전이다(v1 이미지의 DB 는 `v0`, 이전 버전 이미지의 DB 는 `v2`·`v3`). 같은 이름이 이미 있으면 새 내용으로 덮어쓴다.
+- 마이그레이션을 했다는 로그 한 줄(`DB 를 v3 에서 v4 로 마이그레이션했습니다. 백업: …`)이 남는다.
 
 **시작 거부:** 백업이나 마이그레이션이 실패하거나, DB 가 이 서버보다 새로운 버전이면 서버가 시작하지 않는다(DB 는 바꾸지 않는다). Docker 에서는 컨테이너가 종료와 재시작을 반복하는 것으로 보인다. `docker compose logs` 로 원인을 확인한다. 백업 파일이 있는 디렉터리에 쓸 수 없는 경우가 대표적이다.
 
