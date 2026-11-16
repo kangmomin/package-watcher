@@ -236,9 +236,18 @@ const countSchema = z.number().int().nonnegative();
 
 // ---------------------------------------------------------------- 응답
 
+/** 기본 브랜치의 검출은 `ref` 가 빈 문자열이다. */
+export const DEFAULT_BRANCH_REF = "";
+export const BRANCH_SCAN_DAYS_MAX = 30;
+export const BRANCH_SCAN_DAYS_DEFAULT = 7;
+/** 스캔 1회에서 repo 1개가 평가하는 브랜치(기본 브랜치 제외)의 최대 수. */
+export const BRANCH_SCAN_MAX_BRANCHES = 20;
+
 export const findingSchema = z.object({
   id: idSchema,
   repo: z.string().min(1),
+  /** 검출한 브랜치. 기본 브랜치는 `""`, 그 외는 브랜치 이름. */
+  ref: z.string(),
   filePath: z.string().min(1),
   ecosystem: ecosystemSchema,
   packageName: z.string().min(1),
@@ -334,6 +343,8 @@ export const scanRepoSchema = z.object({
   newFindingCount: countSchema,
   /** 읽은 파일 수. */
   fileCount: countSchema,
+  /** 기본 브랜치 외에 평가한 브랜치의 수. */
+  branchCount: countSchema,
   /** failed 일 때의 원인. */
   error: z.string().nullable(),
   startedAt: isoDateSchema.nullable(),
@@ -365,6 +376,8 @@ export const settingsSchema = z.object({
   notifyMinSeverity: severitySchema,
   /** 외부 목록(feed)을 동기화하고 스캔의 대조에 쓰는가. */
   feedEnabled: z.boolean(),
+  /** 기본 브랜치 외에, 최근 이 일수 안에 커밋이 있는 브랜치도 스캔한다. 0 = 기본 브랜치만. */
+  branchScanDays: z.number().int().min(0).max(BRANCH_SCAN_DAYS_MAX),
 });
 export type Settings = z.infer<typeof settingsSchema>;
 
@@ -620,6 +633,13 @@ export const settingsInputSchema = z.object({
   notifyMinSeverity: severityInputSchema.optional(),
   /** 생략하면 저장된 값을 유지한다. */
   feedEnabled: z.boolean({ error: "feedEnabled 는 true 또는 false 입니다" }).optional(),
+  /** 생략하면 저장된 값을 유지한다. */
+  branchScanDays: z
+    .number({ error: `브랜치 스캔 기간은 0~${BRANCH_SCAN_DAYS_MAX} 사이의 정수입니다` })
+    .int(`브랜치 스캔 기간은 0~${BRANCH_SCAN_DAYS_MAX} 사이의 정수입니다`)
+    .min(0, `브랜치 스캔 기간은 0~${BRANCH_SCAN_DAYS_MAX} 사이의 정수입니다`)
+    .max(BRANCH_SCAN_DAYS_MAX, `브랜치 스캔 기간은 0~${BRANCH_SCAN_DAYS_MAX} 사이의 정수입니다`)
+    .optional(),
 });
 export type SettingsInput = z.infer<typeof settingsInputSchema>;
 
