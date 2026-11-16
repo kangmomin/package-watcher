@@ -39,9 +39,20 @@ export const ERROR_CODES = [
 ] as const;
 
 /** 패키지 registry 의 종류. 이름과 버전 범위는 그 registry 의 문법을 쓴다. */
-export const PACKAGE_ECOSYSTEMS = ["npm", "go", "pypi", "nuget", "cargo", "pub", "maven"] as const;
+export const PACKAGE_ECOSYSTEMS = [
+  "npm",
+  "go",
+  "pypi",
+  "nuget",
+  "cargo",
+  "pub",
+  "maven",
+  "rubygems",
+  "composer",
+  "cocoapods",
+] as const;
 /** CI 가 실행하는 것: GitHub Action 과 Docker 이미지. 버전은 정확한 값(tag, commit SHA, digest)의 목록이다. */
-export const CI_ECOSYSTEMS = ["actions", "docker"] as const;
+export const CI_ECOSYSTEMS = ["actions", "docker", "vscode", "helm", "terraform"] as const;
 /**
  * 블랙리스트 항목의 종류 전체. 필드 이름은 `ecosystem` 이지만 패키지가 아닌 종류도 들어간다 (화면에는 "종류").
  * DB 는 v4 부터 이 목록을 CHECK 하지 않는다 — 검증은 이 스키마가 한다.
@@ -50,7 +61,7 @@ export const CI_ECOSYSTEMS = ["actions", "docker"] as const;
  * 침해의 흔적. 패키지가 아니라 저장소 자체를 본다: 파일 경로, 파일 내용의 문자열, 브랜치 이름.
  * 버전 범위를 쓰지 않는다 (항상 null).
  */
-export const INDICATOR_ECOSYSTEMS = ["path", "content", "branch"] as const;
+export const INDICATOR_ECOSYSTEMS = ["path", "content", "branch", "commit", "pr"] as const;
 /**
  * 위험한 설정의 보고. 항목은 서버가 만드는 내장 검사(`POLICY_CHECKS`)이고 이름 = 검사의 id 다.
  * 사용자는 켬·끔과 심각도만 바꾼다. 추가·삭제·이름 변경은 할 수 없다. 버전 범위를 쓰지 않는다.
@@ -85,11 +96,19 @@ export const ECOSYSTEM_CATEGORY: Record<Ecosystem, EcosystemCategory> = {
   cargo: "package",
   pub: "package",
   maven: "package",
+  rubygems: "package",
+  composer: "package",
+  cocoapods: "package",
   actions: "ci",
   docker: "ci",
+  vscode: "ci",
+  helm: "ci",
+  terraform: "ci",
   path: "indicator",
   content: "indicator",
   branch: "indicator",
+  commit: "indicator",
+  pr: "indicator",
   policy: "policy",
 };
 export const categoryOf = (ecosystem: Ecosystem): EcosystemCategory => ECOSYSTEM_CATEGORY[ecosystem];
@@ -162,6 +181,48 @@ export const POLICY_CHECKS = [
     id: "suspicious-filename",
     title: "제어 문자가 든 파일 이름",
     description: "보이지 않는 문자가 든 파일 이름은 화면에서 다른 파일처럼 보일 수 있습니다.",
+    severity: "low",
+  },
+  {
+    id: "workflow-changed",
+    title: "최근에 workflow 를 바꾼 커밋",
+    description: "CI 를 바꾸는 커밋은 secret 을 훔치는 공격의 첫 단계일 수 있습니다. 의도한 변경인지 확인하십시오. 기간이 지나면 목록에서 사라집니다.",
+    severity: "low",
+  },
+  {
+    id: "new-committer",
+    title: "기본 브랜치에 처음 커밋한 계정",
+    description: "이 저장소의 기본 브랜치에서 처음 본 계정의 커밋입니다. 탈취된 계정이나 외부 계정일 수 있습니다. 기간이 지나면 목록에서 사라집니다.",
+    severity: "low",
+  },
+  {
+    id: "install-script",
+    title: "설치할 때 실행되는 script (package.json)",
+    description: "preinstall·install·postinstall 은 npm install 만으로 실행됩니다. script 가 바뀌면 새 검출로 나옵니다.",
+    severity: "low",
+  },
+  {
+    id: "lock-external-source",
+    title: "공식 registry 가 아닌 곳에서 받는 lock 항목",
+    description: "lock 파일의 resolved 주소가 공식 npm registry 가 아닙니다. 사내 registry 이면 이 검출을 무시로 바꾸십시오.",
+    severity: "medium",
+  },
+  {
+    id: "custom-registry",
+    title: "registry 설정 (.npmrc, pip 설정)",
+    description: "추가 registry(특히 extra-index-url)는 같은 이름의 공개 패키지와 섞일 수 있습니다(dependency confusion). 의도한 설정인지 확인하십시오.",
+    severity: "low",
+  },
+  {
+    id: "npmrc-token",
+    title: "설정 파일에 적힌 인증 토큰",
+    description: ".npmrc 등에 토큰 값이 그대로 적혀 있습니다. 토큰을 폐기하고 환경 변수(${NPM_TOKEN})로 바꾸십시오.",
+    severity: "high",
+  },
+  {
+    id: "external-submodule",
+    title: "외부 저장소를 가리키는 git submodule",
+    description: "submodule 의 URL 이 이 org 의 GitHub 저장소가 아닙니다. 그 저장소가 바뀌면 이 저장소의 빌드도 바뀝니다.",
     severity: "low",
   },
 ] as const satisfies readonly { id: string; title: string; description: string; severity: Severity }[];
