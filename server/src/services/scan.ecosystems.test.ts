@@ -537,4 +537,23 @@ describe("npm 과 다른 종류가 함께 있는 repo", () => {
     expect(scan.newFindingCount).toBe(2);
     expect(rowOf(await repoRows(scan.id), "poly")).toMatchObject({ status: "issue", fileCount: 2 });
   });
+
+  it("[SA-110] go.mod 의 // indirect 모듈은 go.sum 에서 transitive 로 나온다", async () => {
+    await entry("go", "github.com/evil/ind");
+    await entry("go", "github.com/evil/dir");
+    t.github.setRepos([
+      {
+        name: "svc",
+        files: {
+          "go.mod": goMod("github.com/evil/ind v1.0.0 // indirect", "github.com/evil/dir v1.0.0"),
+          "go.sum": "github.com/evil/ind v1.0.0 h1:a=\ngithub.com/evil/dir v1.0.0 h1:b=\n",
+        },
+      },
+    ]);
+
+    await runScan(t);
+
+    const types = Object.fromEntries((await allFindings(t)).map((item) => [item.packageName, item.dependencyType]));
+    expect(types).toEqual({ "github.com/evil/ind": "transitive", "github.com/evil/dir": "direct" });
+  });
 });

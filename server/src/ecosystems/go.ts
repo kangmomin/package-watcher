@@ -1,8 +1,11 @@
-import { baseName, fail, requireText } from "./common.ts";
-import type { DeclaredDependency, EcosystemSupport } from "./types.ts";
+import { baseName, fail, readText, requireText } from "./common.ts";
+import type { DeclaredDependency, EcosystemSupport, LockedPackage } from "./types.ts";
 
 /** 인용부호로 감싼 모듈 경로("a/b")를 푼다 */
 const unquote = (token: string): string => token.replace(/^["`](.*)["`]$/, "$1");
+
+/** 오류 메시지에 넣는 줄은 200자까지만 */
+const clip = (line: string): string => (line.length > 200 ? `${line.slice(0, 200)}…` : line);
 
 function toDependency(name: string, version: string, comment: string): DeclaredDependency {
   return {
@@ -35,7 +38,7 @@ export function parseGoMod(content: string, file = "go.mod"): DeclaredDependency
       }
       if (block !== "require") continue;
       const parts = code.split(/\s+/);
-      if (parts.length !== 2) fail(file, `require 항목을 읽을 수 없습니다: ${code}`);
+      if (parts.length !== 2) fail(file, `require 항목을 읽을 수 없습니다: ${clip(code)}`);
       deps.push(toDependency(parts[0] as string, parts[1] as string, comment));
       continue;
     }
@@ -49,7 +52,7 @@ export function parseGoMod(content: string, file = "go.mod"): DeclaredDependency
     const parts = code.split(/\s+/);
     if (parts[0] === "module") hasModule = true;
     if (parts[0] === "require") {
-      if (parts.length !== 3) fail(file, `require 항목을 읽을 수 없습니다: ${code}`);
+      if (parts.length !== 3) fail(file, `require 항목을 읽을 수 없습니다: ${clip(code)}`);
       deps.push(toDependency(parts[1] as string, parts[2] as string, comment));
     }
   }
@@ -59,9 +62,37 @@ export function parseGoMod(content: string, file = "go.mod"): DeclaredDependency
   return deps;
 }
 
+/**
+ * go.sum 의 `module version h1:hash`. `/go.mod` 줄은 모듈 파일의 해시라서 건너뛰고 같은 (모듈, 버전)은 1번만 낸다.
+ * direct 여부는 go.sum 이 알려 주지 않으므로 채우지 않는다(detect 가 go.mod 의 선언 이름으로 판정).
+ */
+export function parseGoSum(content: string, file = "go.sum"): LockedPackage[] {
+  const seen = new Set<string>();
+  const packages: LockedPackage[] = [];
+  for (const raw of readText(content, file).split("\n")) {
+    const line = raw.trim();
+    if (line === "") continue;
+    const parts = line.split(/\s+/);
+    if (parts.length !== 3 || !/^v\S*$/.test(parts[1] as string) || !/^\w+:/.test(parts[2] as string)) {
+      fail(file, `go.sum 줄을 읽을 수 없습니다: ${clip(line)}`);
+    }
+    const [name, version] = parts as [string, string, string];
+    if (version.endsWith("/go.mod")) continue;
+    const key = `${name}\u0000${version}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    packages.push({ name, version });
+  }
+  return packages;
+}
+
 export const goSupport: EcosystemSupport = {
   ecosystem: "go",
-  roleOf: (path) => (baseName(path) === "go.mod" ? "manifest" : null),
+  roleOf(path) {
+    const name = baseName(path);
+    if (name === "go.mod") return "manifest";
+    return name === "go.sum" ? "lock" : null;
+  },
   parseManifest: (path, content) => parseGoMod(content, path),
-  parseLock: () => [],
+  parseLock: (path, content) => parseGoSum(content, path),
 };

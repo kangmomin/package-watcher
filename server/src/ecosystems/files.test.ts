@@ -6,7 +6,7 @@ describe("파일 판정", () => {
     const cases: [string, ReturnType<typeof classifyFile>][] = [
       ["go.mod", { ecosystem: "go", role: "manifest" }],
       ["svc/api/go.mod", { ecosystem: "go", role: "manifest" }],
-      ["go.sum", null],
+      ["go.sum", { ecosystem: "go", role: "lock" }],
       ["pyproject.toml", { ecosystem: "pypi", role: "manifest" }],
       ["requirements.txt", { ecosystem: "pypi", role: "manifest" }],
       ["req/requirements-dev.txt", { ecosystem: "pypi", role: "manifest" }],
@@ -30,7 +30,7 @@ describe("파일 판정", () => {
       ["build.gradle", { ecosystem: "maven", role: "manifest" }],
       ["app/build.gradle.kts", { ecosystem: "maven", role: "manifest" }],
       ["settings.gradle", null],
-      ["pom.xml", null],
+      ["pom.xml", { ecosystem: "maven", role: "manifest" }],
       ["package.json", null],
       ["README.md", null],
     ];
