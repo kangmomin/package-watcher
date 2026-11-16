@@ -212,6 +212,8 @@ export async function scanSources(
   received?: Map<string, string>,
   /** policy 검사용: 해석에 성공한 파일의 사실을 담는다 (크기·형식 때문에 건너뛴 파일은 없다) */
   facts?: SourceFacts[],
+  /** 받았지만 평가하지 못한 파일(해석 실패, 크기 초과)의 경로를 담는다 */
+  skipped?: Set<string>,
 ): Promise<{ matches: SourceMatch[]; fileCount: number }> {
   // 호출자가 활성 종류를 주면 그 종류에서 쓸 수 있는 파일만 받는다.
   const fetchable = activeEcosystems ? files.filter((file) => needsSourceKind(file.kind, activeEcosystems)) : files;
@@ -225,6 +227,7 @@ export async function scanSources(
     received?.set(file.path, content);
     if (content.length > MAX_SOURCE_LENGTH) {
       logger.warn(`보조 파일이 너무 커서 건너뜁니다: ${where}`);
+      skipped?.add(file.path);
       return;
     }
     try {
@@ -242,6 +245,7 @@ export async function scanSources(
       for (const match of detectActions(repo.name, file.path, actions, entryIndex)) matches.push(match);
       for (const match of detectImages(repo.name, file.path, images, entryIndex)) matches.push(match);
     } catch (error) {
+      skipped?.add(file.path);
       logger.warn(`보조 파일을 해석하지 못해 건너뜁니다: ${where}: ${errorMessage(error)}`);
     }
   });

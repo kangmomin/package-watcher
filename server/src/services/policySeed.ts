@@ -15,20 +15,25 @@ export function seedPolicyEntries(repos: Repositories, clock: Clock): number {
     let created = 0;
     for (const check of POLICY_CHECKS) {
       if (repos.blacklist.findByKey(POLICY_ECOSYSTEM, check.id, null, today)) continue;
-      repos.blacklist.insert(
-        {
-          ecosystem: POLICY_ECOSYSTEM,
-          name: check.id,
-          versionRange: null,
-          reason: check.description,
-          severity: check.severity,
-          enabled: true,
-          expiresAt: null,
-        },
-        now,
-        today,
-      );
-      created += 1;
+      try {
+        repos.blacklist.insert(
+          {
+            ecosystem: POLICY_ECOSYSTEM,
+            name: check.id,
+            versionRange: null,
+            reason: check.description,
+            severity: check.severity,
+            enabled: true,
+            expiresAt: null,
+          },
+          now,
+          today,
+        );
+        created += 1;
+      } catch (error) {
+        // 다른 프로세스가 같은 순간에 시작해 먼저 만들었다 (UNIQUE 위반). 이미 있는 것이므로 넘어간다.
+        if (!(error instanceof Error && (error as { code?: unknown }).code === "SQLITE_CONSTRAINT_UNIQUE")) throw error;
+      }
     }
     return created;
   });

@@ -276,7 +276,9 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
       <DialogHeader>
         <DialogTitle>{entry ? "블랙리스트 항목 수정" : "블랙리스트 항목 추가"}</DialogTitle>
         <DialogDescription>
-          종류·이름·버전 범위가 같은 항목은 하나만 둘 수 있습니다.
+          {isBuiltIn
+            ? "내장 검사입니다. 켬·끔, 심각도, 사유, 만료일만 바꿀 수 있습니다."
+            : "종류·이름·버전 범위가 같은 항목은 하나만 둘 수 있습니다."}
         </DialogDescription>
       </DialogHeader>
       <p className="text-sm text-muted-foreground">* 표시는 필수 항목입니다</p>
@@ -329,13 +331,14 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
         <Field data-invalid={errors.name ? true : undefined}>
           <FieldLabel htmlFor={fieldIds.name}>
             {indicatorUi?.label ?? "이름"}
-            <span aria-hidden="true">*</span>
+            {!isBuiltIn && <span aria-hidden="true">*</span>}
           </FieldLabel>
           <Input
             id={fieldIds.name}
             autoComplete="off"
-            aria-required="true"
-            disabled={isBuiltIn}
+            aria-required={isBuiltIn ? undefined : "true"}
+            readOnly={isBuiltIn}
+            aria-readonly={isBuiltIn ? "true" : undefined}
             {...errorAria("name", hintIds.name)}
             {...form.register("name")}
           />

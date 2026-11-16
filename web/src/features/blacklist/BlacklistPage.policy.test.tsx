@@ -14,7 +14,7 @@ import { BlacklistPage } from "@/features/blacklist/BlacklistPage";
 import { DashboardPage } from "@/features/findings/DashboardPage";
 import { reply, setupFetchMock, type FetchMock } from "@/test/fetchMock";
 import { renderWithProviders } from "@/test/render";
-import { findRowWith, findToast } from "@/test/ui";
+import { containing, findRowWith, findToast } from "@/test/ui";
 
 const BLACKLIST = "/api/blacklist";
 const BULK = "/api/blacklist/bulk";
@@ -101,7 +101,14 @@ describe("위험한 설정 — 블랙리스트", () => {
     await user.click(within(row).getByRole("button", { name: "수정" }));
     const dialog = await screen.findByRole("dialog");
     const name = within(dialog).getByRole("textbox", { name: /^이름/ });
-    expect(name).toBeDisabled();
+    // disabled 가 아니라 readOnly: 포커스로 title 과 안내를 읽을 수 있다.
+    expect(name).not.toBeDisabled();
+    expect(name).toHaveAttribute("readonly");
+    expect(name).toHaveAttribute("aria-readonly", "true");
+    expect(name).not.toHaveAttribute("aria-required");
+    expect(name).toHaveAccessibleDescription(containing(unpinned.title));
+    expect(within(dialog).getByText("내장 검사입니다. 켬·끔, 심각도, 사유, 만료일만 바꿀 수 있습니다.")).toBeInTheDocument();
+    expect(within(dialog).queryByText(/하나만 둘 수 있습니다/)).toBeNull();
     expect(name).toHaveValue(unpinned.id);
     expect(within(dialog).getByText(unpinned.title)).toBeInTheDocument();
     expect(within(dialog).getByRole("combobox", { name: /^종류/ })).toBeDisabled();
@@ -116,6 +123,8 @@ describe("위험한 설정 — 블랙리스트", () => {
       name: unpinned.id,
       versionRange: null,
       severity: "high",
+      reason: policyEntry.reason,
+      expiresAt: policyEntry.expiresAt,
     });
   });
 
@@ -178,5 +187,23 @@ describe("위험한 설정 — 블랙리스트", () => {
       expect(server.count("GET", FINDINGS)).toBeGreaterThan(before.f);
       expect(server.count("GET", SUMMARY)).toBeGreaterThan(before.s);
     });
+  });
+
+  it("[SD-75] policy 행의 선택 체크박스와 수정 버튼은 id 가 아니라 검사의 title 을 쓴다", async () => {
+    setupServer();
+    await renderBlacklist();
+    expect(screen.getByRole("checkbox", { name: `${unpinned.title} 선택` })).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: `${unpinned.id} 선택` })).toBeNull();
+    const row = await findRowWith(unpinned.title);
+    expect(within(row).getByRole("button", { name: "수정" })).toHaveAttribute("title", `${unpinned.title} 수정`);
+  });
+
+  it("[SD-76] 모두 선택에 policy 가 섞이면 일괄 [삭제]는 비활성이다", async () => {
+    setupServer();
+    const { user } = await renderBlacklist();
+    await user.click(screen.getByRole("checkbox", { name: "모두 선택" }));
+    const group = screen.getByRole("group", { name: "일괄 작업" });
+    expect(within(group).getByRole("button", { name: "삭제" })).toBeDisabled();
+    expect(within(group).getByText(BULK_NO_DELETE)).toBeInTheDocument();
   });
 });

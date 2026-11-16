@@ -259,7 +259,7 @@ describe("검사: unpinned-exec, curl-pipe-shell, workflow-no-permissions, unpin
 });
 
 describe("검사: committed-node-modules, suspicious-filename", () => {
-  it("[SD-37] node_modules/<x>/package.json 이 있으면 repo 당 1건, 정렬한 첫 폴더의 경로다", async () => {
+  it("[SD-37] node_modules/<x>/package.json 이 있으면 repo 당 1건, 가장 얕은 폴더의 경로다", async () => {
     await only("committed-node-modules");
     t.github.setRepos([
       {
@@ -275,7 +275,7 @@ describe("검사: committed-node-modules, suspicious-filename", () => {
 
     await runScan(t);
 
-    expect(await found("committed-node-modules")).toEqual(["a/node_modules|node_modules|"]);
+    expect(await found("committed-node-modules")).toEqual(["node_modules|node_modules|"]);
     expect((await policyFindings()).map((finding) => finding.repo)).toEqual(["svc"]);
   });
 

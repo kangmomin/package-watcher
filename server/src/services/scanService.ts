@@ -127,6 +127,8 @@ type RepoOutcome =
       matches: Match[];
       /** 위험한 설정(policy)의 검출 */
       policyMatches: PolicyMatch[];
+      /** 받았지만 평가하지 못한 파일(해석 실패, 크기 초과) — 그 파일의 기존 검출은 resolve 하지 않는다 */
+      skippedPaths: ReadonlySet<string>;
     }
   | { repo: string; ok: false; error: string };
 
@@ -200,6 +202,10 @@ function htmlUrlOf(org: string, repo: string, filePath: string, ecosystem: Ecosy
       return `${base}/tree/${branch}`;
     }
     const path = filePath.split("/").map(encodeURIComponent).join("/");
+    // committed-node-modules 의 검출은 파일이 아니라 폴더다.
+    if (ecosystem === POLICY_ECOSYSTEM && (filePath === "node_modules" || filePath.endsWith("/node_modules"))) {
+      return `${base}/tree/HEAD/${path}`;
+    }
     return `${base}/blob/HEAD/${path}`;
   } catch {
     return root;
@@ -297,6 +303,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     fileCount: number;
     matches: Match[];
     policyMatches: PolicyMatch[];
+    skippedPaths: ReadonlySet<string>;
   }> {
     const tree = await client.getTree(org, repo.name, repo.defaultBranch);
     if (tree.truncated) {
@@ -347,7 +354,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     const policyActive = policy.active.size > 0;
     const traced = (indicators.hasPath || indicators.hasBranch || policyActive) && tree.entries.length > 0;
     if (declaredCount === 0 && !traced) {
-      return { declaredCount: 0, traced: false, fileCount: 0, matches: [], policyMatches: [] };
+      return { declaredCount: 0, traced: false, fileCount: 0, matches: [], policyMatches: [], skippedPaths: new Set() };
     }
     const evaluatePolicy = (manifests: PolicyManifest[], sources: SourceFacts[]): Promise<PolicyMatch[]> =>
       policyActive
@@ -362,7 +369,14 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       matches.push(...indicators.matchBranches(repo.name, `${org}/${repo.name}`, branches, logger));
     }
     if (declaredCount === 0) {
-      return { declaredCount: 0, traced, fileCount: 0, matches, policyMatches: await evaluatePolicy([], []) };
+      return {
+        declaredCount: 0,
+        traced,
+        fileCount: 0,
+        matches,
+        policyMatches: await evaluatePolicy([], []),
+        skippedPaths: new Set(),
+      };
     }
 
     // content 검사용: 이 스캔이 받은 모든 파일의 (경로 → 내용). content 항목이 없으면 내용을 보관하지 않는다.
@@ -380,6 +394,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     // 보조 파일은 그 파일에서 나오는 종류(또는 활성 policy 검사)의 활성 항목이 있을 때만 받는다.
     const wantedSources = sourceFiles.filter((file) => needsSourceKind(file.kind, activeEcosystems, policy.active));
     const sourceFacts: SourceFacts[] = [];
+    const skippedPaths = new Set<string>();
     if (wantedSources.length > 0) {
       const result = await scanSources(
         org,
@@ -391,12 +406,13 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
         undefined,
         received,
         policyActive ? sourceFacts : undefined,
+        skippedPaths,
       );
       matches.push(...result.matches);
       fileCount += result.fileCount;
     }
     if (indicators.hasContent) {
-      matches.push(...(await indicators.matchContents(repo.name, `${org}/${repo.name}`, received ?? new Map(), logger)));
+      matches.push(...(await indicators.matchContents(repo.name, `${org}/${repo.name}`, received ?? new Map(), logger, skippedPaths)));
     }
     return {
       declaredCount,
@@ -404,6 +420,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       fileCount,
       matches,
       policyMatches: await evaluatePolicy(npm.manifests, sourceFacts),
+      skippedPaths,
     };
   }
 
@@ -524,10 +541,18 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       }
     }
     // policy 검사(lock 파일 없음, registry 밖의 의존성, 선언된 로컬 도구)가 쓰는 package.json 의 사실
+    // bun.lockb 는 읽지 않아도 있다는 것은 안다: 같은 폴더나 상위 폴더에 있으면 lock 이 있는 것으로 본다.
+    const bunDirs = new Set(bunLockbs.map((entry) => dirOf(entry.path)));
+    const hasBunLockb = (path: string): boolean => {
+      for (let dir = dirOf(path); ; dir = dirOf(dir)) {
+        if (bunDirs.has(dir)) return true;
+        if (dir === "") return false;
+      }
+    };
     const policyManifests = packageJsons.map((entry): PolicyManifest => ({
       path: entry.path,
       dependencies: manifests.get(entry.path)?.dependencies ?? [],
-      locked: (assignment.byPackageJson.get(entry.path) ?? []).length > 0,
+      locked: (assignment.byPackageJson.get(entry.path) ?? []).length > 0 || hasBunLockb(entry.path),
     }));
     return { matches, fileCount: toFetch.length, manifests: policyManifests };
   }
@@ -697,11 +722,8 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
   function confirmRepoStatuses(scanId: number, outcomes: RepoOutcome[], newByRepo: Map<string, number>): void {
     track("repo 상태 확정", () =>
       repos.transaction(() => {
-        const openByRepo = new Map<string, number>();
-        for (const finding of repos.findings.listOpen()) {
-          if (finding.ecosystem === POLICY_ECOSYSTEM) continue; // 위험한 설정은 repo 의 상태·검출 수에 넣지 않는다
-          openByRepo.set(finding.repo, (openByRepo.get(finding.repo) ?? 0) + 1);
-        }
+        // repo 별 open 검출 수는 SQL 로 센다 (위험한 설정은 repo 의 상태·검출 수에 넣지 않는다)
+        const openByRepo = repos.findings.openCountsByRepo();
         for (const outcome of outcomes) {
           if (!outcome.ok || (outcome.declaredCount === 0 && !outcome.traced)) continue;
           const openFindingCount = openByRepo.get(outcome.repo) ?? 0;
@@ -786,8 +808,11 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       }
 
       const declaredCounts = new Map<string, number>();
+      const skippedByRepo = new Map<string, ReadonlySet<string>>();
       for (const outcome of collected.outcomes) {
-        if (outcome.ok) declaredCounts.set(outcome.repo, outcome.declaredCount);
+        if (!outcome.ok) continue;
+        declaredCounts.set(outcome.repo, outcome.declaredCount);
+        if (outcome.skippedPaths.size > 0) skippedByRepo.set(outcome.repo, outcome.skippedPaths);
       }
       // 흔적 검출(path·content·branch)은 선언 파일 수가 아니라 이번 스캔의 결과에 따른다.
       const resolveRepos = new Set(collected.resolveRepos);
@@ -800,6 +825,8 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
         }
         const count = declaredCounts.get(finding.repo);
         if (count === undefined) continue; // 실패한 repo 는 그대로 둔다
+        // 받았지만 평가하지 못한 파일(해석 실패, 크기 초과)의 검출은 그대로 둔다 — 파일이 고쳐지면 같은 행이 이어진다.
+        if (skippedByRepo.get(finding.repo)?.has(finding.filePath)) continue;
         const isTrace = !usesVersionRange(finding.ecosystem);
         if ((!isTrace && count === 0) || entries.has(finding.blacklistEntryId)) toResolve.push(finding.id); // ③, ①
       }

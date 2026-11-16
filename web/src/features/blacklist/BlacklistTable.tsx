@@ -102,6 +102,8 @@ export function BlacklistTable({
           {items.map((entry) => {
             const nameId = `${id}-${entry.id}-name`;
             const status = entryStatusOf(entry);
+            // 사람이 읽는 이름: 내장 검사는 id 가 아니라 title
+            const label = isUserManagedEcosystem(entry.ecosystem) ? entry.name : policyCheckTitle(entry.name);
             return (
               <TableRow
                 key={entry.id}
@@ -109,7 +111,7 @@ export function BlacklistTable({
               >
                 <TableCell>
                   <Checkbox
-                    aria-label={`${entry.name} 선택`}
+                    aria-label={`${label} 선택`}
                     disabled={selectionDisabled}
                     checked={selectedIds.has(entry.id)}
                     onCheckedChange={(checked) => onToggle(entry.id, checked === true)}
@@ -162,7 +164,7 @@ export function BlacklistTable({
                     size="icon-sm"
                     aria-label="수정"
                     aria-describedby={nameId}
-                    title={`${entry.name} 수정`}
+                    title={`${label} 수정`}
                     onClick={() => onEdit(entry)}
                   >
                     <PencilIcon aria-hidden="true" />
@@ -174,7 +176,7 @@ export function BlacklistTable({
                     size="icon-sm"
                     aria-label={isUserManagedEcosystem(entry.ecosystem) ? "삭제" : POLICY_NO_DELETE_LABEL}
                     aria-describedby={nameId}
-                    title={isUserManagedEcosystem(entry.ecosystem) ? `${entry.name} 삭제` : POLICY_NO_DELETE_LABEL}
+                    title={isUserManagedEcosystem(entry.ecosystem) ? `${label} 삭제` : POLICY_NO_DELETE_LABEL}
                     disabled={!isUserManagedEcosystem(entry.ecosystem)}
                     className="text-destructive hover:text-destructive"
                     onClick={() => onDelete(entry)}

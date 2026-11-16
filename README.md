@@ -163,18 +163,21 @@ Docker 로 실행할 때는 `.env` 에 `PORT`, `HOST`, `DATA_DIR`, `WEB_DIST_DIR
 | `unpinned-action` | workflow·`action.yml` 의 외부 action 이 40자 commit SHA 가 아님 (`actions/*`, `github/*`, 같은 org, `./` 로컬은 제외) | medium |
 | `missing-lockfile` | 의존성이 있는 `package.json`(`node_modules` 밖)에 담당 lock 파일이 없음 | medium |
 | `non-registry-dependency` | npm 의존성이 `git+…`·`git://`·`http(s)://`·`github:`·`gitlab:`·`bitbucket:`·`user/repo` 이거나 `.tgz`·`.tar.gz` 파일(`file:` 폴더, `workspace:`, `link:`, `npm:` 는 제외) | medium |
-| `unpinned-exec` | 버전 없이 받아서 바로 실행(`npx`, `pnpm dlx`·`pnpx`, `yarn dlx`, `bunx`·`bun x`, `npm exec`, `uvx`, `uv tool run`, `pipx run`). 같은 repo 의 `package.json` 에 선언된 이름(`npx vitest`)은 제외 | medium |
+| `unpinned-exec` | 버전 없이 받아서 바로 실행(`npx`, `pnpm dlx`·`pnpx`, `yarn dlx`, `bunx`·`bun x`, `npm exec`, `uvx`, `uv tool run`, `pipx run`). 같은 repo 의 `package.json` 에 선언된 패키지가 내는 실행 파일(`npx vitest`, `npx tsc` ← `typescript`)과 `pkg@${VAR}` 처럼 변수로 고정한 것은 제외 | medium |
 | `curl-pipe-shell` | `curl`·`wget` 의 출력을 `sh`·`bash`·`zsh` 로 실행(`\| sh`, `bash <(curl …)`, `sh -c "$(curl …)"`). 파일당 1건 | medium |
 | `workflow-no-permissions` | workflow 에 최상위 `permissions` 가 없고 모든 job 에 있지도 않음. 파일당 1건 | low |
 | `unpinned-image` | Docker 이미지의 tag 가 없거나 `latest`(digest 가 있으면 제외) | low |
-| `committed-node-modules` | tree 에 `node_modules/<이름>/package.json` 이 있음. repo 당 1건 | low |
-| `suspicious-filename` | 경로에 제어 문자(코드 0x20 미만, 0x7f)가 있음 | low |
+| `committed-node-modules` | tree 에 `node_modules/<이름>/package.json` 이 있음. repo 당 1건이고 `filePath` 는 가장 얕은 `node_modules` 폴더(같으면 정렬순), 링크는 tree | low |
+| `suspicious-filename` | 경로에 제어 문자(코드 0x20 미만, 0x7f)나 보이지 않는·방향을 바꾸는 유니코드(`Cf`: U+202A–202E, U+2066–2069, U+200B–200F, U+FEFF 등, 줄·문단 구분자)가 있음. ZWJ(U+200D)가 든 이모지 경로도 잡힌다. 일반 한글·이모지 경로는 통과 | low |
 
 - **바꿀 수 있는 것은 켬·끔(`enabled`), 심각도, 사유, 만료일뿐이다.** 추가(POST, 가져오기의 새 행)는 `VALIDATION_ERROR`, 삭제(DELETE, 일괄 `delete` 에 1개라도 포함)는 `INVALID_STATE` 이고, 이름 변경(PUT)은 `VALIDATION_ERROR` 다. 일괄 `enable`·`disable`, 가져오기의 기존 항목 갱신, 내보내기는 된다.
+- **한계:** `unpinned-exec` 는 이름으로 판정한다. 실행 파일 이름(`tsc`)과 패키지 이름이 다르면 알려진 표(`typescript` 등)로만 대응시키므로, 표에 없는 실행 파일은 선언된 패키지여도 보고될 수 있다. `missing-lockfile` 은 `bun.lockb`(같은 폴더나 상위 폴더)가 있으면 lock 이 있는 것으로 보고 `vendor` 등 제외 폴더의 `package.json` 은 보지 않는다.
+- policy 가 하나라도 켜져 있으면 의존성 파일이 없는 repo 도 파일이 있으면 `통과`로 표시된다(`건너뜀` 아님).
+- 해석에 실패하거나 1MB(content 는 8MB)를 넘어 평가하지 못한 파일의 기존 검출(policy 와 그 파일에서 나오는 모든 종류)은 resolve 하지 않고 그대로 둔다. 파일이 고쳐지면 같은 행이 이어지고, 파일이 사라지면 resolve 된다.
 - 끄면 그 검사의 검출은 즉시 `resolved` 가 되고, 다시 켜면 다음 스캔에서 다시 나온다. 검사 1개가 repo 1개에서 내는 검출은 정렬 순의 앞쪽 100건까지다(넘으면 로그에 경고).
 - 검출은 `ecosystem: "policy"`, `dependencyType: "direct"` 이고 `packageName`·`version` 은 검사마다 다르다(action 이면 `owner/repo`·ref, 의존성이면 이름·spec, `curl-pipe-shell` 은 `curl | sh` 등). 해석하지 못한 파일(YAML 오류 등)은 그 파일에 대한 검사만 건너뛴다.
 - **메일:** 즉시 메일에는 넣지 않고, policy 검출만 새로 생긴 스캔은 메일을 보내지 않는다. 일일 요약의 행 목록에도 넣지 않고, 열린 검출이 1건 이상이면 끝에 `위험한 설정: 총 n건` 과 검사별 건수(많은 순, 0건은 생략)만 붙인다. policy 만 있고 다른 열린 검출이 없는 날은 요약을 보내지 않는다.
-- **숫자에서 제외:** `GET /api/summary` 의 `openCount`·`ignoredCount` 는 policy 를 세지 않고 `policyOpenCount` 가 열린 policy 검출을 센다. 스캔의 repo 상태(`통과`/`이슈`)와 `openFindingCount`·`newFindingCount`(스캔과 repo 모두)도 policy 를 세지 않는다(policy 검출만 있는 repo 는 `통과`). `GET /api/findings` 는 `category`(그 분류만), `excludeCategory`(그 분류 제외)로 거른다(`ecosystem` 과 함께 쓸 수 있다).
+- **숫자에서 제외:** `GET /api/summary` 의 `openCount`·`ignoredCount` 는 policy 를 세지 않고 `policyOpenCount` 가 열린 policy 검출을 센다. 스캔의 repo 상태(`통과`/`이슈`)와 `openFindingCount`·`newFindingCount`(스캔과 repo 모두)도 policy 를 세지 않는다(policy 검출만 있는 repo 는 `통과`). **`category`·`excludeCategory` 가 없는 기본 목록(`GET /api/findings`, MCP `list_findings`)에는 위험한 설정이 섞인다. 검출만 보려면 `excludeCategory=policy`(MCP 는 `excludeCategory: "policy"`)를 준다.** `GET /api/findings` 는 `category`(그 분류만), `excludeCategory`(그 분류 제외)로 거른다(`ecosystem` 과 함께 쓸 수 있다).
 - **요청 수가 늘어난다:** 활성 검사가 필요로 하는 보조 파일을 항상 받는다 — `unpinned-action`·`workflow-no-permissions`: workflow·`action.yml`, `curl-pipe-shell`: 거기에 Dockerfile, `unpinned-exec`: 거기에 MCP 설정, `unpinned-image`: workflow·`action.yml`·Dockerfile·compose. `package.json` 은 이미 받으므로 `missing-lockfile`·`non-registry-dependency` 와, tree 만 보는 `committed-node-modules`·`suspicious-filename` 은 요청이 늘지 않는다. 활성 검사가 하나도 없으면 요청 수는 이전과 같다. 활성 검사가 있으면 의존성 파일이 없는 repo 도 파일이 있으면 `건너뜀`이 아니라 검사 대상이다(tree 검사).
 
 ## 일괄 작업, 가져오기, 내보내기

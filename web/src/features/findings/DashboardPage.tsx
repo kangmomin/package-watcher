@@ -1,6 +1,6 @@
 // 대시보드 `/`.
 // 구성: SummaryCards + 탭 2개("검출" 기본 / "위험한 설정") + 각 탭의 FindingsFilters·표·Pager.
-// 탭의 선택은 URL query(`?tab=policy`)에 둔다. 탭마다 필터와 page 가 따로이고, 탭을 바꾸면 그 탭의 page 는 1부터다.
+// 탭의 선택은 URL query(`?tab=policy`)에 둔다. 탭마다 필터와 page 가 따로이고 탭을 바꿔도 유지된다(필터를 바꾸면 그 탭의 page 는 1).
 // 초기 요청 = /api/findings?status=open&excludeCategory=policy&page=1&limit=50. 필터 변경 → page=1.
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router";
@@ -38,12 +38,16 @@ export function DashboardPage() {
   const [pages, setPages] = useState<Record<TabId, number>>({ findings: 1, policy: 1 });
   const summary = useSummary().data;
 
-  // 링크(요약 카드)로 탭이 바뀌어도 그 탭의 page 는 1부터다. 렌더 중에 맞춘다.
-  const [shownTab, setShownTab] = useState(tab);
-  if (shownTab !== tab) {
-    setShownTab(tab);
-    setPages((prev) => ({ ...prev, [tab]: 1 }));
-  }
+  // 탭마다 필터와 page 를 따로 유지한다. 핸들러는 참조를 고정한다 — FindingsFilters 의 debounce 타이머가 부모의 re-render 로 다시 시작되지 않게.
+  const changeFilter = useCallback((kind: TabId, next: FindingsFilter) => {
+    setFilters((prev) => ({ ...prev, [kind]: next }));
+    setPages((prev) => ({ ...prev, [kind]: 1 }));
+  }, []);
+  const changePage = useCallback((kind: TabId, page: number) => setPages((prev) => ({ ...prev, [kind]: page })), []);
+  const changeFindingsFilter = useCallback((next: FindingsFilter) => changeFilter("findings", next), [changeFilter]);
+  const changePolicyFilter = useCallback((next: FindingsFilter) => changeFilter("policy", next), [changeFilter]);
+  const changeFindingsPage = useCallback((page: number) => changePage("findings", page), [changePage]);
+  const changePolicyPage = useCallback((page: number) => changePage("policy", page), [changePage]);
 
   const handleTabChange = (next: string) => {
     const nextParams = new URLSearchParams(params);
@@ -67,11 +71,8 @@ export function DashboardPage() {
             kind="findings"
             filter={filters.findings}
             page={pages.findings}
-            onFilterChange={(next) => {
-              setFilters((prev) => ({ ...prev, findings: next }));
-              setPages((prev) => ({ ...prev, findings: 1 }));
-            }}
-            onPageChange={(page) => setPages((prev) => ({ ...prev, findings: page }))}
+            onFilterChange={changeFindingsFilter}
+            onPageChange={changeFindingsPage}
           />
         </TabsContent>
         <TabsContent value="policy">
@@ -79,11 +80,8 @@ export function DashboardPage() {
             kind="policy"
             filter={filters.policy}
             page={pages.policy}
-            onFilterChange={(next) => {
-              setFilters((prev) => ({ ...prev, policy: next }));
-              setPages((prev) => ({ ...prev, policy: 1 }));
-            }}
-            onPageChange={(page) => setPages((prev) => ({ ...prev, policy: page }))}
+            onFilterChange={changePolicyFilter}
+            onPageChange={changePolicyPage}
           />
         </TabsContent>
       </Tabs>
@@ -103,7 +101,6 @@ function FindingsTab({ kind, filter, page, onFilterChange, onPageChange }: Findi
   const findings = useFindings({ ...filter, ...TAB_SCOPE[kind] }, page);
   const data = findings.data;
   const isUnconfirmed = isUnconfirmedPage(findings);
-  const handleFilterChange = useCallback((next: FindingsFilter) => onFilterChange(next), [onFilterChange]);
 
   // 보던 페이지가 비었으면(검출이 줄어듦) 마지막 페이지로 옮긴다.
   const lastPage = emptyPageFallback(findings);
@@ -113,7 +110,7 @@ function FindingsTab({ kind, filter, page, onFilterChange, onPageChange }: Findi
 
   return (
     <>
-      <FindingsFilters filter={filter} onFilterChange={handleFilterChange} variant={kind} />
+      <FindingsFilters filter={filter} onFilterChange={onFilterChange} variant={kind} />
       <DataState
         {...firstLoadState(findings)}
         isEmpty={data?.total === 0}

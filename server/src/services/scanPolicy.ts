@@ -1,6 +1,7 @@
 import { POLICY_CHECK_IDS, POLICY_ECOSYSTEM, type BlacklistEntry, type PolicyCheckId } from "@pw/shared";
 import type { Logger } from "../logger.ts";
 import { isRunCommand, type SourceFacts, type SourceKind } from "../sources/index.ts";
+import { isExcludedPath } from "../ecosystems/index.ts";
 import { cleanVersion } from "./common.ts";
 import { MAX_INDICATOR_MATCHES, createLimiter, type IndicatorMatch } from "./scanIndicators.ts";
 
@@ -66,29 +67,100 @@ const compareCandidates = (a: Candidate, b: Candidate): number =>
   compare(a.filePath, b.filePath) || compare(a.packageName, b.packageName) || compare(a.version, b.version);
 
 const SHA_1 = /^[0-9a-f]{40}$/i;
-function hasControlChar(text: string): boolean {
+/** 보이지 않거나 방향을 바꾸는 유니코드: 서식 문자(Cf: U+202A-202E, U+2066-2069, U+200B-200F, U+FEFF 등)와 줄·문단 구분자 */
+const INVISIBLE_UNICODE = /[\p{Cf}\p{Zl}\p{Zp}]/u;
+
+/** 경로에 ASCII 제어 문자(0x20 미만, 0x7f)나 보이지 않는 유니코드가 있는가. ZWJ(U+200D)도 잡는다. */
+function hasSuspiciousChar(text: string): boolean {
   for (let index = 0; index < text.length; index += 1) {
     const code = text.charCodeAt(index);
     if (code < 0x20 || code === 0x7f) return true;
   }
-  return false;
+  return INVISIBLE_UNICODE.test(text);
 }
+
 /** `user/repo`, `user/repo#ref` 축약형 (npm 이 GitHub 으로 읽는다) */
 const GITHUB_SHORTHAND = /^[A-Za-z0-9][\w.-]*\/[\w.-]+(?:#\S*)?$/;
-const REGISTRY_PREFIXES = ["git+", "git://", "http://", "https://", "github:", "gitlab:", "bitbucket:"];
+/** `github.com/user/repo` 처럼 호스트(점이 든 첫 조각)로 시작하는 경로 */
+const HOST_PATH = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+\/[\w.~%-]+(?:\/[\w.~%-]+)*(?:#\S*)?$/;
+const REGISTRY_PREFIXES = [
+  "git+",
+  "git://",
+  "git@",
+  "ssh://",
+  "http://",
+  "https://",
+  "github:",
+  "gitlab:",
+  "bitbucket:",
+];
 const EXCLUDED_PREFIXES = ["workspace:", "link:", "npm:"];
 const ARCHIVE_SUFFIX = /\.(?:tgz|tar\.gz)$/;
-const RELATIVE_PATH = /^(?:\.{1,2}\/|~\/|\/)/;
 
-/** registry 밖에서 받는 spec 인가: git·URL·`user/repo`, 그리고 `.tgz` 파일(`file:` 또는 상대 경로) */
+/** `#해시`·`?쿼리`를 뗀 앞부분 */
+function withoutFragment(text: string): string {
+  const cut = [text.indexOf("#"), text.indexOf("?")].filter((index) => index >= 0);
+  return cut.length === 0 ? text : text.slice(0, Math.min(...cut));
+}
+
+/** registry 밖에서 받는 spec 인가: git·URL·`user/repo`·`host.tld/u/r`, 그리고 `.tgz` 파일 (`file:` 폴더는 제외) */
 export function isNonRegistrySpec(spec: string): boolean {
   const trimmed = spec.trim();
   const lower = trimmed.toLowerCase();
   if (EXCLUDED_PREFIXES.some((prefix) => lower.startsWith(prefix))) return false;
   if (REGISTRY_PREFIXES.some((prefix) => lower.startsWith(prefix))) return true;
-  if (GITHUB_SHORTHAND.test(trimmed)) return true;
-  return (lower.startsWith("file:") || RELATIVE_PATH.test(lower)) && ARCHIVE_SUFFIX.test(lower);
+  if (GITHUB_SHORTHAND.test(trimmed) || HOST_PATH.test(trimmed)) return true;
+  return ARCHIVE_SUFFIX.test(withoutFragment(lower));
 }
+
+/**
+ * 실행 파일(bin) 이름 → 그 bin 을 내는 패키지. `npx <bin>` 은 패키지 이름이 아니라 bin 이름이라서,
+ * 그 패키지가 선언돼 있으면 로컬 실행 파일로 보고 제외한다. 이름으로만 판정한다.
+ */
+export const BIN_PACKAGES: Readonly<Record<string, readonly string[]>> = {
+  tsc: ["typescript"],
+  tsserver: ["typescript"],
+  ng: ["@angular/cli"],
+  nest: ["@nestjs/cli"],
+  sb: ["storybook"],
+  storybook: ["storybook"],
+  babel: ["@babel/cli"],
+  jest: ["jest"],
+  vitest: ["vitest"],
+  eslint: ["eslint"],
+  prettier: ["prettier"],
+  turbo: ["turbo"],
+  vite: ["vite"],
+  next: ["next"],
+  nuxt: ["nuxt", "nuxi"],
+  nuxi: ["nuxt", "nuxi"],
+  webpack: ["webpack", "webpack-cli"],
+  rollup: ["rollup"],
+  tsx: ["tsx"],
+  playwright: ["@playwright/test", "playwright"],
+  cap: ["@capacitor/cli"],
+  expo: ["expo"],
+  "react-native": ["react-native", "@react-native-community/cli"],
+  prisma: ["prisma"],
+  "drizzle-kit": ["drizzle-kit"],
+  wrangler: ["wrangler"],
+  firebase: ["firebase-tools"],
+  supabase: ["supabase"],
+  vercel: ["vercel"],
+  tailwindcss: ["tailwindcss"],
+  cypress: ["cypress"],
+  mocha: ["mocha"],
+  tsup: ["tsup"],
+  esbuild: ["esbuild"],
+  nx: ["nx"],
+  lerna: ["lerna"],
+  "ts-node": ["ts-node"],
+  nodemon: ["nodemon"],
+  "semantic-release": ["semantic-release"],
+};
+
+const depthOf = (path: string): number => path.split("/").length;
+const isShallower = (a: string, b: string): boolean => depthOf(a) < depthOf(b) || (depthOf(a) === depthOf(b) && a < b);
 
 /** `node_modules/<x>/package.json` 꼴이면 그 `node_modules` 폴더의 경로. 아니면 null (정규식 없이 조각으로 본다) */
 function committedNodeModulesFolder(path: string): string | null {
@@ -126,7 +198,7 @@ function unpinnedActions(input: PolicyInput): Candidate[] {
 
 function missingLockfiles(input: PolicyInput): Candidate[] {
   return input.manifests
-    .filter((manifest) => !manifest.locked && manifest.dependencies.length > 0)
+    .filter((manifest) => !manifest.locked && manifest.dependencies.length > 0 && !isExcludedPath(manifest.path))
     .map((manifest) => ({ filePath: manifest.path, packageName: "package.json", version: "" }));
 }
 
@@ -143,17 +215,19 @@ function nonRegistryDependencies(input: PolicyInput): Candidate[] {
 }
 
 function unpinnedExecs(input: PolicyInput): Candidate[] {
-  // 같은 repo 의 package.json 에 선언된 이름은 로컬 실행 파일이다 (`npx vitest`).
+  // 같은 repo 의 package.json 에 선언된 패키지가 내는 실행 파일은 로컬 실행 파일이다 (`npx vitest`, `npx tsc`).
   const declared = new Set(input.manifests.flatMap((manifest) => manifest.dependencies.map((dep) => dep.name)));
+  const scopedTails = new Set([...declared].filter((name) => name.startsWith("@")).map((name) => name.slice(name.indexOf("/") + 1)));
+  const isLocal = (name: string): boolean =>
+    declared.has(name) || scopedTails.has(name) || (Object.hasOwn(BIN_PACKAGES, name) && (BIN_PACKAGES[name] ?? []).some((pkg) => declared.has(pkg)));
   const found: Candidate[] = [];
   for (const source of input.sources) {
     for (const command of source.commands) {
-      if (!isRunCommand(command) || command.version !== "" || declared.has(command.name)) continue;
-      found.push({
-        filePath: source.path,
-        packageName: command.name,
-        version: cleanVersion(versionPartOf(command.raw)),
-      });
+      if (!isRunCommand(command) || command.version !== "" || isLocal(command.name)) continue;
+      const version = versionPartOf(command.raw);
+      // `pkg@${VERSION}` 은 변수로 고정한 것이다. 버전 없음이 아니다.
+      if (version.includes("$")) continue;
+      found.push({ filePath: source.path, packageName: command.name, version: cleanVersion(version) });
     }
   }
   return found;
@@ -244,9 +318,15 @@ export function createPolicyRules(snapshot: BlacklistEntry[]): PolicyRules {
         const suspicious: Candidate[] = [];
         for (const [index, path] of sorted.entries()) {
           if (index > 0 && index % YIELD_EVERY_PATHS === 0) await yieldToLoop();
-          if (wantNodeModules && nodeModulesFolder === null) nodeModulesFolder = committedNodeModulesFolder(path);
+          if (wantNodeModules) {
+            const folder = committedNodeModulesFolder(path);
+            // 가장 얕은 폴더(조각 수가 적은 것), 같으면 정렬순. 폴더가 여러 개여도 검출 키는 1개로 고정한다.
+            if (folder !== null && (nodeModulesFolder === null || isShallower(folder, nodeModulesFolder))) {
+              nodeModulesFolder = folder;
+            }
+          }
           // 정렬했으므로 상한을 넘는 것은 앞에서 이미 정해졌다. 경고를 내려고 1건만 더 모은다.
-          if (wantSuspicious && suspicious.length <= MAX_INDICATOR_MATCHES && hasControlChar(path)) {
+          if (wantSuspicious && suspicious.length <= MAX_INDICATOR_MATCHES && hasSuspiciousChar(path)) {
             suspicious.push({ filePath: path, packageName: "제어 문자", version: "" });
           }
         }

@@ -234,7 +234,7 @@ export function createMcpServer(services: AppServices, logger: Logger = consoleL
 
   register(
     "list_findings",
-    "검출 목록을 조회한다 (GET /api/findings). 결과: Page<Finding>",
+    "검출 목록을 조회한다 (GET /api/findings). 기본 목록(category·excludeCategory 없음)에는 위험한 설정(policy)이 섞인다. 검출만 보려면 excludeCategory: \"policy\" 를 준다. 결과: Page<Finding>",
     FINDINGS_QUERY,
     (args) => services.findings.list(args),
   );

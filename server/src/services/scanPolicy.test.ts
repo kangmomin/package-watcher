@@ -36,6 +36,14 @@ describe("scanPolicy", () => {
     ["latest", false],
     ["1.x || >=2 <3", false],
     ["", false],
+    ["git@github.com:x/y.git", true],
+    ["ssh://git@github.com/x/y.git", true],
+    ["git+ssh://git@github.com/x/y.git", true],
+    ["github.com/x/y", true],
+    ["gitlab.example.org/x/y#main", true],
+    ["file:vendor/a.tgz#abc", true],
+    ["a.tgz?token=1", true],
+    ["file:../pkgs/a#hash", false],
   ])("[SD-80] registry 밖의 spec 판정: %s → %s", (spec, expected) => {
     expect(isNonRegistrySpec(spec)).toBe(expected);
   });

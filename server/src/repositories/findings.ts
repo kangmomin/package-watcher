@@ -56,6 +56,8 @@ export interface FindingsRepository {
   countByStatus(status: FindingStatus): number;
   /** `policy` 검출의 수 */
   countPolicyByStatus(status: FindingStatus): number;
+  /** repo 별 open 검출 수 (`policy` 제외). 검출이 없는 repo 는 없다 */
+  openCountsByRepo(): Map<string, number>;
   listActive(): Finding[];
   listOpen(): Finding[];
   /**
@@ -142,6 +144,10 @@ export function createFindingsRepository(db: Db): FindingsRepository {
   );
   const countPolicyStmt = db.prepare<[string], { count: number }>(
     `SELECT COUNT(*) AS count FROM findings WHERE status = ? AND ecosystem = '${POLICY_ECOSYSTEM}'`,
+  );
+  const openByRepoStmt = db.prepare<[], { repo: string; count: number }>(
+    `SELECT repo, COUNT(*) AS count FROM findings
+     WHERE status = 'open' AND ecosystem <> '${POLICY_ECOSYSTEM}' GROUP BY repo ORDER BY repo`,
   );
   const activeStmt = db.prepare<[], FindingRow>(
     `SELECT ${COLUMNS} FROM findings WHERE ${ACTIVE} ${ORDER}`,
@@ -245,6 +251,7 @@ export function createFindingsRepository(db: Db): FindingsRepository {
     },
     countByStatus: (status) => countStmt.get(status)?.count ?? 0,
     countPolicyByStatus: (status) => countPolicyStmt.get(status)?.count ?? 0,
+    openCountsByRepo: () => new Map(openByRepoStmt.all().map((row) => [row.repo, row.count])),
     listActive: () => activeStmt.all().map(toFinding),
     listOpen: () => openStmt.all().map(toFinding),
     listUnnotifiedOpen: (minRank) => unnotifiedStmt.all(minRank).map(toFinding),
