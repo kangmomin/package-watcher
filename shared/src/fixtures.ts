@@ -21,6 +21,8 @@ const T2 = "2026-11-13T00:00:00.000Z";
 
 export const blacklistEntryRanged: BlacklistEntry = {
   id: 1,
+  source: "manual",
+  externalId: null,
   ecosystem: "npm",
   name: "lodash",
   versionRange: "<4.17.21",
@@ -35,6 +37,8 @@ export const blacklistEntryRanged: BlacklistEntry = {
 
 export const blacklistEntryAllVersions: BlacklistEntry = {
   id: 2,
+  source: "manual",
+  externalId: null,
   ecosystem: "npm",
   name: "evil-pkg",
   versionRange: null,
@@ -384,6 +388,7 @@ export const settingsDefault: Settings = {
   githubTokenSource: "env",
   smtpConfigured: true,
   notifyMinSeverity: "low",
+  feedEnabled: true,
 };
 
 export const settingsUnconfigured: Settings = {
@@ -395,6 +400,7 @@ export const settingsUnconfigured: Settings = {
   githubTokenSource: "none",
   smtpConfigured: false,
   notifyMinSeverity: "low",
+  feedEnabled: true,
 };
 
 // ---------------------------------------------------------------- Page / 기타
