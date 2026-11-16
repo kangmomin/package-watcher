@@ -1,4 +1,4 @@
-import { SEVERITY_RANK, type Finding, type TestEmailResult } from "@pw/shared";
+import { SEVERITY_RANK, usesVersionRange, type Finding, type TestEmailResult } from "@pw/shared";
 import { createTransport } from "nodemailer";
 import type { Clock } from "../clock.ts";
 import type { SmtpConfig } from "../config.ts";
@@ -104,6 +104,10 @@ function compareFindings(a: Finding, b: Finding): number {
   );
 }
 
+// 흔적 종류(path·content·branch)는 버전이 없어서 `name@` 로 끝나는 어색한 표시를 `-` 로 바꾼다. 기존 종류는 그대로다.
+const versionLabel = (finding: Finding): string =>
+  finding.version === "" && !usesVersionRange(finding.ecosystem) ? "-" : finding.version;
+
 /**
  * 즉시 메일과 일일 요약이 함께 쓰는 렌더러. 검출 행은 최대 MAIL_MAX_ROWS 개(repo 제목 행은 세지 않는다, S-2).
  * 심각도 순으로 정렬하므로 repo 제목은 repo 가 바뀔 때마다 출력한다(같은 repo 가 다시 나올 수 있다).
@@ -120,7 +124,7 @@ export function renderFindings(findings: Finding[]): string {
       currentRepo = finding.repo;
     }
     lines.push(
-      `- [${finding.severity}][${finding.ecosystem}] ${finding.filePath}: ${finding.packageName}@${finding.version} (${typeLabel(finding)}) — 사유: ${finding.reason}`,
+      `- [${finding.severity}][${finding.ecosystem}] ${finding.filePath}: ${finding.packageName}@${versionLabel(finding)} (${typeLabel(finding)}) — 사유: ${finding.reason}`,
       `  ${finding.htmlUrl}`,
     );
   }

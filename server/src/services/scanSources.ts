@@ -56,13 +56,16 @@ export const sourceFileOf = (entry: TreeEntry): SourceFile | null => {
   return kind ? { ...entry, kind } : null;
 };
 
-/** 파일 종류마다 그 파일에서 나오는 결과의 종류(명령은 npm·pypi, action, 이미지)의 활성 항목이 있을 때만 받는다. */
+/**
+ * 파일 종류마다 그 파일에서 나오는 결과의 종류(명령은 npm·pypi, action, 이미지)의 활성 항목이 있을 때만 받는다.
+ * content(문자열 찾기)는 받은 모든 파일의 내용을 보므로 어느 종류든 받는다.
+ */
 const KIND_ECOSYSTEMS: Record<SourceKind, readonly string[]> = {
-  workflow: ["npm", "pypi", "actions", "docker"],
-  action: ["npm", "pypi", "actions", "docker"],
-  dockerfile: ["npm", "pypi", "docker"],
-  compose: ["docker"],
-  mcp: ["npm", "pypi"],
+  workflow: ["npm", "pypi", "actions", "docker", "content"],
+  action: ["npm", "pypi", "actions", "docker", "content"],
+  dockerfile: ["npm", "pypi", "docker", "content"],
+  compose: ["docker", "content"],
+  mcp: ["npm", "pypi", "content"],
 };
 
 /** 이 종류의 보조 파일을 받아야 하는가 (GitHub 요청을 늘리지 않는다). */
@@ -200,6 +203,8 @@ export async function scanSources(
   files: SourceFile[],
   logger: Logger,
   activeEcosystems?: ReadonlySet<string>,
+  /** 받은 파일의 (경로 → 내용)을 담는다 (content 검사용, 같은 파일을 다시 받지 않게) */
+  received?: Map<string, string>,
 ): Promise<{ matches: SourceMatch[]; fileCount: number }> {
   // 호출자가 활성 종류를 주면 그 종류에서 쓸 수 있는 파일만 받는다.
   const fetchable = activeEcosystems ? files.filter((file) => needsSourceKind(file.kind, activeEcosystems)) : files;
@@ -210,6 +215,7 @@ export async function scanSources(
   fetchable.forEach((file, index) => {
     const where = `${org}/${repo.name}/${file.path}`;
     const content = contents[index] ?? "";
+    received?.set(file.path, content);
     if (content.length > MAX_SOURCE_LENGTH) {
       logger.warn(`보조 파일이 너무 커서 건너뜁니다: ${where}`);
       return;

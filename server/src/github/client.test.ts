@@ -162,3 +162,40 @@ describe("createOctokitClient (fetch mock)", () => {
     expect(Date.now() - started).toBeLessThan(5_000);
   });
 });
+
+describe("listBranches (fetch mock)", () => {
+  const branchPath = "/repos/my-org/svc/branches";
+
+  it("[SC-50] Link 헤더의 모든 페이지를 받아 이름 배열로 반환하고 per_page 는 100 이다", async () => {
+    const mock = createFetchMock(({ url }) => {
+      if (url.pathname !== branchPath) return NOT_FOUND;
+      const page = url.searchParams.get("page") ?? "1";
+      if (page === "1") {
+        const next = `${API}${branchPath}?per_page=100&page=2`;
+        return {
+          status: 200,
+          body: [{ name: "main" }, { name: "wfx-docs" }],
+          headers: { link: `<${next}>; rel="next", <${next}>; rel="last"` },
+        };
+      }
+      return { status: 200, body: [{ name: "chore/x" }] };
+    });
+    const client = createOctokitClient({ token: "test-token", fetch: mock.fetch });
+
+    await expect(client.listBranches("my-org", "svc")).resolves.toEqual(["main", "wfx-docs", "chore/x"]);
+    expect(mock.calls[0]?.url.searchParams.get("per_page")).toBe("100");
+  });
+
+  it("[SC-51] 404 와 빈 repo(409)는 빈 배열이고 그 외 오류는 throw 한다", async () => {
+    const mock = createFetchMock(({ url }) => {
+      if (url.pathname === "/repos/my-org/empty/branches") return { status: 409, body: { message: "empty" } };
+      if (url.pathname === "/repos/my-org/gone/branches") return NOT_FOUND;
+      return { status: 500, body: { message: "boom" } };
+    });
+    const client = createOctokitClient({ token: "test-token", fetch: mock.fetch });
+
+    await expect(client.listBranches("my-org", "empty")).resolves.toEqual([]);
+    await expect(client.listBranches("my-org", "gone")).resolves.toEqual([]);
+    await expect(client.listBranches("my-org", "bad")).rejects.toThrow(/500/);
+  });
+});

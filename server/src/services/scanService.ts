@@ -50,6 +50,7 @@ import { assignLockfiles, dirOf, readWorkspaceGlobs } from "../workspaces.ts";
 import { mapWithConcurrency, parseInput, toIso } from "./common.ts";
 import { isEntryActive, todayKst } from "./entryActivity.ts";
 import type { Notifier } from "./notifier.ts";
+import { createIndicatorRules, type IndicatorRules } from "./scanIndicators.ts";
 import { needsSourceKind, scanSources, sourceFileOf, type SourceFile } from "./scanSources.ts";
 
 const NPM: Ecosystem = "npm";
@@ -169,8 +170,15 @@ function isSameRepo(fullName: string, org: string, repo: string): boolean {
   );
 }
 
+const BRANCH_REF_PREFIX = "refs/heads/";
+
 // org·repo·경로 조각을 percent-encoding 한다 — 근거: 공백·`#` 이 든 경로도 유효한 URL 이 되게 한다(일반 이름은 계약 형식과 같다).
+// branch 검출(`refs/heads/<이름>`)은 파일이 아니라 브랜치의 tree 로 연결한다.
 function htmlUrlOf(org: string, repo: string, filePath: string): string {
+  if (filePath.startsWith(BRANCH_REF_PREFIX)) {
+    const branch = filePath.slice(BRANCH_REF_PREFIX.length).split("/").map(encodeURIComponent).join("/");
+    return `https://github.com/${encodeURIComponent(org)}/${encodeURIComponent(repo)}/tree/${branch}`;
+  }
   const path = filePath.split("/").map(encodeURIComponent).join("/");
   return `https://github.com/${encodeURIComponent(org)}/${encodeURIComponent(repo)}/blob/HEAD/${path}`;
 }
@@ -258,6 +266,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     repo: RepoInfo,
     entryIndex: EntryIndex<BlacklistEntry>,
     activeEcosystems: ReadonlySet<string>,
+    indicators: IndicatorRules,
   ): Promise<{ declaredCount: number; fileCount: number; matches: Match[] }> {
     const tree = await client.getTree(org, repo.name, repo.defaultBranch);
     if (tree.truncated) {
@@ -271,6 +280,10 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     const yamlCandidates: TreeEntry[] = [];
     const otherFiles = new Map<FileEcosystem, { manifests: TreeEntry[]; locks: TreeEntry[] }>();
     let otherManifestCount = 0;
+    // path 는 제외 폴더(node_modules 등)를 포함한 tree 전체를 본다. 파일을 받지 않는다.
+    const matches: Match[] = indicators.hasPath
+      ? indicators.matchPaths(repo.name, `${org}/${repo.name}`, tree.entries.map((entry) => entry.path), logger)
+      : [];
     for (const entry of tree.entries) {
       if (isInNodeModules(entry.path)) continue;
       const name = baseName(entry.path);
@@ -298,25 +311,41 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       }
     }
     // 선언 파일과 보조 파일이 모두 0개면 검사할 프로젝트가 아니다(실패 아님). 읽지 않는 종류의 파일도 센다.
-    const declaredCount = packageJsons.length + otherManifestCount + sourceFiles.length;
+    // 단 path·branch 항목이 활성이면 tree 와 브랜치만으로 검사할 수 있으므로, 파일이 있는 repo 는 최소 1로 센다
+    // (skipped 가 되거나 finalize 가 흔적 검출을 resolve 하지 않게).
+    const traceable = (indicators.hasPath || indicators.hasBranch) && tree.entries.length > 0;
+    const declaredCount = Math.max(
+      packageJsons.length + otherManifestCount + sourceFiles.length,
+      traceable ? 1 : 0,
+    );
     if (declaredCount === 0) return { declaredCount: 0, fileCount: 0, matches: [] };
 
-    const npm = await scanNpm(org, client, repo, entryIndex, { packageJsons, lockfiles, bunLockbs, yamlCandidates });
-    const matches = [...npm.matches];
+    if (indicators.hasBranch) {
+      const branches = await client.listBranches(org, repo.name);
+      matches.push(...indicators.matchBranches(repo.name, `${org}/${repo.name}`, branches, logger));
+    }
+
+    // content 검사용: 이 스캔이 받은 모든 파일의 (경로 → 내용)
+    const received = new Map<string, string>();
+    const npm = await scanNpm(org, client, repo, entryIndex, { packageJsons, lockfiles, bunLockbs, yamlCandidates }, received);
+    matches.push(...npm.matches);
     let fileCount = npm.fileCount;
     // 블랙리스트에 활성 항목이 있는 종류의 파일만 받는다(GitHub 요청 수를 늘리지 않는다).
     for (const [ecosystem, files] of otherFiles) {
       if (!activeEcosystems.has(ecosystem)) continue;
-      const result = await scanEcosystem(org, client, repo, entryIndex, ecosystem, files);
+      const result = await scanEcosystem(org, client, repo, entryIndex, ecosystem, files, received);
       matches.push(...result.matches);
       fileCount += result.fileCount;
     }
     // 보조 파일은 그 파일에서 나오는 종류의 활성 항목이 있을 때만 받는다.
     const wantedSources = sourceFiles.filter((file) => needsSourceKind(file.kind, activeEcosystems));
     if (wantedSources.length > 0) {
-      const result = await scanSources(org, client, repo, entryIndex, wantedSources, logger);
+      const result = await scanSources(org, client, repo, entryIndex, wantedSources, logger, undefined, received);
       matches.push(...result.matches);
       fileCount += result.fileCount;
+    }
+    if (indicators.hasContent) {
+      matches.push(...indicators.matchContents(repo.name, `${org}/${repo.name}`, received, logger));
     }
     return { declaredCount, fileCount, matches };
   }
@@ -333,6 +362,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       bunLockbs: TreeEntry[];
       yamlCandidates: TreeEntry[];
     },
+    received: Map<string, string>,
   ): Promise<{ matches: Match[]; fileCount: number }> {
     const { packageJsons, lockfiles, bunLockbs, yamlCandidates } = files;
     // package.json 이 0개면 Node 프로젝트가 아니다.
@@ -358,6 +388,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     await mapWithConcurrency(toFetch, FILE_CONCURRENCY, async (entry) => {
       contents.set(entry.path, await client.getFile(org, repo.name, entry.sha));
     });
+    for (const [path, content] of contents) received.set(path, content);
     const contentOf = (path: string): string => contents.get(path) ?? "";
 
     const manifests = new Map<string, Manifest>();
@@ -446,6 +477,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     entryIndex: EntryIndex<BlacklistEntry>,
     ecosystem: FileEcosystem,
     files: { manifests: TreeEntry[]; locks: TreeEntry[] },
+    received: Map<string, string>,
   ): Promise<{ matches: Match[]; fileCount: number }> {
     const support = ECOSYSTEM_SUPPORT[ecosystem];
     const toFetch = [...files.manifests, ...files.locks];
@@ -453,6 +485,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     await mapWithConcurrency(toFetch, FILE_CONCURRENCY, async (entry) => {
       contents.set(entry.path, await client.getFile(org, repo.name, entry.sha));
     });
+    for (const [path, content] of contents) received.set(path, content);
     const manifests: ParsedManifest[] = files.manifests.map((entry) => ({
       path: entry.path,
       deps: support.parseManifest(entry.path, contents.get(entry.path) ?? ""),
@@ -486,6 +519,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     const targets = unique.filter((repo) => !repo.archived && !repo.fork);
 
     const entryIndex = createEntryIndex(snapshot);
+    const indicators = createIndicatorRules(snapshot);
     const activeEcosystems = new Set(snapshot.map((entry) => entry.ecosystem));
 
     // 대상 목록을 받은 직후에 오래된 기록을 지우고 repo 마다 pending 행을 만든다.
@@ -505,7 +539,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       if (rateLimited) return { repo: repo.name, ok: false, error: RATE_LIMITED };
       track("repo 시작", () => repos.scanRepos.markRunning(scanId, repo.name, toIso(clock.now())));
       try {
-        return { repo: repo.name, ok: true, ...(await scanRepo(org, client, repo, entryIndex, activeEcosystems)) };
+        return { repo: repo.name, ok: true, ...(await scanRepo(org, client, repo, entryIndex, activeEcosystems, indicators)) };
       } catch (error) {
         if (error instanceof RateLimitedError) rateLimited = true;
         return { repo: repo.name, ok: false, error: describeError(error) };

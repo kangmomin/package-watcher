@@ -14,6 +14,7 @@ import {
   SEVERITIES,
   SEVERITY_RANK,
   SUPPORTED_ECOSYSTEMS,
+  usesVersionRange,
   type BlacklistEntry,
   type BlacklistInput,
   type Ecosystem,
@@ -35,13 +36,25 @@ import {
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { EcosystemSelectItems } from "@/components/EcosystemSelectItems";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useCreateBlacklistEntry, useUpdateBlacklistEntry } from "@/features/blacklist/hooks";
 import { useSettings } from "@/features/settings/hooks";
 import type { ApiRequestError } from "@/lib/api";
 import { errorToastMessage, hasErrorCode } from "@/lib/errors";
-import { applyServerFieldErrors, errorId, fieldErrorAria, isIncompleteDate, schemaResolver } from "@/lib/form";
+import {
+  applyServerFieldErrors,
+  errorId,
+  fieldErrorAria,
+  isIncompleteDate,
+  schemaResolver,
+} from "@/lib/form";
 
 export interface BlacklistDialogProps {
   open: boolean;
@@ -73,7 +86,31 @@ interface BlacklistFormProps {
   onSave: (input: BlacklistInput, callbacks: SaveCallbacks) => void;
 }
 
-const FORM_FIELDS = ["name", "versionRange", "reason", "ecosystem", "severity", "enabled", "expiresAt"] as const;
+const FORM_FIELDS = [
+  "name",
+  "versionRange",
+  "reason",
+  "ecosystem",
+  "severity",
+  "enabled",
+  "expiresAt",
+] as const;
+
+// 침해의 흔적 종류의 이름 입력: 라벨과 안내. 패키지·CI 종류는 기본 라벨("이름")과 `*` 안내를 쓴다.
+const INDICATOR_NAME_UI: Partial<Record<Ecosystem, { label: string; hint: string }>> = {
+  path: {
+    label: "파일 경로 또는 패턴",
+    hint: "`*`는 임의의 문자열입니다. `/`가 없으면 파일 이름과도 비교합니다.",
+  },
+  content: {
+    label: "찾을 문자열",
+    hint: "글자 그대로 찾습니다(대소문자 무시). 스캔이 읽는 파일(의존성 파일, workflow, Dockerfile 등)에서만 찾습니다.",
+  },
+  branch: {
+    label: "브랜치 이름 또는 패턴",
+    hint: "`*`는 임의의 문자열입니다. 이 종류의 항목이 있으면 스캔이 repo마다 브랜치 목록을 받습니다.",
+  },
+};
 
 const INCOMPLETE_DATE_ERROR = "incompleteDate";
 const INCOMPLETE_DATE_MESSAGE = "날짜를 끝까지 입력하거나 모두 지우십시오";
@@ -142,16 +179,24 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
     name: ["severity", "enabled", "ecosystem"],
   });
   const rule = ECOSYSTEM_RULES[ecosystem];
+  const showRange = usesVersionRange(ecosystem);
+  const indicatorUi = INDICATOR_NAME_UI[ecosystem];
   const normalizesName = ecosystem === "pypi" || ecosystem === "nuget";
 
   // 종류가 바뀌면 이미 오류가 표시된 이름·범위만 새 종류의 규칙으로 다시 검증한다.
   // (제출 전에는 재검증이 돌지 않아 오류가 이전 종류의 것으로 남는다. 입력하지 않은 필드에는 오류를 새로 띄우지 않는다.)
   const revalidateAfterEcosystemChange = () => {
-    const fields = (["name", "versionRange"] as const).filter((field) => form.getFieldState(field).error);
+    const fields = (["name", "versionRange"] as const).filter(
+      (field) =>
+        form.getFieldState(field).error &&
+        (field === "name" || usesVersionRange(form.getValues("ecosystem"))),
+    );
     if (fields.length > 0) void form.trigger(fields);
   };
   const showSeverityHint =
-    notifyMinSeverity !== undefined && enabled && SEVERITY_RANK[severity] < SEVERITY_RANK[notifyMinSeverity];
+    notifyMinSeverity !== undefined &&
+    enabled &&
+    SEVERITY_RANK[severity] < SEVERITY_RANK[notifyMinSeverity];
 
   const handleError = (error: ApiRequestError) => {
     if (hasErrorCode(error, "DUPLICATE_ENTRY")) {
@@ -203,7 +248,8 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
   const expiresAtField = form.register("expiresAt", {
     onChange: () => {
       // 제출 전에는 재검증이 돌지 않으므로 직접 지운다.
-      if (form.getFieldState("expiresAt").error?.type === INCOMPLETE_DATE_ERROR) form.clearErrors("expiresAt");
+      if (form.getFieldState("expiresAt").error?.type === INCOMPLETE_DATE_ERROR)
+        form.clearErrors("expiresAt");
     },
   });
 
@@ -225,7 +271,9 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
     <form onSubmit={handleSubmit} noValidate className="grid gap-4">
       <DialogHeader>
         <DialogTitle>{entry ? "블랙리스트 항목 수정" : "블랙리스트 항목 추가"}</DialogTitle>
-        <DialogDescription>종류·이름·버전 범위가 같은 항목은 하나만 둘 수 있습니다.</DialogDescription>
+        <DialogDescription>
+          종류·이름·버전 범위가 같은 항목은 하나만 둘 수 있습니다.
+        </DialogDescription>
       </DialogHeader>
       <p className="text-sm text-muted-foreground">* 표시는 필수 항목입니다</p>
       <FieldGroup className="gap-4">
@@ -242,6 +290,11 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
                 value={field.value}
                 onValueChange={(value) => {
                   field.onChange(value);
+                  // 범위를 쓰지 않는 종류로 바꾸면 입력해 둔 범위와 그 오류를 버린다(본문의 versionRange 는 null).
+                  if (!usesVersionRange(value as Ecosystem)) {
+                    form.setValue("versionRange", "");
+                    form.clearErrors("versionRange");
+                  }
                   revalidateAfterEcosystemChange();
                 }}
                 // 종류는 수정할 수 없다(서버도 400). 저장된 값은 계속 본문에 보낸다.
@@ -261,12 +314,17 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
               </Select>
             )}
           />
-          {entry && <FieldDescription id={hintIds.ecosystem}>종류는 바꿀 수 없습니다. 새 항목으로 등록하십시오</FieldDescription>}
+          {entry && (
+            <FieldDescription id={hintIds.ecosystem}>
+              종류는 바꿀 수 없습니다. 새 항목으로 등록하십시오
+            </FieldDescription>
+          )}
           <FieldError id={errorId(fieldIds.ecosystem)} errors={[errors.ecosystem]} />
         </Field>
         <Field data-invalid={errors.name ? true : undefined}>
           <FieldLabel htmlFor={fieldIds.name}>
-            이름<span aria-hidden="true">*</span>
+            {indicatorUi?.label ?? "이름"}
+            <span aria-hidden="true">*</span>
           </FieldLabel>
           <Input
             id={fieldIds.name}
@@ -276,31 +334,39 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
             {...form.register("name")}
           />
           <FieldDescription id={hintIds.name}>
-            <span className="block">
-              <code>*</code> 로 패턴을 쓸 수 있습니다
-            </span>
+            {indicatorUi ? (
+              <span className="block">{indicatorUi.hint}</span>
+            ) : (
+              <span className="block">
+                <code>*</code> 로 패턴을 쓸 수 있습니다
+              </span>
+            )}
             <span className="block">{`예: ${rule.nameExample}`}</span>
-            {normalizesName && <span className="block">저장할 때 이름을 소문자 표준 형태로 바꿉니다</span>}
+            {normalizesName && (
+              <span className="block">저장할 때 이름을 소문자 표준 형태로 바꿉니다</span>
+            )}
           </FieldDescription>
           <FieldError id={errorId(fieldIds.name)} errors={[errors.name]} />
         </Field>
-        <Field data-invalid={errors.versionRange ? true : undefined}>
-          <FieldLabel htmlFor={fieldIds.versionRange}>버전 범위</FieldLabel>
-          <Input
-            id={fieldIds.versionRange}
-            autoComplete="off"
-            placeholder="비우면 모든 버전"
-            {...errorAria("versionRange", hintIds.versionRange)}
-            {...form.register("versionRange")}
-          />
-          <FieldDescription id={hintIds.versionRange}>
-            <span className="block">{`예: ${rule.rangeExample}`}</span>
-            {categoryOf(ecosystem) === "ci" && (
-              <span className="block">범위가 아니라 정확한 값을 쉼표로 나눠 적습니다</span>
-            )}
-          </FieldDescription>
-          <FieldError id={errorId(fieldIds.versionRange)} errors={[errors.versionRange]} />
-        </Field>
+        {showRange && (
+          <Field data-invalid={errors.versionRange ? true : undefined}>
+            <FieldLabel htmlFor={fieldIds.versionRange}>버전 범위</FieldLabel>
+            <Input
+              id={fieldIds.versionRange}
+              autoComplete="off"
+              placeholder="비우면 모든 버전"
+              {...errorAria("versionRange", hintIds.versionRange)}
+              {...form.register("versionRange")}
+            />
+            <FieldDescription id={hintIds.versionRange}>
+              <span className="block">{`예: ${rule.rangeExample}`}</span>
+              {categoryOf(ecosystem) === "ci" && (
+                <span className="block">범위가 아니라 정확한 값을 쉼표로 나눠 적습니다</span>
+              )}
+            </FieldDescription>
+            <FieldError id={errorId(fieldIds.versionRange)} errors={[errors.versionRange]} />
+          </Field>
+        )}
         <Field data-invalid={errors.severity ? true : undefined}>
           <FieldLabel htmlFor={fieldIds.severity}>
             심각도<span aria-hidden="true">*</span>
@@ -375,7 +441,8 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
             <FieldLabel htmlFor={fieldIds.enabled}>켜기</FieldLabel>
           </div>
           <FieldDescription id={hintIds.enabled}>
-            끄면 이 항목의 검출(무시 포함)이 resolved로 바뀌고, 다시 켜면 다음 스캔에서 새로 검출됩니다
+            끄면 이 항목의 검출(무시 포함)이 resolved로 바뀌고, 다시 켜면 다음 스캔에서 새로
+            검출됩니다
           </FieldDescription>
           <FieldError id={errorId(fieldIds.enabled)} errors={[errors.enabled]} />
         </Field>

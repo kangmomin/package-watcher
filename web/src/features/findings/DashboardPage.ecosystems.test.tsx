@@ -25,7 +25,7 @@ describe("대시보드 종류 — 필터", () => {
     const texts = options.map((option) => option.textContent?.trim() ?? "");
     expect(texts).toContain("전체");
     expect(texts.filter((text) => text !== "전체")).toEqual(SUPPORTED_ECOSYSTEMS.map(ecosystemLabel));
-    expect(SUPPORTED_ECOSYSTEMS).toHaveLength(9);
+    expect(SUPPORTED_ECOSYSTEMS).toHaveLength(12);
     await user.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("listbox")).not.toBeInTheDocument());
 

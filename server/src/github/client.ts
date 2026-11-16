@@ -33,6 +33,8 @@ export interface GitHubClient {
   getTree(org: string, repo: string, ref: string): Promise<RepoTree>;
   /** blob API(`git/blobs/{sha}`)로 읽어 UTF-8 문자열로 반환한다. contents API 는 1MB 초과 파일을 읽지 못한다. */
   getFile(org: string, repo: string, sha: string): Promise<string>;
+  /** 모든 브랜치 이름(모든 페이지). 404·빈 repo(409)는 `[]`. */
+  listBranches(org: string, repo: string): Promise<string[]>;
 }
 
 /** primary rate limit 소진. 기다리지 않고 throw 한다(스캔은 남은 repo 를 "RATE_LIMITED" 로 실패 처리). */
@@ -169,6 +171,21 @@ export function createOctokitClient(options: OctokitClientOptions): GitHubClient
         } catch (error) {
           // 커밋이 없는 빈 repo 는 409 다. 실패가 아니라 파일 0개로 처리한다.
           if (error instanceof RequestError && error.status === 409) return { entries: [], truncated: false };
+          throw error;
+        }
+      }),
+
+    listBranches: (org, repo) =>
+      call(async () => {
+        try {
+          const branches = await octokit.paginate(octokit.rest.repos.listBranches, {
+            owner: org,
+            repo,
+            per_page: 100,
+          });
+          return branches.map((branch) => branch.name);
+        } catch (error) {
+          if (error instanceof RequestError && (error.status === 404 || error.status === 409)) return [];
           throw error;
         }
       }),

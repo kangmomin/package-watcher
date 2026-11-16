@@ -97,9 +97,9 @@ Docker 로 실행할 때는 `.env` 에 `PORT`, `HOST`, `DATA_DIR`, `WEB_DIST_DIR
 
 | 필드 | 설명 |
 |------|------|
-| `ecosystem` | 종류. 패키지(`npm`, `go`, `pypi`, `nuget`, `cargo`, `pub`, `maven`, 기본 `npm`)와 CI(`actions`, `docker`). 같은 이름·버전 범위라도 종류가 다르면 다른 항목이다. **등록한 뒤에는 바꿀 수 없다**(PUT 으로 다른 종류를 보내면 400, 새 항목으로 등록한다) |
-| `name` | 패키지 이름(`actions` 는 `owner/repo`, `docker` 는 이미지 저장소) 또는 `*` 패턴. 종류마다 이름 규칙과 비교 방법이 다르다(아래 표) |
-| `versionRange` | 그 종류의 범위 문법(아래 표). 비우면 모든 버전 |
+| `ecosystem` | 종류. 패키지(`npm`, `go`, `pypi`, `nuget`, `cargo`, `pub`, `maven`, 기본 `npm`)와 CI(`actions`, `docker`), 침해의 흔적(`path`, `content`, `branch`). 같은 이름·버전 범위라도 종류가 다르면 다른 항목이다. **등록한 뒤에는 바꿀 수 없다**(PUT 으로 다른 종류를 보내면 400, 새 항목으로 등록한다) |
+| `name` | 패키지 이름(`actions` 는 `owner/repo`, `docker` 는 이미지 저장소, `path` 는 경로, `content` 는 찾을 문자열, `branch` 는 브랜치 이름) 또는 `*` 패턴(`content` 제외). 종류마다 이름 규칙과 비교 방법이 다르다(아래 표) |
+| `versionRange` | 그 종류의 범위 문법(아래 표). 비우면 모든 버전. `path`·`content`·`branch` 는 범위를 쓰지 않으므로 항상 비어 있고, 값을 주면 400 이다(`details.versionRange`) |
 | `severity` | `critical` > `high` > `medium` > `low`. 기본 `medium`. 대시보드는 심각도가 높은 검출부터 보여 준다 |
 | `enabled` | 끄면 검사에서 제외하고, 그 항목의 검출(무시한 것 포함)은 즉시 `resolved` 가 된다. 다시 켜면 다음 스캔에서 새 검출(과 메일)이 생긴다 |
 | `expiresAt` | 만료일(`YYYY-MM-DD`, KST). 만료일 당일까지 검사하고 다음 날 00:00(KST)부터 `만료`로 보고 끈 것과 같이 처리한다. 비우면 만료 없음 |
@@ -118,11 +118,21 @@ Docker 로 실행할 때는 `.env` 에 `PORT`, `HOST`, `DATA_DIR`, `WEB_DIST_DIR
 | `maven` | `pom.xml`, `gradle/libs.versions.toml`, `build.gradle`, `build.gradle.kts` | `group:name`, 대소문자 구분 | 구간 표기: `[1.0,2.0)`, `(,1.5]`, `[1.2.3]` |
 | `actions` | `.github/workflows/*.yml\|yaml` 의 `uses`(step, job 의 재사용 workflow), `action.yml\|yaml`(composite) | `owner/repo`, 소문자로 저장. `owner/*` 패턴 가능. `owner/repo/path@ref` 는 앞의 두 조각만 이름이다. `./` 로컬 action 과 `${{ }}` 는 건너뛴다 | **정확한 값의 목록**(semver 아님): `v0.34.0, v0.34.1` 또는 commit SHA(전체, 또는 7자 이상의 앞부분). ref 가 없는 `uses: owner/repo` 는 범위 없는 항목에만 일치한다 |
 | `docker` | `Dockerfile*`·`*.Dockerfile`·`Containerfile` 의 `FROM`·`COPY --from`, compose(`docker-compose*.yml`, `compose*.yml`)의 `image`, workflow 의 `container`·`services.*.image`·`docker://`, `action.yml` 의 `runs.image` | 이미지 저장소, 소문자. `docker.io/`·`library/` 는 뗀다(`docker.io/library/node` → `node`). tag·digest 는 이름이 아니라 범위에 적는다 | **정확한 tag 또는 digest 의 목록**: `v1.107.0, latest`, `sha256:…`(전체, 또는 12자 이상의 앞부분). 이미지의 tag 와 digest 를 둘 다 비교하고 tag 가 없으면 `latest` |
+| `path` | repo 의 tree **전체**(`node_modules`·`vendor` 등 제외 폴더 포함)의 경로. 파일을 받지 않는다(요청 추가 없음) | 경로 또는 `*` 패턴(`*` 은 `/` 도 포함한 임의의 문자열), 대소문자 구분. 패턴에 `/` 가 없으면 파일 이름(마지막 조각)에도 비교한다: `.ci-*.sh` 는 `scripts/.ci-run.sh` 에 일치. 검출의 `filePath` 는 일치한 경로 | 쓰지 않는다 |
+| `content` | 이 스캔이 **받은 모든 파일**(`package.json`·lock 등 npm 파일, 그 종류가 활성일 때 받은 다른 종류의 선언·lock 파일, 보조 파일)의 내용. `content` 항목이 있으면 보조 파일을 항상 받는다(요청이 늘어난다). 8MB 를 넘는 파일은 건너뛴다 | 글자 그대로의 문자열 6~200자(`*`·줄바꿈 불가), 대소문자 무시 부분 일치: `193.32.204.199`. 검출의 `filePath` 는 그 파일 | 쓰지 않는다 |
+| `branch` | repo 의 브랜치 이름 전체. 활성 `branch` 항목이 있으면 repo 마다 브랜치 목록을 받는다(**repo 마다 요청 1회 추가**, 없으면 0회) | 이름 또는 `*` 패턴, 대소문자 구분: `wfx-docs`, `chore/*`. 검출의 `filePath` 는 `refs/heads/<이름>`, 링크는 `/tree/<이름>` | 쓰지 않는다 |
+
+침해의 흔적(`path`, `content`, `branch`)의 검출은 `version` 이 빈 문자열이고 항상 `direct` 이며, `packageName` 은 항목의 이름이다. repo 1개에서 항목 1개의 검출은 100건까지만 저장한다(넘으면 로그에 경고). 활성 `path`·`branch` 항목이 있으면 의존성 파일이 없는 repo 도(파일이 1개라도 있으면) `건너뜀`이 아니라 검사 대상이다.
 
 `*` 패턴은 종류의 이름 규칙으로 정규화한 이름 전체와 비교한다(pypi·nuget 은 대소문자 무시).
 
+**침해의 흔적 예시:**
+- `path` `.ci-*.sh` — 어느 폴더든 `.ci-` 로 시작하는 `.sh` 파일(`scripts/.ci-run.sh` 도 일치).
+- `content` `193.32.204.199` — 받은 파일(workflow, Dockerfile, `package.json` 등)에 이 IP 가 들어 있으면 그 파일마다 검출.
+- `branch` `wfx-docs` — 이 이름의 브랜치가 있으면 `refs/heads/wfx-docs` 로 검출.
+
 **스캔이 파일을 읽는 방법:**
-- 위 표의 선언 파일이나 아래 보조 파일이 1개라도 있는 repo 는 검사 대상이다. 둘 다 0개인 repo 만 `건너뜀`이다.
+- 위 표의 선언 파일이나 아래 보조 파일이 1개라도 있는 repo 는 검사 대상이다. 둘 다 0개인 repo 만 `건너뜀`이다(활성 `path`·`branch` 항목이 있으면 파일이 있는 repo 는 검사 대상).
 - **블랙리스트에 활성 항목(켜짐, 만료 전)이 있는 종류의 파일만 받는다.** 예를 들어 `npm` 항목만 있으면 `go.mod` 의 내용은 받지 않고, 그 파일만 있는 repo 는 `통과`다. 화면의 "읽은 파일 수"는 실제로 받은 파일 수다.
 - **보조 파일**은 명령으로 실행·설치하는 패키지, action, 이미지를 찾는다. 그 파일에서 나오는 종류의 활성 항목이 있을 때만 받는다(없으면 받지 않고 읽은 파일 수에도 세지 않는다).
   - `.github/workflows/*.yml|yaml` 의 `run`, `Dockerfile*`·`*.Dockerfile`·`Containerfile` 의 `RUN`(JSON 배열·heredoc 포함), MCP 설정(`.mcp.json`, `mcp.json`, `.cursor/mcp.json`, `.vscode/mcp.json`)의 `command`+`args`.

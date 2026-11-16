@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { usePendingFindingIds, useSetFindingStatus, type SetFindingStatusVariables } from "@/features/findings/hooks";
-import { dependencyTypeLabel, ecosystemLabel } from "@/lib/format";
+import { NOT_APPLICABLE_LABEL, dependencyTypeLabel, ecosystemLabel } from "@/lib/format";
 
 export interface FindingsTableProps {
   items: Finding[];
@@ -67,7 +67,7 @@ export function FindingsTable({ items }: FindingsTableProps) {
                 </TableCell>
                 <TableCell>{ecosystemLabel(finding.ecosystem)}</TableCell>
                 <TableCell id={packageId} className="font-mono text-xs">
-                  {`${finding.packageName}@${finding.version}`}
+                  {`${finding.packageName}@${finding.version === "" ? NOT_APPLICABLE_LABEL : finding.version}`}
                 </TableCell>
                 <TableCell>
                   <SeverityBadge severity={finding.severity} />

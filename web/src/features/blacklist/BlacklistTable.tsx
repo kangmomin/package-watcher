@@ -2,7 +2,7 @@
 // 열: 선택(체크박스), 종류, 이름, 버전 범위(null = "(모든 버전)"), 심각도, 상태(켬/끔/만료), 만료일(null = "-"), 사유, 수정, 삭제.
 // 아이콘 버튼은 aria-label 로 이름을 준다.
 // 접근성: 이름 셀이 행 헤더다. 수정·삭제 버튼은 이름을 바꾸지 않고 이름 셀을 설명으로 연결한다.
-import { entryStatusOf, type BlacklistEntry, type EntryStatus } from "@pw/shared";
+import { entryStatusOf, usesVersionRange, type BlacklistEntry, type EntryStatus } from "@pw/shared";
 import { PencilIcon, Trash2Icon } from "lucide-react";
 import { useId } from "react";
 import { RowHeaderCell } from "@/components/RowHeaderCell";
@@ -10,8 +10,20 @@ import { SeverityBadge } from "@/components/SeverityBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { ALL_VERSIONS_LABEL, ecosystemLabel, entryStatusLabel } from "@/lib/format";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  ALL_VERSIONS_LABEL,
+  NOT_APPLICABLE_LABEL,
+  ecosystemLabel,
+  entryStatusLabel,
+} from "@/lib/format";
 
 export interface BlacklistTableProps {
   items: BlacklistEntry[];
@@ -80,7 +92,10 @@ export function BlacklistTable({
             const nameId = `${id}-${entry.id}-name`;
             const status = entryStatusOf(entry);
             return (
-              <TableRow key={entry.id} data-state={selectedIds.has(entry.id) ? "selected" : undefined}>
+              <TableRow
+                key={entry.id}
+                data-state={selectedIds.has(entry.id) ? "selected" : undefined}
+              >
                 <TableCell>
                   <Checkbox
                     aria-label={`${entry.name} 선택`}
@@ -94,8 +109,12 @@ export function BlacklistTable({
                   {entry.name}
                 </RowHeaderCell>
                 <TableCell className="font-mono text-xs">
-                  {entry.versionRange ?? (
-                    <span className="font-sans text-muted-foreground">{ALL_VERSIONS_LABEL}</span>
+                  {!usesVersionRange(entry.ecosystem) ? (
+                    <span className="font-sans text-muted-foreground">{NOT_APPLICABLE_LABEL}</span>
+                  ) : (
+                    (entry.versionRange ?? (
+                      <span className="font-sans text-muted-foreground">{ALL_VERSIONS_LABEL}</span>
+                    ))
                   )}
                 </TableCell>
                 <TableCell>
