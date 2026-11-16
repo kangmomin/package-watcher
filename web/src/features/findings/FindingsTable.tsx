@@ -3,7 +3,13 @@
 // PATCH 중 그 행 메뉴 비활성.
 // 접근성: repo 셀이 행 헤더다. 행 메뉴 버튼은 이름("행 메뉴")을 바꾸지 않고 repo + 패키지 셀을 설명으로 연결한다.
 import type { Finding } from "@pw/shared";
-import { EllipsisVerticalIcon, EyeOffIcon, ExternalLinkIcon, RotateCcwIcon } from "lucide-react";
+import {
+  EllipsisVerticalIcon,
+  EyeOffIcon,
+  ExternalLinkIcon,
+  GitBranchIcon,
+  RotateCcwIcon,
+} from "lucide-react";
 import { useId } from "react";
 import { DashText } from "@/components/DashText";
 import { RowHeaderCell } from "@/components/RowHeaderCell";
@@ -16,8 +22,19 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { usePendingFindingIds, useSetFindingStatus, type SetFindingStatusVariables } from "@/features/findings/hooks";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  usePendingFindingIds,
+  useSetFindingStatus,
+  type SetFindingStatusVariables,
+} from "@/features/findings/hooks";
 import { NO_VERSION_SR_TEXT, dependencyTypeLabel, ecosystemLabel } from "@/lib/format";
 
 export interface FindingsTableProps {
@@ -63,8 +80,9 @@ export function FindingsTable({ items }: FindingsTableProps) {
                 <RowHeaderCell id={repoId} className="font-medium">
                   {finding.repo}
                 </RowHeaderCell>
-                <TableCell className="max-w-64 truncate" title={finding.filePath}>
-                  {finding.filePath}
+                <TableCell className="max-w-64" title={finding.filePath}>
+                  {finding.ref !== "" && <BranchBadge name={finding.ref} />}
+                  <span className="block truncate">{finding.filePath}</span>
                 </TableCell>
                 <TableCell>{ecosystemLabel(finding.ecosystem)}</TableCell>
                 <TableCell
@@ -73,7 +91,11 @@ export function FindingsTable({ items }: FindingsTableProps) {
                   title={`${finding.packageName}@${finding.version}`}
                 >
                   {finding.packageName}@
-                  {finding.version === "" ? <DashText srText={NO_VERSION_SR_TEXT} /> : finding.version}
+                  {finding.version === "" ? (
+                    <DashText srText={NO_VERSION_SR_TEXT} />
+                  ) : (
+                    finding.version
+                  )}
                 </TableCell>
                 <TableCell>
                   <SeverityBadge severity={finding.severity} />
@@ -96,6 +118,22 @@ export function FindingsTable({ items }: FindingsTableProps) {
         </TableBody>
       </Table>
     </div>
+  );
+}
+
+/** 기본 브랜치가 아닌 검출의 브랜치 표시. 보이는 글자는 숨기고 "브랜치 이름" 을 스크린 리더에 준다. */
+function BranchBadge({ name }: { name: string }) {
+  return (
+    <span
+      title={`브랜치 ${name}`}
+      className="mb-0.5 flex w-fit max-w-full items-center gap-1 rounded border px-1.5 py-0.5 text-xs text-muted-foreground"
+    >
+      <GitBranchIcon aria-hidden="true" className="size-3 shrink-0" />
+      <span aria-hidden="true" className="truncate">
+        <bdi>{name}</bdi>
+      </span>
+      <span className="sr-only">{`브랜치 ${name}`}</span>
+    </span>
   );
 }
 
@@ -123,7 +161,12 @@ export function RowMenu({ finding, isDisabled, describedBy, onChangeStatus }: Ro
         )}
         <DropdownMenuItem asChild>
           {/* 새 탭 안내는 이름(텍스트)을 바꾸지 않도록 설명(aria-describedby)으로 연결한다. */}
-          <a href={finding.htmlUrl} target="_blank" rel="noreferrer" aria-describedby={newTabHintId}>
+          <a
+            href={finding.htmlUrl}
+            target="_blank"
+            rel="noreferrer"
+            aria-describedby={newTabHintId}
+          >
             <ExternalLinkIcon aria-hidden="true" />
             GitHub에서 보기
           </a>

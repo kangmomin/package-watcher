@@ -8,6 +8,8 @@ export interface RepoInfo {
   archived: boolean;
   fork: boolean;
   defaultBranch: string;
+  /** 마지막 push 시각(ISO). 알 수 없으면 null */
+  pushedAt: string | null;
 }
 
 export interface TreeEntry {
@@ -35,6 +37,22 @@ export interface GitHubClient {
   getFile(org: string, repo: string, sha: string): Promise<string>;
   /** 모든 브랜치 이름(모든 페이지, 최대 10,000개 — 넘으면 throw). 빈 repo(409)는 `[]`, 404 는 throw. */
   listBranches(org: string, repo: string): Promise<string[]>;
+  /**
+   * 기본 브랜치를 뺀, `sinceIso` 이후에 커밋이 있는 브랜치 전체를 최근 순으로(GraphQL 1회, 최근 100개 브랜치 안에서).
+   * 몇 개를 평가할지는 호출한 쪽이 정한다. repo 가 없거나 비었으면 `[]`. `sha` 는 그 브랜치의 최신 커밋(tree 조회에 쓴다).
+   */
+  listRecentBranches(org: string, repo: string, sinceIso: string): Promise<RecentBranch[]>;
+  /**
+   * 최근 100개 이벤트(REST 1회) 중 `sinceIso` 이후의 브랜치 push·생성: 브랜치 이름 → 마지막 push 시각.
+   * 오래된 커밋을 새로 push 한 브랜치를 커밋 시각만으로는 놓치므로 함께 본다. 404 → 빈 Map.
+   */
+  listRecentPushes(org: string, repo: string, sinceIso: string): Promise<Map<string, string>>;
+}
+
+export interface RecentBranch {
+  name: string;
+  committedAt: string;
+  sha: string;
 }
 
 /** primary rate limit 소진. 기다리지 않고 throw 한다(스캔은 남은 repo 를 "RATE_LIMITED" 로 실패 처리). */
@@ -57,6 +75,77 @@ export const MAX_RETRIES = 2;
 export const SECONDARY_RETRY_AFTER_LIMIT_S = 60;
 /** 5xx·네트워크 오류만 재시도한다. 409(빈 repo)를 포함한 4xx 는 모두 재시도하지 않는다. */
 export const DO_NOT_RETRY = Array.from({ length: 100 }, (_, index) => 400 + index);
+/** 최근 순 100개만 본다(정렬이 최신순이라 20개를 고르기에 충분하다) */
+export const RECENT_BRANCHES_QUERY = `
+query($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {
+    defaultBranchRef { name }
+    refs(refPrefix: "refs/heads/", first: 100, orderBy: {field: TAG_COMMIT_DATE, direction: DESC}) {
+      nodes { name target { ... on Commit { oid committedDate } } }
+    }
+  }
+}`;
+
+/** GraphQL 은 rate limit 도 200 응답의 `errors[].type` 으로 알린다 */
+function isGraphqlRateLimit(error: unknown): boolean {
+  const { errors, message } = (error ?? {}) as { errors?: unknown; message?: unknown };
+  if (Array.isArray(errors) && errors.some((item) => (item as { type?: unknown } | null)?.type === "RATE_LIMITED")) {
+    return true;
+  }
+  return typeof message === "string" && /graphql rate limit/i.test(message);
+}
+
+/** GraphQL 응답에서 조건에 맞는 브랜치를 고른다. 형식이 맞지 않는 노드는 건너뛴다. */
+export function pickRecentBranches(data: unknown, sinceIso: string): RecentBranch[] {
+  const repository = (data as { repository?: unknown } | null)?.repository as
+    | { defaultBranchRef?: { name?: unknown } | null; refs?: { nodes?: unknown } | null }
+    | null
+    | undefined;
+  const nodes = repository?.refs?.nodes;
+  if (!repository || !Array.isArray(nodes)) return [];
+  const defaultName = repository.defaultBranchRef?.name;
+  const since = Date.parse(sinceIso);
+  const found: RecentBranch[] = [];
+  for (const node of nodes as ({ name?: unknown; target?: { oid?: unknown; committedDate?: unknown } | null } | null)[]) {
+    const name = node?.name;
+    const sha = node?.target?.oid;
+    const committedAt = node?.target?.committedDate;
+    if (typeof name !== "string" || typeof sha !== "string" || typeof committedAt !== "string") continue;
+    if (name === defaultName) continue;
+    const time = Date.parse(committedAt);
+    if (Number.isNaN(time) || time < since) continue;
+    found.push({ name, committedAt, sha });
+  }
+  found.sort((a, b) => Date.parse(b.committedAt) - Date.parse(a.committedAt));
+  return found;
+}
+
+const HEADS_PREFIX = "refs/heads/";
+
+/** repo 이벤트에서 `sinceIso` 이후의 브랜치 push·생성만 골라 브랜치마다 가장 최근 시각을 남긴다 */
+export function pickRecentPushes(events: unknown, sinceIso: string): Map<string, string> {
+  const since = Date.parse(sinceIso);
+  const pushes = new Map<string, string>();
+  if (!Array.isArray(events)) return pushes;
+  for (const event of events as ({ type?: unknown; created_at?: unknown; payload?: { ref?: unknown; ref_type?: unknown } } | null)[]) {
+    const ref = event?.payload?.ref;
+    const createdAt = event?.created_at;
+    if (typeof ref !== "string" || typeof createdAt !== "string") continue;
+    let name: string;
+    if (event?.type === "PushEvent") {
+      if (ref.startsWith(HEADS_PREFIX)) name = ref.slice(HEADS_PREFIX.length);
+      else if (ref.startsWith("refs/")) continue;
+      else name = ref;
+    } else if (event?.type === "CreateEvent" && event.payload?.ref_type === "branch") name = ref;
+    else continue;
+    const time = Date.parse(createdAt);
+    if (name === "" || Number.isNaN(time) || time < since) continue;
+    const previous = pushes.get(name);
+    if (previous === undefined || Date.parse(previous) < time) pushes.set(name, createdAt);
+  }
+  return pushes;
+}
+
 const SYMLINK_MODE = "120000";
 const MAX_BRANCH_PAGES = 100;
 const MAX_BRANCHES = MAX_BRANCH_PAGES * 100;
@@ -67,6 +156,7 @@ interface RepoResponse {
   archived?: boolean;
   fork: boolean;
   default_branch?: string;
+  pushed_at?: string | null;
 }
 
 function toRepoInfo(data: RepoResponse): RepoInfo {
@@ -76,6 +166,7 @@ function toRepoInfo(data: RepoResponse): RepoInfo {
     archived: data.archived ?? false,
     fork: data.fork,
     defaultBranch: data.default_branch ?? "HEAD",
+    pushedAt: data.pushed_at ?? null,
   };
 }
 
@@ -196,6 +287,33 @@ export function createOctokitClient(options: OctokitClientOptions): GitHubClient
           throw error;
         }
         return names;
+      }),
+
+    listRecentBranches: async (org, repo, sinceIso) => {
+      let data: unknown;
+      try {
+        data = await octokit.graphql(RECENT_BRANCHES_QUERY, { owner: org, name: repo });
+      } catch (error) {
+        if (isGraphqlRateLimit(error)) throw new RateLimitedError();
+        // repo 가 없으면 `repository: null` 과 NOT_FOUND 오류가 함께 온다 — 실패가 아니라 브랜치 없음이다.
+        const errors = (error as { errors?: unknown } | null)?.errors;
+        if (Array.isArray(errors) && errors.length > 0 && errors.every((item) => (item as { type?: unknown } | null)?.type === "NOT_FOUND")) {
+          return [];
+        }
+        throw translateError(error);
+      }
+      return pickRecentBranches(data, sinceIso);
+    },
+
+    listRecentPushes: (org, repo, sinceIso) =>
+      call(async () => {
+        try {
+          const { data } = await octokit.rest.activity.listRepoEvents({ owner: org, repo, per_page: 100 });
+          return pickRecentPushes(data, sinceIso);
+        } catch (error) {
+          if (error instanceof RequestError && error.status === 404) return new Map<string, string>();
+          throw error;
+        }
       }),
 
     getFile: (org, repo, sha) =>

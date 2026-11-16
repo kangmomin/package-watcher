@@ -104,6 +104,7 @@ export const blacklistEntryVariants: BlacklistEntry[] = [
 export const findingOpenDirect: Finding = {
   id: 1,
   repo: "api",
+  ref: "",
   filePath: "package-lock.json",
   ecosystem: "npm",
   packageName: "lodash",
@@ -122,6 +123,7 @@ export const findingOpenDirect: Finding = {
 export const findingOpenTransitive: Finding = {
   id: 2,
   repo: "web-app",
+  ref: "",
   filePath: "apps/site/pnpm-lock.yaml",
   ecosystem: "npm",
   packageName: "evil-pkg",
@@ -304,6 +306,7 @@ const scanRepoBase: ScanRepo = {
   openFindingCount: 0,
   newFindingCount: 0,
   fileCount: 4,
+  branchCount: 0,
   error: null,
   startedAt: T0,
   finishedAt: T1,
@@ -389,6 +392,7 @@ export const settingsDefault: Settings = {
   smtpConfigured: true,
   notifyMinSeverity: "low",
   feedEnabled: true,
+  branchScanDays: 7,
 };
 
 export const settingsUnconfigured: Settings = {
@@ -401,6 +405,7 @@ export const settingsUnconfigured: Settings = {
   smtpConfigured: false,
   notifyMinSeverity: "low",
   feedEnabled: true,
+  branchScanDays: 7,
 };
 
 // ---------------------------------------------------------------- Page / 기타

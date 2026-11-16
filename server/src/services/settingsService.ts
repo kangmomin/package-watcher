@@ -39,6 +39,7 @@ export function createSettingsService(deps: SettingsServiceDeps): SettingsServic
       smtpConfigured,
       notifyMinSeverity: stored.notifyMinSeverity,
       feedEnabled: stored.feedEnabled,
+      branchScanDays: stored.branchScanDays,
     };
   }
 
@@ -63,6 +64,9 @@ export function createSettingsService(deps: SettingsServiceDeps): SettingsServic
         }
         if (data.feedEnabled !== undefined) {
           repos.settings.set("feed_enabled", String(data.feedEnabled));
+        }
+        if (data.branchScanDays !== undefined) {
+          repos.settings.set("branch_scan_days", String(data.branchScanDays));
         }
         if (orgChanged) {
           repos.findings.resolveAllActive(toIso(now));

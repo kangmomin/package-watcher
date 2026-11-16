@@ -86,6 +86,7 @@ describe("DB 마이그레이션 v3(최신은 v4) (scan_repos)", () => {
       "error",
       "started_at",
       "finished_at",
+      "branch_count", // v5 가 추가한다
     ]);
     const backup = inspect(`${path}.v2-backup`, (old) => ({
       version: userVersionOf(old),

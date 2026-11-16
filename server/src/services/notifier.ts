@@ -19,6 +19,8 @@ import { todayKst } from "./entryActivity.ts";
 export const MAIL_MAX_ROWS = 200;
 /** SMTP connection·greeting·socket 타임아웃 */
 export const SMTP_TIMEOUT_MS = 30_000;
+/** 메일에 표시하는 브랜치 이름의 최대 길이 */
+const BRANCH_MAIL_MAX = 200;
 
 export interface MailMessage {
   to: string[];
@@ -108,6 +110,7 @@ function compareFindings(a: Finding, b: Finding): number {
   return (
     SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] ||
     a.repo.localeCompare(b.repo) ||
+    a.ref.localeCompare(b.ref) ||
     a.filePath.localeCompare(b.filePath) ||
     a.packageName.localeCompare(b.packageName) ||
     a.version.localeCompare(b.version) ||
@@ -127,12 +130,14 @@ export function renderFindings(findings: Finding[]): string {
   const sorted = [...findings].sort(compareFindings);
   const shown = sorted.slice(0, MAIL_MAX_ROWS);
   const lines: string[] = [];
-  let currentRepo: string | null = null;
+  let currentGroup: string | null = null;
   for (const finding of shown) {
-    if (finding.repo !== currentRepo) {
-      if (currentRepo !== null) lines.push("");
-      lines.push(`[${printable(finding.repo)}]`);
-      currentRepo = finding.repo;
+    // 브랜치의 검출은 `repo@브랜치` 로 따로 묶는다. 기본 브랜치의 표시는 그대로다.
+    const group = finding.ref === "" ? printable(finding.repo) : `${printable(finding.repo)}@${printable(finding.ref).slice(0, BRANCH_MAIL_MAX)}`;
+    if (group !== currentGroup) {
+      if (currentGroup !== null) lines.push("");
+      lines.push(`[${group}]`);
+      currentGroup = group;
     }
     lines.push(
       `- [${finding.severity}][${finding.ecosystem}] ${printable(finding.filePath)}: ${printable(finding.packageName)}@${printable(versionLabel(finding))} (${typeLabel(finding)}) — 사유: ${printable(finding.reason)}`,

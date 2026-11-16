@@ -196,6 +196,22 @@ GitHub Advisory Database 의 **악성 패키지(malware) 권고만** 자동으�
 - **스캔에 미치는 영향:** feed 에 항목이 있는 종류의 파일은 블랙리스트에 그 종류의 항목이 없어도 받는다(npm·pypi 등 — GitHub 요청 수가 늘 수 있다). 대조용 index 는 feed 의 내용이 바뀐 경우에만 다시 만든다(15만 건에서 약 0.2초, 메모리 수십 MB).
 - 항목은 `GET /api/blacklist?source=feed|manual` 로 거른다. 내보내기·가져오기의 파일 형식은 그대로이고(출처 열 없음), 내보낸 feed 항목을 다시 가져오면 같은 키의 기존 항목과 합쳐지며 출처는 유지된다.
 
+## 브랜치의 스캔
+
+기본 브랜치뿐 아니라 **최근에 커밋이 있는 다른 브랜치**도 스캔한다. 머지되기 전의 브랜치에 들어온 악성 패키지나 흔적을 찾기 위해서다.
+
+- **대상:** 최근 N일(설정 `branchScanDays`, 기본 7, 0~30)에 push 된 repo 의, **최근 N일에 커밋이 있거나 push 된** 브랜치다(기본 브랜치 제외). 오래된 커밋을 새로 push 한 브랜치(force push 등)도 후보다. 후보를 `max(커밋 시각, 마지막 push 시각)` 의 최근 순으로 정렬해 앞의 **20개**만 평가하고, 나머지 후보의 검출은 그대로 둔다(후보에서 사라질 때만 resolve). repo 의 브랜치 목록과 커밋 날짜는 GraphQL 1회(최근 100개 브랜치 안에서), push 시각은 repo 의 events API 1회(최근 100개 이벤트)로 받는다. events 에만 있는 브랜치는 이름으로 tree 를 받고, 이미 지워졌으면(404) 건너뛴다. repo 목록의 `pushed_at` 이 N일 이전이거나 없는 repo 는 브랜치를 조회하지 않는다.
+- **달라진 파일만:** 브랜치의 tree 를 받아서(1회) 기본 브랜치의 tree 와 (경로, blob sha) 로 비교하고, **기본 브랜치에 없거나 내용이 다른 파일**만 평가한다. 같은 파일은 이미 기본 브랜치 스캔이 평가했고 다시 받지 않는다. 단 의존성 파일이 하나라도 달라졌으면 lock 의 담당 관계를 맞추려고 그 브랜치 tree 의 **모든 의존성 파일**을 함께 평가하고(기본 브랜치와 같은 파일은 캐시에서 나와 요청이 늘지 않는다), **보고는 달라진 경로의 검출만** 한다. 그래서 `package.json` 만 바뀐 브랜치가 lock 이 가려 주던 의존성을 새 검출로 내지 않고, lock 만 바뀐 브랜치의 검출은 그 `package.json` 의 직접 의존성이면 `direct` 다. 같은 변경을 가진 브랜치끼리는 같은 blob 을 1번만 받는다(repo 안의 메모리 캐시). 달라진 파일이 없으면 요청이 없다.
+- **평가하는 것:** 패키지 종류(lock·`package.json` 등), CI·이미지(actions, docker, 명령), 외부 목록(feed), 침해의 흔적 `path`(달라진 파일의 경로)와 `content`(달라진 파일 중 받은 것).
+- **평가하지 않는 것:** 위험한 설정(`policy`)은 브랜치에서 평가하지 않는다(건수가 몇 배가 된다). 흔적 `branch` 는 브랜치 이름이 repo 단위라서 기본 브랜치 스캔에서 이미 한다.
+- **검출의 표시:** 검출의 `ref` 가 브랜치 이름이다(기본 브랜치는 빈 문자열). `filePath` 는 경로 그대로이고 링크는 `/blob/<브랜치>/<경로>` 다. 같은 변경이 브랜치 A 와 B 에 모두 있으면 검출이 각각 생긴다(어느 브랜치에 있는지가 정보다). 메일에는 `[repo@브랜치]` 로 묶어서 표시한다. repo 의 상태(`통과`/`이슈`)와 `openFindingCount` 는 브랜치의 검출도 센다. 스캔의 repo 행에 `branchCount`(달라진 파일 중 평가할 파일이 있었던 브랜치의 수)가 들어가고, 브랜치에서 실제로 받은 파일이 `fileCount` 에 더해진다. 기본 브랜치에 의존성·보조 파일이 없는 repo 는 브랜치가 검출을 내지 않는 한 `건너뜀`이다.
+- **머지와 기본 브랜치의 변화:** 브랜치가 머지되면 브랜치의 검출은 사라지고(resolve) 기본 브랜치에 새 검출이 생긴다(메일이 다시 간다). 기본 브랜치가 같은 파일을 바꾸면 브랜치의 "달라진 파일"이 달라지므로 브랜치의 검출이 사라지거나 생길 수 있다.
+- **검출이 사라지는 조건:** 그 브랜치를 이번 스캔에서 **평가했는데** 다시 나오지 않으면 resolve 된다(고쳐졌거나 달라진 파일에서 빠짐). 브랜치가 지워졌거나 N일보다 오래돼서 선정되지 않아도, repo 에 최근 push 가 없어도, `branchScanDays` 를 0 으로 꺼도 resolve 된다. 반대로 **평가하지 못한 브랜치의 검출은 그대로 둔다**: repo 가 실패했을 때, 브랜치 목록 조회가 실패했을 때, 그 브랜치의 tree 가 `truncated` 이거나 조회·해석에 실패했을 때다(흔들림 방지). 파일 해석 실패·크기 초과로 평가하지 못한 파일의 검출도 그대로 둔다.
+- **브랜치 1개의 실패는 repo 의 실패가 아니다.** 그 브랜치만 건너뛰고 경고 로그를 남긴다. rate limit 은 기본 브랜치의 결과를 살린 채 남은 브랜치를 평가하지 못한 것으로 두고(검출은 그대로), 뒤의 repo 를 멈춘다(`RATE_LIMITED`). repo 안의 blob 캐시는 누적 64MB 를 넘으면 더 넣지 않는다.
+- **상한:** 브랜치 1개에서 받는 파일은 **최대 300개**다. 넘는 브랜치(대규모 리팩터링 등)는 요청 없이 건너뛰고 경고를 남기며, 부분 평가는 resolve 의 근거가 되지 않는다.
+- **요청 수의 영향:** 최근 push 가 있는 repo 마다 GraphQL 1회 + events 1회, 평가하는 브랜치마다 tree 1회, 기본 브랜치에서 받지 않은 파일(달라진 파일과 캐시에 없는 의존성 파일)만큼이 더해진다(repo 당 최대 20개 브랜치 × 300개). 최근 push 가 없는 repo 는 늘지 않는다.
+- **끄는 방법:** 설정의 `branchScanDays` 를 0 으로 저장한다(화면의 브랜치 스캔 기간, `PUT /api/settings`). 0 이면 브랜치 관련 요청이 전혀 없고 기존 브랜치의 검출은 다음 스캔에서 resolve 된다.
+
 ## 일괄 작업, 가져오기, 내보내기
 
 목록 필터: `GET /api/blacklist` 는 `ecosystem`, `enabled`, `q` 외에 `status`(`active` 켜짐·만료 전 / `disabled` 꺼짐·만료 전 / `expired` 만료, 꺼짐 여부와 무관)로 거른다. 만료가 끔보다 우선한다.
@@ -300,7 +316,7 @@ HTTP 전송을 직접 지원하지 않는 클라이언트(예: Claude Desktop)�
 
 | tool | 동작 |
 |------|------|
-| `list_findings` | 검출 목록 (`status`, `repo`, `package`, `ecosystem`, `category`, `excludeCategory`, `severity`, `page`, `limit`). `category`/`excludeCategory` 는 `package`·`ci`·`indicator`·`policy`. `severity` 는 정확히 일치하는 값만 거른다 |
+| `list_findings` | 검출 목록 (`status`, `repo`, `package`, `ecosystem`, `category`, `excludeCategory`, `severity`, `page`, `limit`). `category`/`excludeCategory` 는 `package`·`ci`·`indicator`·`policy`. `severity` 는 정확히 일치하는 값만 거른다. 결과의 `ref` 는 검출한 브랜치(기본 브랜치는 빈 문자열) |
 | `set_finding_status` | 검출을 `ignored` 또는 `open` 으로 변경 (`id`, `status`) |
 | `list_blacklist` | 블랙리스트 목록 (`ecosystem?`, `enabled?`, `q?`, `status?`, `source?`). `source` 는 `manual`(직접 등록)·`feed`(외부 목록이 일치해서 생긴 항목). `enabled=true` 는 사용자가 켠 항목이라서 만료된 항목도 포함된다. 만료 여부는 각 항목의 `isExpired` 로 본다 |
 | `add_blacklist_entry` | 블랙리스트 항목 추가 (`name`, `versionRange?`, `reason`, `ecosystem?`, `severity?`, `enabled?`, `expiresAt?`). `severity` 기본값은 `medium`, 즉시 메일 기준은 `get_settings` 의 `notifyMinSeverity` |
@@ -312,7 +328,7 @@ HTTP 전송을 직접 지원하지 않는 클라이언트(예: Claude Desktop)�
 | `trigger_scan` | 수동 스캔 시작 |
 | `list_scans` | 스캔 이력 (`page`, `limit`) |
 | `get_scan` | 스캔 1건 + 실패한 repo 목록 + repo 별 집계 `repoStats` (`id`). `list_scans` 의 결과에도 `repoStats` 가 들어간다 |
-| `get_settings` | 설정과 연결 상태 조회(읽기 전용) |
+| `get_settings` | 설정과 연결 상태 조회(읽기 전용). `branchScanDays` 는 브랜치 스캔의 기간(0 = 끔) |
 | `get_feed_status` | 외부 목록(feed)의 상태: 항목 수, 종류별 수, 건너뛴 수, 마지막 동기화, 진행 여부, 마지막 오류(읽기 전용) |
 | `search_feed` | 외부 목록의 항목 검색 (`q?` 이름 또는 `GHSA-…` 부분 일치, `ecosystem?`, `page?`, `limit?`). 최근 갱신 순 |
 

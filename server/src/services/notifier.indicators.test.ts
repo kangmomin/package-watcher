@@ -5,6 +5,7 @@ import { renderFindings } from "./notifier.ts";
 const finding = (overrides: Partial<Finding>): Finding => ({
   id: 1,
   repo: "svc",
+  ref: "",
   filePath: "refs/heads/wfx-docs",
   ecosystem: "branch",
   packageName: "wfx-docs",

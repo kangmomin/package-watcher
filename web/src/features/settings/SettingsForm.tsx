@@ -6,6 +6,8 @@
 // 수신자 입력란에 [추가] 하지 않은 주소가 남아 있으면 저장하지 않고 그 필드에 오류를 표시한다(S-20).
 // [테스트 메일] 비활성: 서버 recipients 0명, smtpConfigured=false, 폼 dirty("저장 후 테스트할 수 있습니다"), 요청 중.
 import {
+  BRANCH_SCAN_DAYS_MAX,
+  BRANCH_SCAN_MAX_BRANCHES,
   entryStatusOf,
   SEVERITIES,
   SEVERITY_RANK,
@@ -21,7 +23,13 @@ import type { z } from "zod";
 import { Button } from "@/components/ui/button";
 import { FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { useBlacklist } from "@/features/blacklist/hooks";
 import { FeedSection } from "@/features/settings/FeedSection";
@@ -41,7 +49,11 @@ export interface SettingsFormProps {
 }
 
 /** 폼 값 = 저장 스키마의 입력 모양(검증 전). 스키마에 필드가 생기면 toFormValues 가 타입 오류로 알려 준다. */
-type FormValues = z.input<typeof settingsInputSchema> & { notifyMinSeverity: Severity; feedEnabled: boolean };
+type FormValues = z.input<typeof settingsInputSchema> & {
+  notifyMinSeverity: Severity;
+  feedEnabled: boolean;
+  branchScanDays: number;
+};
 
 interface FormRowProps {
   label: string;
@@ -50,7 +62,15 @@ interface FormRowProps {
   children: ReactNode;
 }
 
-const FORM_FIELDS = ["org", "scanIntervalHours", "digestTime", "recipients", "notifyMinSeverity", "feedEnabled"] as const;
+const FORM_FIELDS = [
+  "org",
+  "scanIntervalHours",
+  "digestTime",
+  "recipients",
+  "notifyMinSeverity",
+  "feedEnabled",
+  "branchScanDays",
+] as const;
 
 /** 수신자 입력란에 [추가] 하지 않은 주소가 남은 채 저장하려 할 때의 recipients 필드 오류 */
 const PENDING_RECIPIENT_ERROR = "pendingRecipient";
@@ -64,6 +84,7 @@ function toFormValues(settings: Settings): FormValues {
     recipients: [...settings.recipients],
     notifyMinSeverity: settings.notifyMinSeverity,
     feedEnabled: settings.feedEnabled,
+    branchScanDays: settings.branchScanDays,
   };
 }
 
@@ -84,7 +105,9 @@ export function SettingsForm({ settings, isFetchedAfterMount = true }: SettingsF
   const blacklistItems = useBlacklist().data?.items;
   const selectedSeverity = useWatch({ control: form.control, name: "notifyMinSeverity" });
   const belowThresholdCount = blacklistItems?.filter(
-    (entry) => entryStatusOf(entry) === "active" && SEVERITY_RANK[entry.severity] < SEVERITY_RANK[selectedSeverity],
+    (entry) =>
+      entryStatusOf(entry) === "active" &&
+      SEVERITY_RANK[entry.severity] < SEVERITY_RANK[selectedSeverity],
   ).length;
 
   // 캐시 값으로 폼을 만들었으면(다른 탭에서 바뀐 값을 모를 수 있다) 처음 도착한 새 응답을 1번 반영한다.
@@ -99,6 +122,8 @@ export function SettingsForm({ settings, isFetchedAfterMount = true }: SettingsF
     org: `${id}-org`,
     orgHint: `${id}-org-hint`,
     interval: `${id}-interval`,
+    branchDays: `${id}-branch-days`,
+    branchDaysHint: `${id}-branch-days-hint`,
     digestTime: `${id}-digest-time`,
     timezone: `${id}-timezone`,
     recipients: `${id}-recipients`,
@@ -107,6 +132,8 @@ export function SettingsForm({ settings, isFetchedAfterMount = true }: SettingsF
     notifyMinSeverityHint: `${id}-notify-min-severity-hint`,
     notifyMinSeverityWarning: `${id}-notify-min-severity-warning`,
   };
+  // 입력 중의 값(비었거나 NaN 이면 0 이 아니다)으로 "기본 브랜치만" 을 보인다.
+  const branchScanDays = useWatch({ control: form.control, name: "branchScanDays" });
   const showThresholdWarning = belowThresholdCount !== undefined && belowThresholdCount > 0;
   const errorIdOf = (field: keyof FormValues) => errorId(`${id}-${field}`);
   const errorAria = (field: keyof FormValues, ...describedBy: (string | false | undefined)[]) =>
@@ -115,13 +142,17 @@ export function SettingsForm({ settings, isFetchedAfterMount = true }: SettingsF
   /** 입력란에 [추가] 하지 않은 주소가 있으면 recipients 필드 오류로 표시하고 true (저장하지 않는다). */
   const flagPendingRecipient = (): boolean => {
     if (recipientDraft.trim() === "") return false;
-    form.setError("recipients", { type: PENDING_RECIPIENT_ERROR, message: PENDING_RECIPIENT_MESSAGE });
+    form.setError("recipients", {
+      type: PENDING_RECIPIENT_ERROR,
+      message: PENDING_RECIPIENT_MESSAGE,
+    });
     return true;
   };
 
   const handleRecipientDraftChange = (draft: string) => {
     setRecipientDraft(draft);
-    if (form.getFieldState("recipients").error?.type === PENDING_RECIPIENT_ERROR) form.clearErrors("recipients");
+    if (form.getFieldState("recipients").error?.type === PENDING_RECIPIENT_ERROR)
+      form.clearErrors("recipients");
   };
 
   const submit = form.handleSubmit(
@@ -133,7 +164,8 @@ export function SettingsForm({ settings, isFetchedAfterMount = true }: SettingsF
           toast.success("설정을 저장했습니다");
         },
         onError: (error) => {
-          if (!applyServerFieldErrors(form.setError, error, FORM_FIELDS)) toast.error(errorToastMessage(error));
+          if (!applyServerFieldErrors(form.setError, error, FORM_FIELDS))
+            toast.error(errorToastMessage(error));
         },
       });
     },
@@ -158,7 +190,9 @@ export function SettingsForm({ settings, isFetchedAfterMount = true }: SettingsF
             {...errorAria("org", ids.orgHint)}
             {...form.register("org")}
           />
-          <FieldDescription id={ids.orgHint}>org를 바꾸면 현재 검출이 모두 resolved로 바뀝니다</FieldDescription>
+          <FieldDescription id={ids.orgHint}>
+            org를 바꾸면 현재 검출이 모두 resolved로 바뀝니다
+          </FieldDescription>
           <FieldError id={errorIdOf("org")} errors={[errors.org]} />
         </FormRow>
 
@@ -176,6 +210,31 @@ export function SettingsForm({ settings, isFetchedAfterMount = true }: SettingsF
             {...form.register("scanIntervalHours", { valueAsNumber: true })}
           />
           <FieldError id={errorIdOf("scanIntervalHours")} errors={[errors.scanIntervalHours]} />
+        </FormRow>
+
+        <FormRow label="브랜치 스캔 기간(일)" htmlFor={ids.branchDays} isRequired>
+          <div className="flex items-center gap-2">
+            <Input
+              id={ids.branchDays}
+              type="number"
+              inputMode="numeric"
+              min={0}
+              max={BRANCH_SCAN_DAYS_MAX}
+              step={1}
+              aria-required="true"
+              className="max-w-28"
+              {...errorAria("branchScanDays", ids.branchDaysHint)}
+              {...form.register("branchScanDays", { valueAsNumber: true })}
+            />
+            {branchScanDays === 0 && (
+              <span className="text-sm text-muted-foreground">기본 브랜치만</span>
+            )}
+          </div>
+          <FieldDescription id={ids.branchDaysHint}>
+            최근 이 기간에 커밋이 있는 브랜치도 스캔합니다(repo당 최대 {BRANCH_SCAN_MAX_BRANCHES}개,
+            기본 브랜치와 다른 파일만). 0이면 기본 브랜치만 스캔합니다.
+          </FieldDescription>
+          <FieldError id={errorIdOf("branchScanDays")} errors={[errors.branchScanDays]} />
         </FormRow>
 
         <FormRow label="일일 요약 시각" htmlFor={ids.digestTime} isRequired>
@@ -222,9 +281,14 @@ export function SettingsForm({ settings, isFetchedAfterMount = true }: SettingsF
               </Select>
             )}
           />
-          <FieldDescription id={ids.notifyMinSeverityHint}>이보다 낮은 검출은 일일 요약에만 포함합니다</FieldDescription>
+          <FieldDescription id={ids.notifyMinSeverityHint}>
+            이보다 낮은 검출은 일일 요약에만 포함합니다
+          </FieldDescription>
           {showThresholdWarning && (
-            <FieldDescription id={ids.notifyMinSeverityWarning} className="text-amber-700 dark:text-amber-300">
+            <FieldDescription
+              id={ids.notifyMinSeverityWarning}
+              className="text-amber-700 dark:text-amber-300"
+            >
               {`켜진 항목 ${belowThresholdCount}개는 이 기준보다 낮아 즉시 알림을 받지 않습니다`}
             </FieldDescription>
           )}
@@ -253,11 +317,20 @@ export function SettingsForm({ settings, isFetchedAfterMount = true }: SettingsF
       <Controller
         control={form.control}
         name="feedEnabled"
-        render={({ field }) => <FeedSection enabled={field.value} onEnabledChange={field.onChange} isFormDirty={isDirty} />}
+        render={({ field }) => (
+          <FeedSection
+            enabled={field.value}
+            onEnabledChange={field.onChange}
+            isFormDirty={isDirty}
+          />
+        )}
       />
 
       <Separator />
-      <ConnectionStatus githubTokenSource={settings.githubTokenSource} smtpConfigured={settings.smtpConfigured} />
+      <ConnectionStatus
+        githubTokenSource={settings.githubTokenSource}
+        smtpConfigured={settings.smtpConfigured}
+      />
 
       <div className="flex flex-wrap items-center justify-end gap-3">
         {isDirty && (

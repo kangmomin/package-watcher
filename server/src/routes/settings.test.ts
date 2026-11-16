@@ -40,9 +40,11 @@ describe("GET /api/settings", () => {
       smtpConfigured: true,
       notifyMinSeverity: "low",
       feedEnabled: true,
+      branchScanDays: 7,
     });
     expect(Object.keys(res.json as object).sort()).toEqual(
       [
+        "branchScanDays",
         "digestTime",
         "digestTimezone",
         "feedEnabled",

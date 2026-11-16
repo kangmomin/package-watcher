@@ -1,5 +1,7 @@
 import { parse as parseJsonc, type ParseError } from "jsonc-parser";
 import {
+  BRANCH_SCAN_MAX_BRANCHES,
+  DEFAULT_BRANCH_REF,
   POLICY_ECOSYSTEM,
   isNamePattern,
   scanReposQuerySchema,
@@ -20,6 +22,7 @@ import { AppError } from "../errors.ts";
 import {
   RateLimitedError,
   type GitHubClient,
+  type RecentBranch,
   type RepoInfo,
   type TreeEntry,
 } from "../github/client.ts";
@@ -50,8 +53,9 @@ import type { Repositories } from "../repositories/index.ts";
 import type { RepoDone } from "../repositories/scanRepos.ts";
 import type { ScanResult } from "../repositories/scans.ts";
 import { assignLockfiles, dirOf, readWorkspaceGlobs } from "../workspaces.ts";
-import { mapWithConcurrency, parseInput, printable, toIso } from "./common.ts";
+import { mapWithConcurrency, parseInput, printable, readStoredSettings, toIso } from "./common.ts";
 import { isEntryActive, todayKst } from "./entryActivity.ts";
+import { createBlobCache, type BlobCache } from "./blobCache.ts";
 import type { FeedSource } from "./feedService.ts";
 import type { Notifier } from "./notifier.ts";
 import { createIndicatorRules, type IndicatorRules } from "./scanIndicators.ts";
@@ -67,6 +71,12 @@ const isFeedEntry = (entry: MatchableEntry): boolean => entry.id < 0 || entry.so
 export const REPO_CONCURRENCY = 5;
 /** repo 1개 안의 파일 동시 조회 수 */
 const FILE_CONCURRENCY = 4;
+/** 브랜치 1개에서 받는 파일의 상한. 넘으면 그 브랜치는 평가하지 않는다(부분 평가는 resolve 의 근거가 될 수 없다) */
+export const BRANCH_MAX_FETCH = 300;
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** 로그에 남기는 브랜치 이름의 최대 길이 */
+const BRANCH_LOG_MAX = 200;
+const NO_PATHS: ReadonlySet<string> = new Set();
 
 export const TOKEN_MISSING_MESSAGE =
   "GitHub 토큰이 없습니다. GITHUB_TOKEN 환경 변수를 설정하거나 gh auth login 을 실행한 뒤 서버를 다시 시작하십시오";
@@ -133,6 +143,50 @@ interface Match extends FindingKey {
   dependencyType: DependencyType;
 }
 
+/** 파일을 읽는 함수들이 돌려주는 검출 — `ref` 는 호출한 쪽(`scanTree`)이 붙인다 */
+type RawMatch = Omit<Match, "ref">;
+
+/** 브랜치 1개의 평가 결과 중 resolve 판정에 쓰는 것 */
+interface BranchEvaluation {
+  declaredCount: number;
+  skippedPaths: ReadonlySet<string>;
+}
+
+/** 파일 목록 1개(기본 브랜치의 전체 tree 또는 브랜치의 달라진 파일)를 평가한 결과 */
+interface TreeScan {
+  declaredCount: number;
+  traced: boolean;
+  fileCount: number;
+  matches: Match[];
+  policyMatches: PolicyMatch[];
+  skippedPaths: ReadonlySet<string>;
+}
+
+interface RepoScan extends TreeScan {
+  /** 이번 스캔이 tree 를 받아 끝까지 평가한 브랜치 */
+  branches: Map<string, BranchEvaluation>;
+  /** 평가한 브랜치 중 평가할 파일이 있었던 브랜치의 수 (`branch_count`) */
+  countedBranches: number;
+  /** 후보였지만 평가하지 못한 브랜치(20개 상한, truncated·조회·해석 실패, 파일 수 초과) — 그 검출은 그대로 둔다 */
+  keptRefs: ReadonlySet<string>;
+  /** 브랜치 목록을 받지 못했다 — 이 repo 의 모든 브랜치 검출을 그대로 둔다 */
+  branchesUnknown: boolean;
+  /** 브랜치 단계에서 rate limit 을 만났다 — 기본 브랜치의 결과는 살리고 뒤의 repo 를 멈춘다 */
+  rateLimited: boolean;
+}
+
+/** 평가 규칙과 대조 자료 (repo 마다 같다) */
+interface ScanRules {
+  entryIndex: EntryIndex<MatchableEntry>;
+  activeEcosystems: ReadonlySet<string>;
+  indicators: IndicatorRules;
+  policy: PolicyRules;
+  /** 0 이면 브랜치를 보지 않는다 */
+  branchScanDays: number;
+  /** 이 시각 이후에 push·커밋이 있어야 브랜치를 본다 */
+  branchSince: Date;
+}
+
 type RepoOutcome =
   | {
       repo: string;
@@ -148,6 +202,11 @@ type RepoOutcome =
       policyMatches: PolicyMatch[];
       /** 받았지만 평가하지 못한 파일(해석 실패, 크기 초과) — 그 파일의 기존 검출은 resolve 하지 않는다 */
       skippedPaths: ReadonlySet<string>;
+      /** 평가한 브랜치(기본 브랜치 제외)의 수 */
+      branchCount: number;
+      branches: Map<string, BranchEvaluation>;
+      keptRefs: ReadonlySet<string>;
+      branchesUnknown: boolean;
     }
   | { repo: string; ok: false; error: string };
 
@@ -183,7 +242,7 @@ const joinPath = (dir: string, name: string): string => (dir === "" ? name : `${
 const isInNodeModules = (path: string): boolean => `/${path}/`.includes("/node_modules/");
 
 function findingKey(match: FindingKey): string {
-  return [match.repo, match.filePath, match.packageName, match.version, match.blacklistEntryId].join(
+  return [match.repo, match.ref, match.filePath, match.packageName, match.version, match.blacklistEntryId].join(
     "\u0000",
   );
 }
@@ -212,10 +271,15 @@ const BRANCH_REF_PREFIX = "refs/heads/";
 // org·repo·경로 조각을 percent-encoding 한다 — 근거: 공백·`#` 이 든 경로도 유효한 URL 이 되게 한다(일반 이름은 계약 형식과 같다).
 // branch 검출(`refs/heads/<이름>`)은 파일이 아니라 브랜치의 tree 로 연결한다. 실제 파일 `refs/heads/x`(path 검출)와 구분하려고 종류로 판정한다.
 // 짝 없는 surrogate 가 든 경로는 encodeURIComponent 가 던지므로 repo 루트로 대신한다(finalize 트랜잭션 전체를 실패시키지 않는다).
-function htmlUrlOf(org: string, repo: string, filePath: string, ecosystem: Ecosystem): string {
+function htmlUrlOf(org: string, repo: string, filePath: string, ecosystem: Ecosystem, ref: string): string {
   const root = `https://github.com/${org}/${repo}`;
   try {
     const base = `https://github.com/${encodeURIComponent(org)}/${encodeURIComponent(repo)}`;
+    // 브랜치의 검출은 그 브랜치의 파일로 연결한다 (브랜치에서는 파일 검출만 나온다).
+    if (ref !== DEFAULT_BRANCH_REF) {
+      const branch = ref.split("/").map(encodeURIComponent).join("/");
+      return `${base}/blob/${branch}/${filePath.split("/").map(encodeURIComponent).join("/")}`;
+    }
     if (ecosystem === "branch" && filePath.startsWith(BRANCH_REF_PREFIX)) {
       const branch = filePath.slice(BRANCH_REF_PREFIX.length).split("/").map(encodeURIComponent).join("/");
       return `${base}/tree/${branch}`;
@@ -296,38 +360,180 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
   /** 이 스캔이 찾은 매칭이 1건 이상이면 임시로 issue, 종료 트랜잭션이 확정한다 */
   function doneOf(outcome: RepoOutcome): RepoDone {
     const finishedAt = toIso(clock.now());
-    if (!outcome.ok) return { status: "failed", fileCount: 0, error: outcome.error, finishedAt };
-    if (outcome.declaredCount === 0 && !outcome.traced) return { status: "skipped", fileCount: 0, error: null, finishedAt };
+    if (!outcome.ok) return { status: "failed", fileCount: 0, branchCount: 0, error: outcome.error, finishedAt };
+    if (isSkipped(outcome)) return { status: "skipped", fileCount: 0, branchCount: 0, error: null, finishedAt };
     return {
       status: outcome.matches.length > 0 ? "issue" : "passed",
       fileCount: outcome.fileCount,
+      branchCount: outcome.branchCount,
       error: null,
       finishedAt,
     };
   }
 
+  /** 검사할 프로젝트가 아니다: 기본 브랜치에 선언·보조 파일도 흔적 검사도 없고, 브랜치가 낸 검출도 없다 */
+  const isSkipped = (outcome: Extract<RepoOutcome, { ok: true }>): boolean =>
+    outcome.declaredCount === 0 && !outcome.traced && outcome.matches.length === 0;
+
   // ---------------------------------------------------------------- repo 1개
 
-  async function scanRepo(
-    org: string,
-    client: GitHubClient,
-    repo: RepoInfo,
-    entryIndex: EntryIndex<MatchableEntry>,
-    activeEcosystems: ReadonlySet<string>,
-    indicators: IndicatorRules,
-    policy: PolicyRules,
-  ): Promise<{
-    declaredCount: number;
-    traced: boolean;
-    fileCount: number;
-    matches: Match[];
-    policyMatches: PolicyMatch[];
-    skippedPaths: ReadonlySet<string>;
-  }> {
+  /** repo 1개: 기본 브랜치의 전체 tree 를 평가하고, 최근 브랜치는 달라진 파일만 같은 함수로 다시 평가한다 */
+  async function scanRepo(org: string, rawClient: GitHubClient, repo: RepoInfo, rules: ScanRules): Promise<RepoScan> {
+    const blobs = createBlobCache(rawClient);
+    const client = blobs.client;
     const tree = await client.getTree(org, repo.name, repo.defaultBranch);
     if (tree.truncated) {
       throw new Error("파일 트리가 너무 커서 GitHub 가 일부만 반환했습니다(truncated)");
     }
+    const main = await scanTree(org, client, repo, tree.entries, DEFAULT_BRANCH_REF, rules);
+    const result: RepoScan = {
+      ...main,
+      branches: new Map(),
+      countedBranches: 0,
+      keptRefs: new Set(),
+      branchesUnknown: false,
+      rateLimited: false,
+    };
+    await scanBranches(org, blobs, repo, tree.entries, rules, result);
+    return result;
+  }
+
+  /** 브랜치의 로그용 표시 — 신뢰할 수 없는 입력이라 제어 문자를 바꾸고 길이를 자른다 */
+  const branchLabel = (name: string): string => printable(name).slice(0, BRANCH_LOG_MAX);
+
+  /** 의존성 파일(npm 의 package.json·lock·workspace 선언, 다른 종류의 선언·lock)인가 — 보조 파일(workflow 등)은 아니다 */
+  function isDependencyFile(path: string): boolean {
+    if (isInNodeModules(path)) return false;
+    const name = baseName(path);
+    if (name === "package.json" || name === "bun.lockb" || name === "pnpm-workspace.yaml") return true;
+    if (lockfileKindOf(name)) return true;
+    return !isExcludedPath(path) && classifyFile(path) !== null;
+  }
+
+  interface BranchCandidate {
+    name: string;
+    /** max(마지막 커밋 시각, 마지막 push 시각) */
+    time: number;
+    /** tree 를 받을 ref: 커밋 sha, 또는 (refs 의 상위 100개에 없으면) 브랜치 이름 */
+    ref: string;
+    byName: boolean;
+  }
+
+  /**
+   * 최근 N일에 push 된 repo 의 후보 브랜치(커밋이 N일 안 또는 push 가 N일 안)를 최근 순으로 최대 20개 평가해서 `result` 에 더한다.
+   * 상한에서 밀려난 후보와 평가하지 못한 브랜치는 `keptRefs` 에 둔다 — 그 검출은 resolve 하지 않는다(후보에서 사라질 때만 resolve).
+   * 브랜치 1개의 실패는 repo 의 실패가 아니다(건너뛰고 warn). rate limit 은 기본 브랜치의 결과를 살린 채 `rateLimited` 로 알린다.
+   */
+  async function scanBranches(
+    org: string,
+    blobs: BlobCache,
+    repo: RepoInfo,
+    defaultEntries: TreeEntry[],
+    rules: ScanRules,
+    result: RepoScan,
+  ): Promise<void> {
+    const client = blobs.client;
+    if (rules.branchScanDays <= 0 || repo.pushedAt === null) return;
+    const pushedAt = Date.parse(repo.pushedAt);
+    // N일 안에 push 가 없으면 N일 안의 커밋도 없다 — 브랜치를 조회하지 않는다.
+    if (Number.isNaN(pushedAt) || pushedAt < rules.branchSince.getTime()) return;
+    const where = `${org}/${repo.name}`;
+    const sinceIso = toIso(rules.branchSince);
+    const stopOnRateLimit = (): void => {
+      result.rateLimited = true;
+      result.branchesUnknown = true;
+    };
+    let recent: RecentBranch[];
+    try {
+      recent = await client.listRecentBranches(org, repo.name, sinceIso);
+    } catch (error) {
+      if (error instanceof RateLimitedError) return stopOnRateLimit();
+      logger.warn(`브랜치 목록을 가져오지 못했습니다: ${printable(where)}: ${printable(describeError(error))}`);
+      result.branchesUnknown = true;
+      return;
+    }
+    let pushes = new Map<string, string>();
+    try {
+      pushes = await client.listRecentPushes(org, repo.name, sinceIso);
+    } catch (error) {
+      if (error instanceof RateLimitedError) return stopOnRateLimit();
+      // push 로 선정될 브랜치를 알 수 없다 — 커밋 시각 기준의 후보만 평가하고, 평가하지 못한 브랜치의 검출은 그대로 둔다.
+      logger.warn(`최근 push 목록을 가져오지 못했습니다: ${printable(where)}: ${printable(describeError(error))}`);
+      result.branchesUnknown = true;
+    }
+
+    const found = new Map<string, BranchCandidate>();
+    for (const branch of recent) {
+      found.set(branch.name, { name: branch.name, time: Date.parse(branch.committedAt), ref: branch.sha, byName: false });
+    }
+    for (const [name, at] of pushes) {
+      const time = Date.parse(at);
+      if (Number.isNaN(time)) continue;
+      const existing = found.get(name);
+      if (existing) existing.time = Math.max(existing.time, time);
+      else found.set(name, { name, time, ref: name, byName: true });
+    }
+    // 기본 브랜치와 같은 ref 가 되지 않게 빈 이름과 기본 브랜치 이름은 건너뛴다.
+    const candidates = [...found.values()]
+      .filter((candidate) => candidate.name !== DEFAULT_BRANCH_REF && candidate.name !== repo.defaultBranch)
+      .sort((a, b) => b.time - a.time || (a.name < b.name ? -1 : 1));
+    const keptRefs = new Set<string>(candidates.slice(BRANCH_SCAN_MAX_BRANCHES).map((candidate) => candidate.name));
+    result.keptRefs = keptRefs;
+
+    const baseShas = new Map(defaultEntries.map((entry) => [entry.path, entry.sha]));
+    for (const candidate of candidates.slice(0, BRANCH_SCAN_MAX_BRANCHES)) {
+      const fetchedBefore = blobs.fetched();
+      try {
+        const branchTree = await client.getTree(org, repo.name, candidate.ref);
+        if (branchTree.truncated) throw new Error("파일 트리가 너무 커서 GitHub 가 일부만 반환했습니다(truncated)");
+        // 기본 브랜치에 없거나 blob 이 다른 파일만 보고한다 — 같은 파일은 이미 기본 브랜치 스캔이 평가했다.
+        const changed = branchTree.entries.filter((entry) => baseShas.get(entry.path) !== entry.sha);
+        const changedPaths = new Set(changed.map((entry) => entry.path));
+        // 의존성 파일이 달라졌으면 lock 의 담당 관계를 맞추려고 브랜치 tree 의 모든 의존성 파일을 평가 입력에 넣는다.
+        // 기본 브랜치와 같은 파일은 blob 캐시에서 나오고, 보고는 달라진 경로의 검출만 한다.
+        const input = changed.some((entry) => isDependencyFile(entry.path))
+          ? branchTree.entries.filter((entry) => changedPaths.has(entry.path) || isDependencyFile(entry.path))
+          : changed;
+        const scanned = await scanTree(org, client, repo, input, candidate.name, rules, blobs.has);
+        result.branches.set(candidate.name, { declaredCount: scanned.declaredCount, skippedPaths: scanned.skippedPaths });
+        // 평가할 파일이 있었던 브랜치만 센다.
+        if (scanned.declaredCount > 0 || scanned.traced) result.countedBranches += 1;
+        result.fileCount += blobs.fetched() - fetchedBefore;
+        result.matches.push(...scanned.matches.filter((match) => changedPaths.has(match.filePath)));
+      } catch (error) {
+        if (error instanceof RateLimitedError) {
+          // 남은 후보는 평가하지 못했다 — 그 검출은 그대로 둔다.
+          for (const rest of candidates) if (!result.branches.has(rest.name)) keptRefs.add(rest.name);
+          return stopOnRateLimit();
+        }
+        const message = describeError(error);
+        // 이름으로 조회한 브랜치가 지워졌으면(404) 후보에서 제외한다 — 그 검출은 resolve 된다.
+        const gone = candidate.byName && /\(404\)/.test(message);
+        if (!gone) keptRefs.add(candidate.name);
+        logger.warn(
+          `브랜치를 평가하지 못해 건너뜁니다: ${printable(where)}@${branchLabel(candidate.name)}: ${printable(message)}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * 파일 목록(`entries`) 1개를 평가한다. 기본 브랜치(`ref = ""`)는 전체 tree, 브랜치는 기본 브랜치와 달라진 파일만 받는다.
+   * 브랜치에서는 policy(위험한 설정)와 흔적 branch(브랜치 이름은 repo 단위)를 평가하지 않는다.
+   */
+  async function scanTree(
+    org: string,
+    client: GitHubClient,
+    repo: RepoInfo,
+    entries: TreeEntry[],
+    ref: string,
+    rules: ScanRules,
+    /** 이미 받은 blob 인가 (브랜치의 상한 계산에서 뺀다) */
+    isCached: (sha: string) => boolean = () => false,
+  ): Promise<TreeScan> {
+    const { entryIndex, activeEcosystems, indicators, policy } = rules;
+    const isBranch = ref !== DEFAULT_BRANCH_REF;
+    const withRef = (found: RawMatch[]): Match[] => found.map((match) => ({ ...match, ref }));
     // 트리는 수만 개일 수 있어 한 번만 돌며 파일 이름으로 나눈다(각 목록은 트리 순서 유지).
     const packageJsons: TreeEntry[] = [];
     const lockfiles: (TreeEntry & LockfileFile)[] = [];
@@ -336,11 +542,14 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     const yamlCandidates: TreeEntry[] = [];
     const otherFiles = new Map<FileEcosystem, { manifests: TreeEntry[]; locks: TreeEntry[] }>();
     let otherManifestCount = 0;
+    let otherLockCount = 0;
     // path 는 제외 폴더(node_modules 등)를 포함한 tree 전체를 본다. 파일을 받지 않는다.
     const matches: Match[] = indicators.hasPath
-      ? await indicators.matchPaths(repo.name, `${org}/${repo.name}`, tree.entries.map((entry) => entry.path), logger)
+      ? withRef(
+          await indicators.matchPaths(repo.name, `${org}/${repo.name}`, entries.map((entry) => entry.path), logger),
+        )
       : [];
-    for (const entry of tree.entries) {
+    for (const entry of entries) {
       if (isInNodeModules(entry.path)) continue;
       const name = baseName(entry.path);
       if (name === "package.json") packageJsons.push(entry);
@@ -362,30 +571,36 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
         if (other.role === "manifest") {
           files.manifests.push(entry);
           otherManifestCount += 1;
-        } else files.locks.push(entry);
+        } else {
+          files.locks.push(entry);
+          otherLockCount += 1;
+        }
         otherFiles.set(other.ecosystem, files);
       }
     }
     // 선언 파일과 보조 파일이 모두 0개면 검사할 프로젝트가 아니다(실패 아님). 읽지 않는 종류의 파일도 센다.
     // 단 path·branch·policy 항목이 활성이면 tree 와 브랜치는 볼 수 있으므로 "흔적만 볼 수 있는 repo"로 검사한다.
     // 이때 다른 종류의 스캔은 하지 않는다(그 범위가 이 항목들의 켬·끔에 따라 달라지면 안 된다).
-    const declaredCount = packageJsons.length + otherManifestCount + sourceFiles.length;
-    const policyActive = policy.active.size > 0;
-    const traced = (indicators.hasPath || indicators.hasBranch || policyActive) && tree.entries.length > 0;
+    // 브랜치는 달라진 파일만 보므로 lock 만 바뀐 브랜치도 평가한다(선언 파일은 기본 브랜치와 같아서 목록에 없다).
+    const declaredCount =
+      packageJsons.length + otherManifestCount + sourceFiles.length + (isBranch ? lockfiles.length + otherLockCount : 0);
+    const policyActive = !isBranch && policy.active.size > 0;
+    const traced =
+      (indicators.hasPath || (!isBranch && (indicators.hasBranch || policyActive))) && entries.length > 0;
     if (declaredCount === 0 && !traced) {
       return { declaredCount: 0, traced: false, fileCount: 0, matches: [], policyMatches: [], skippedPaths: new Set() };
     }
     const evaluatePolicy = (manifests: PolicyManifest[], sources: SourceFacts[]): Promise<PolicyMatch[]> =>
       policyActive
         ? policy.evaluate(
-            { org, repo: repo.name, treePaths: tree.entries.map((entry) => entry.path), manifests, sources },
+            { org, repo: repo.name, treePaths: entries.map((entry) => entry.path), manifests, sources },
             logger,
           )
         : Promise.resolve([]);
 
-    if (indicators.hasBranch) {
+    if (!isBranch && indicators.hasBranch) {
       const branches = await client.listBranches(org, repo.name);
-      matches.push(...indicators.matchBranches(repo.name, `${org}/${repo.name}`, branches, logger));
+      matches.push(...withRef(indicators.matchBranches(repo.name, `${org}/${repo.name}`, branches, logger)));
     }
     if (declaredCount === 0) {
       return {
@@ -397,21 +612,40 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
         skippedPaths: new Set(),
       };
     }
+    // 보조 파일은 그 파일에서 나오는 종류(또는 활성 policy 검사)의 활성 항목이 있을 때만 받는다.
+    // 브랜치에서는 policy 를 평가하지 않으므로 policy 검사가 필요로 하는 종류를 따지지 않는다.
+    const wantedSources = sourceFiles.filter((file) =>
+      needsSourceKind(file.kind, activeEcosystems, isBranch ? new Set() : policy.active),
+    );
+    if (isBranch) {
+      // 받기 전에 상한을 넘는지 본다 — 넘으면 일부만 받지 않고 이 브랜치를 평가하지 않는다.
+      const uncached = (list: TreeEntry[]): number => list.filter((entry) => !isCached(entry.sha)).length;
+      const npmFiles =
+        packageJsons.length > 0 || lockfiles.length > 0
+          ? uncached(packageJsons) + uncached(lockfiles) + uncached(yamlCandidates)
+          : 0;
+      let otherCount = 0;
+      for (const [ecosystem, files] of otherFiles) {
+        if (activeEcosystems.has(ecosystem)) otherCount += uncached(files.manifests) + uncached(files.locks);
+      }
+      const toFetch = npmFiles + otherCount + uncached(wantedSources);
+      if (toFetch > BRANCH_MAX_FETCH) {
+        throw new Error(`달라진 파일 중 받을 파일이 ${toFetch}개로 상한(${BRANCH_MAX_FETCH}개)을 넘습니다`);
+      }
+    }
 
     // content 검사용: 이 스캔이 받은 모든 파일의 (경로 → 내용). content 항목이 없으면 내용을 보관하지 않는다.
     const received = indicators.hasContent ? new Map<string, string>() : undefined;
-    const npm = await scanNpm(org, client, repo, entryIndex, { packageJsons, lockfiles, bunLockbs, yamlCandidates }, received);
-    matches.push(...npm.matches);
+    const npm = await scanNpm(org, client, repo, entryIndex, { packageJsons, lockfiles, bunLockbs, yamlCandidates }, received, isBranch);
+    matches.push(...withRef(npm.matches));
     let fileCount = npm.fileCount;
     // 블랙리스트에 활성 항목이 있는 종류의 파일만 받는다(GitHub 요청 수를 늘리지 않는다).
     for (const [ecosystem, files] of otherFiles) {
       if (!activeEcosystems.has(ecosystem)) continue;
       const result = await scanEcosystem(org, client, repo, entryIndex, ecosystem, files, received);
-      matches.push(...result.matches);
+      matches.push(...withRef(result.matches));
       fileCount += result.fileCount;
     }
-    // 보조 파일은 그 파일에서 나오는 종류(또는 활성 policy 검사)의 활성 항목이 있을 때만 받는다.
-    const wantedSources = sourceFiles.filter((file) => needsSourceKind(file.kind, activeEcosystems, policy.active));
     const sourceFacts: SourceFacts[] = [];
     const skippedPaths = new Set<string>();
     if (wantedSources.length > 0) {
@@ -427,11 +661,15 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
         policyActive ? sourceFacts : undefined,
         skippedPaths,
       );
-      matches.push(...result.matches);
+      matches.push(...withRef(result.matches));
       fileCount += result.fileCount;
     }
     if (indicators.hasContent) {
-      matches.push(...(await indicators.matchContents(repo.name, `${org}/${repo.name}`, received ?? new Map(), logger, skippedPaths)));
+      matches.push(
+        ...withRef(
+          await indicators.matchContents(repo.name, `${org}/${repo.name}`, received ?? new Map(), logger, skippedPaths),
+        ),
+      );
     }
     return {
       declaredCount,
@@ -456,10 +694,11 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       yamlCandidates: TreeEntry[];
     },
     received?: Map<string, string>,
-  ): Promise<{ matches: Match[]; fileCount: number; manifests: PolicyManifest[] }> {
+    isBranch = false,
+  ): Promise<{ matches: RawMatch[]; fileCount: number; manifests: PolicyManifest[] }> {
     const { packageJsons, lockfiles, bunLockbs, yamlCandidates } = files;
-    // package.json 이 0개면 Node 프로젝트가 아니다.
-    if (packageJsons.length === 0) return { matches: [], fileCount: 0, manifests: [] };
+    // package.json 이 0개면 Node 프로젝트가 아니다. 브랜치는 lock 만 바뀐 경우도 본다.
+    if (packageJsons.length === 0 && !(isBranch && lockfiles.length > 0)) return { matches: [], fileCount: 0, manifests: [] };
 
     const dirsOf = (kind: LockfileKind) =>
       new Set(lockfiles.filter((file) => file.kind === kind).map((file) => dirOf(file.path)));
@@ -508,7 +747,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       }),
     );
 
-    const matches: Match[] = [];
+    const matches: RawMatch[] = [];
     // lockfile 의 정확한 버전으로 검출한다. 담당 package.json 의 직접 의존성이면 direct.
     for (const file of lockfiles) {
       const owners = assignment.byLockfile.get(file.path) ?? [];
@@ -587,7 +826,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     ecosystem: FileEcosystem,
     files: { manifests: TreeEntry[]; locks: TreeEntry[] },
     received?: Map<string, string>,
-  ): Promise<{ matches: Match[]; fileCount: number }> {
+  ): Promise<{ matches: RawMatch[]; fileCount: number }> {
     const support = ECOSYSTEM_SUPPORT[ecosystem];
     const toFetch = [...files.manifests, ...files.locks];
     const contents = new Map<string, string>();
@@ -604,7 +843,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       packages: support.parseLock(entry.path, contents.get(entry.path) ?? ""),
     }));
     const matches = detectEcosystem(ecosystem, manifests, locks, entryIndex).map(
-      (found): Match => ({ repo: repo.name, ...found }),
+      (found): RawMatch => ({ repo: repo.name, ...found }),
     );
     return { matches, fileCount: toFetch.length };
   }
@@ -636,6 +875,16 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       ...snapshot.map((entry) => entry.ecosystem),
       ...(feedContext?.index.ecosystems ?? []),
     ]);
+    // 브랜치 스캔의 기간은 스캔이 시작될 때 한 번 읽는다(도중에 설정이 바뀌어도 이 스캔은 같은 값을 쓴다).
+    const branchScanDays = readStoredSettings(repos.settings).branchScanDays;
+    const rules: ScanRules = {
+      entryIndex,
+      activeEcosystems,
+      indicators,
+      policy,
+      branchScanDays,
+      branchSince: new Date(clock.now().getTime() - branchScanDays * DAY_MS),
+    };
 
     // 대상 목록을 받은 직후에 오래된 기록을 지우고 repo 마다 pending 행을 만든다.
     track("대상 repo 등록", () =>
@@ -654,7 +903,9 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       if (rateLimited) return { repo: repo.name, ok: false, error: RATE_LIMITED };
       track("repo 시작", () => repos.scanRepos.markRunning(scanId, repo.name, toIso(clock.now())));
       try {
-        return { repo: repo.name, ok: true, ...(await scanRepo(org, client, repo, entryIndex, activeEcosystems, indicators, policy)) };
+        const scanned = await scanRepo(org, client, repo, rules);
+        if (scanned.rateLimited) rateLimited = true;
+        return { repo: repo.name, ok: true, ...scanned, branchCount: scanned.countedBranches };
       } catch (error) {
         if (error instanceof RateLimitedError) rateLimited = true;
         return { repo: repo.name, ok: false, error: describeError(error) };
@@ -751,7 +1002,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
         // repo 별 open 검출 수는 SQL 로 센다 (위험한 설정은 repo 의 상태·검출 수에 넣지 않는다)
         const openByRepo = repos.findings.openCountsByRepo();
         for (const outcome of outcomes) {
-          if (!outcome.ok || (outcome.declaredCount === 0 && !outcome.traced)) continue;
+          if (!outcome.ok || isSkipped(outcome)) continue;
           const openFindingCount = openByRepo.get(outcome.repo) ?? 0;
           repos.scanRepos.finalize(scanId, outcome.repo, {
             status: openFindingCount > 0 ? "issue" : "passed",
@@ -840,7 +1091,9 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       const results = new Map<string, Match>();
       for (const outcome of collected.outcomes) {
         if (!outcome.ok) continue;
-        for (const found of [...outcome.matches, ...outcome.policyMatches]) {
+        // 위험한 설정(policy)은 기본 브랜치에서만 평가한다.
+        const policyMatches = outcome.policyMatches.map((found): Match => ({ ...found, ref: DEFAULT_BRANCH_REF }));
+        for (const found of [...outcome.matches, ...policyMatches]) {
           // 외부 목록의 일치는 방금 만들었거나 이미 있던 블랙리스트 항목의 id 로 바꾼다. 못 바꾼 것은 버린다.
           const realId = isFeedTempId(found.blacklistEntryId) ? feedIds.get(found.blacklistEntryId) : found.blacklistEntryId;
           if (realId === undefined) continue;
@@ -877,7 +1130,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
             ecosystem: entry.ecosystem,
             severity: entry.severity,
             reason: entry.reason,
-            htmlUrl: htmlUrlOf(org, match.repo, match.filePath, entry.ecosystem),
+            htmlUrl: htmlUrlOf(org, match.repo, match.filePath, entry.ecosystem, match.ref),
           },
           now,
         );
@@ -888,13 +1141,8 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
         }
       }
 
-      const declaredCounts = new Map<string, number>();
-      const skippedByRepo = new Map<string, ReadonlySet<string>>();
-      for (const outcome of collected.outcomes) {
-        if (!outcome.ok) continue;
-        declaredCounts.set(outcome.repo, outcome.declaredCount);
-        if (outcome.skippedPaths.size > 0) skippedByRepo.set(outcome.repo, outcome.skippedPaths);
-      }
+      const scanned = new Map<string, Extract<RepoOutcome, { ok: true }>>();
+      for (const outcome of collected.outcomes) if (outcome.ok) scanned.set(outcome.repo, outcome);
       // 흔적 검출(path·content·branch)은 선언 파일 수가 아니라 이번 스캔의 결과에 따른다.
       const resolveRepos = new Set(collected.resolveRepos);
       const toResolve: number[] = [];
@@ -904,10 +1152,26 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
           toResolve.push(finding.id); // ② 삭제·archived·fork·이름 변경
           continue;
         }
-        const count = declaredCounts.get(finding.repo);
-        if (count === undefined) continue; // 실패한 repo 는 그대로 둔다
+        const outcome = scanned.get(finding.repo);
+        if (!outcome) continue; // 실패한 repo 는 그대로 둔다
+        // 평가의 범위(검출의 ref): 기본 브랜치는 repo 전체, 브랜치는 이번에 평가한 그 브랜치의 달라진 파일.
+        let count = outcome.declaredCount;
+        let skipped = outcome.skippedPaths;
+        if (finding.ref !== DEFAULT_BRANCH_REF) {
+          const evaluated = outcome.branches.get(finding.ref);
+          if (evaluated) {
+            count = evaluated.declaredCount;
+            skipped = evaluated.skippedPaths;
+          } else {
+            // 평가하지 못했다: 목록 조회·tree·해석 실패로 못 본 브랜치는 그대로 둔다(흔들림 방지).
+            if (outcome.branchesUnknown || outcome.keptRefs.has(finding.ref)) continue;
+            // 지워졌거나 기간이 지났거나, 설정을 껐거나, repo 에 최근 push 가 없다 — 평가할 파일이 없는 것과 같다.
+            count = 0;
+            skipped = NO_PATHS;
+          }
+        }
         // 받았지만 평가하지 못한 파일(해석 실패, 크기 초과)의 검출은 그대로 둔다 — 파일이 고쳐지면 같은 행이 이어진다.
-        if (skippedByRepo.get(finding.repo)?.has(finding.filePath)) continue;
+        if (skipped.has(finding.filePath)) continue;
         const isTrace = !usesVersionRange(finding.ecosystem);
         if ((!isTrace && count === 0) || entries.has(finding.blacklistEntryId)) toResolve.push(finding.id); // ③, ①
       }

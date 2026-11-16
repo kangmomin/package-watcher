@@ -19,6 +19,8 @@ export interface ScanReposFilter {
 export interface RepoDone {
   status: Exclude<ScanRepoStatus, "pending" | "running">;
   fileCount: number;
+  /** 평가한 브랜치(기본 브랜치 제외)의 수 */
+  branchCount: number;
   error: string | null;
   finishedAt: string;
 }
@@ -53,6 +55,7 @@ interface Row {
   open_finding_count: number;
   new_finding_count: number;
   file_count: number;
+  branch_count: number;
   error: string | null;
   started_at: string | null;
   finished_at: string | null;
@@ -72,6 +75,7 @@ function toScanRepo(row: Row): ScanRepo {
     openFindingCount: row.open_finding_count,
     newFindingCount: row.new_finding_count,
     fileCount: row.file_count,
+    branchCount: row.branch_count,
     error: row.error,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
@@ -109,8 +113,8 @@ export function createScanReposRepository(db: Db): ScanReposRepository {
   const runningStmt = db.prepare<[string, number, string]>(
     "UPDATE scan_repos SET status = 'running', started_at = ? WHERE scan_id = ? AND repo = ?",
   );
-  const doneStmt = db.prepare<[string, number, string | null, string, number, string]>(
-    `UPDATE scan_repos SET status = ?, file_count = ?, error = ?, finished_at = ?
+  const doneStmt = db.prepare<[string, number, number, string | null, string, number, string]>(
+    `UPDATE scan_repos SET status = ?, file_count = ?, branch_count = ?, error = ?, finished_at = ?
      WHERE scan_id = ? AND repo = ?`,
   );
   const finalStmt = db.prepare<[string, number, number, number, string]>(
@@ -131,7 +135,7 @@ export function createScanReposRepository(db: Db): ScanReposRepository {
       runningStmt.run(startedAt, scanId, repo);
     },
     markDone(scanId, repo, done) {
-      doneStmt.run(done.status, done.fileCount, done.error, done.finishedAt, scanId, repo);
+      doneStmt.run(done.status, done.fileCount, done.branchCount, done.error, done.finishedAt, scanId, repo);
     },
     finalize(scanId, repo, final) {
       finalStmt.run(final.status, final.openFindingCount, final.newFindingCount, scanId, repo);
@@ -163,7 +167,7 @@ export function createScanReposRepository(db: Db): ScanReposRepository {
           ? []
           : db
               .prepare<(string | number)[], Row>(
-                `SELECT repo, status, open_finding_count, new_finding_count, file_count, error, started_at, finished_at
+                `SELECT repo, status, open_finding_count, new_finding_count, file_count, branch_count, error, started_at, finished_at
                  FROM scan_repos ${whereSql} ORDER BY ${ORDER_SQL} LIMIT ? OFFSET ?`,
               )
               .all(...params, filter.limit, offset)

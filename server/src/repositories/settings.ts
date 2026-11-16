@@ -13,6 +13,7 @@ export type SettingKey =
   | "last_digest_date"
   | "listed_baseline"
   | "feed_enabled"
+  | "branch_scan_days"
   // 외부 목록 동기화의 내부 상태(API 응답은 feed 서비스가 조합한다)
   | "feed_full_sync_done"
   | "feed_cursor"
