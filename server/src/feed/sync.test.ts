@@ -280,7 +280,7 @@ describe("증분 동기화와 철회", () => {
     expect((await entries(t)).items.map((item) => item.name)).toEqual(["c"]);
   });
 
-  it("[SE-42] 권고가 수정돼 범위가 바뀌면 옛 범위는 남지 않는다 (같은 권고·패키지의 범위 집합으로 교체)", async () => {
+  it("[SE-42] 증분 동기화는 범위를 정리하지 않는다: 바뀐 권고의 새 범위는 더해지고 옛 범위는 다음 전체 동기화의 sweep 이 지운다 (SE-123)", async () => {
     const client = new FakeFeedClient([
       fakeNode({ ghsa: "GHSA-edit-edit-0001", name: "pkg", range: "= 1.0.0", updatedAt: "2026-11-01T00:00:02Z" }),
       fakeNode({ ghsa: "GHSA-edit-edit-0001", name: "pkg", range: "= 2.0.0", updatedAt: "2026-11-01T00:00:01Z" }),
@@ -295,7 +295,7 @@ describe("증분 동기화와 철회", () => {
     ]);
     await sync(t);
 
-    expect((await entries(t)).items.map((item) => item.versionRange)).toEqual(["3.0.0"]);
+    expect((await entries(t)).items.map((item) => item.versionRange).sort()).toEqual(["1.0.0", "2.0.0", "3.0.0"]);
   });
 
   it("[SE-43] 값이 같은 항목은 다시 쓰지 않는다 (행 id 가 그대로이고 index 를 다시 만들지 않는다)", async () => {

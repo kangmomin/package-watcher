@@ -3,9 +3,10 @@ import { settingsInputSchema, type FeedStatus } from "@pw/shared";
 import { apiErrorOf, emptyFindingsPage, settingsDefault, summaryDefault } from "@pw/shared/fixtures";
 import { screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { FeedPage } from "@/features/feed/FeedPage";
 import { SettingsPage } from "@/features/settings/SettingsPage";
 import { reply, setupFetchMock, type FetchMock } from "@/test/fetchMock";
-import { feedStatusDefault } from "@/test/feedFixtures";
+import { feedEntryRanged, feedPage, feedStatusDefault } from "@/test/feedFixtures";
 import { renderWithProviders } from "@/test/render";
 import { advance, findToast, settle } from "@/test/ui";
 
@@ -91,7 +92,9 @@ describe("설정 — 외부 목록 구역", () => {
     await renderSettings();
     const region = feedRegion();
     expect(await within(region).findByText("첫 동기화가 끝나지 않았습니다 — 목록이 일부입니다")).toBeInTheDocument();
-    expect(within(region).getByRole("alert")).toHaveTextContent("GitHub rate limit");
+    expect(within(region).getByText(/마지막 동기화의 오류: GitHub rate limit/)).toBeInTheDocument();
+    // 동기화 요청이 실패한 순간의 알림은 toast 가 한다. 상태 줄은 alert 가 아니다.
+    expect(within(region).queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("[SE-55] 동기화가 끝났고 오류가 없으면 안내·경고를 숨긴다", async () => {
@@ -176,5 +179,127 @@ describe("설정 — 외부 목록 구역", () => {
     await renderSettings();
     expect(await within(feedRegion()).findByRole("button", { name: "다시 시도" }, { timeout: 3000 })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "저장" })).toBeEnabled();
+  });
+
+  /** 서버의 feed 상태가 저장된 feedEnabled 를 따르는 서버 */
+  function setupFollowingServer(initialEnabled: boolean): FetchMock {
+    let enabled = initialEnabled;
+    const server = setupServer(feedStatusDefault, { ...settingsDefault, feedEnabled: initialEnabled });
+    server.on("GET", FEED, (request) => reply.json({ ...feedStatusDefault, enabled })(request));
+    server.on("PUT", SETTINGS, (request) => {
+      enabled = settingsInputSchema.parse(request.body).feedEnabled ?? enabled;
+      return reply.json({ ...settingsDefault, feedEnabled: enabled })(request);
+    });
+    return server;
+  }
+
+  it("[SE-90] 꺼져 있던 목록을 켜고 저장하면 feed 상태를 다시 받아 [지금 동기화] 가 활성이 된다", async () => {
+    const server = setupFollowingServer(false);
+    const { user } = await renderSettings();
+    await within(feedRegion()).findByText("외부 목록이 꺼져 있어서 동기화할 수 없습니다");
+    const before = server.count("GET", FEED);
+    await user.click(screen.getByRole("switch", { name: "외부 목록 사용" }));
+    await user.click(screen.getByRole("button", { name: "저장" }));
+    await findToast("설정을 저장했습니다");
+    await waitFor(() => expect(server.count("GET", FEED)).toBeGreaterThan(before));
+    await waitFor(() => expect(syncButton()).toBeEnabled());
+    expect(screen.queryByText("외부 목록이 꺼져 있어서 동기화할 수 없습니다")).not.toBeInTheDocument();
+  });
+
+  it("[SE-91] 켜져 있던 목록을 끄고 저장하면 [지금 동기화] 가 비활성이 되고 이유를 보인다", async () => {
+    const server = setupFollowingServer(true);
+    const { user } = await renderSettings();
+    await within(feedRegion()).findByText("151,751건");
+    const before = server.count("GET", FEED);
+    await user.click(screen.getByRole("switch", { name: "외부 목록 사용" }));
+    await user.click(screen.getByRole("button", { name: "저장" }));
+    await findToast("설정을 저장했습니다");
+    await waitFor(() => expect(server.count("GET", FEED)).toBeGreaterThan(before));
+    await waitFor(() => expect(syncButton()).toBeDisabled());
+    expect(within(feedRegion()).getByText("외부 목록이 꺼져 있어서 동기화할 수 없습니다")).toBeInTheDocument();
+  });
+
+  it("[SE-92] 서버는 꺼져 있고 스위치만 켠 상태(저장 전)에는 '저장하면 동기화할 수 있습니다'", async () => {
+    setupFollowingServer(false);
+    const { user } = await renderSettings();
+    await within(feedRegion()).findByText("외부 목록이 꺼져 있어서 동기화할 수 없습니다");
+    await user.click(screen.getByRole("switch", { name: "외부 목록 사용" }));
+    expect(within(feedRegion()).getByText("저장하면 동기화할 수 있습니다")).toBeInTheDocument();
+    expect(syncButton()).toBeDisabled();
+  });
+
+  it("[SE-93] 서버는 켜져 있고 스위치만 끈 상태(저장 전)에는 버튼은 활성이고 '저장하면 동기화가 꺼집니다'", async () => {
+    setupFollowingServer(true);
+    const { user } = await renderSettings();
+    await within(feedRegion()).findByText("151,751건");
+    await user.click(screen.getByRole("switch", { name: "외부 목록 사용" }));
+    expect(within(feedRegion()).getByText("저장하면 동기화가 꺼집니다")).toBeInTheDocument();
+    expect(syncButton()).toBeEnabled();
+  });
+
+  it("[SE-94] 상태가 syncing true → false 로 바뀌면 외부 목록 검색 결과를 다시 받는다", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const server = setupServer({ ...feedStatusDefault, syncing: true, syncedSoFar: 3 });
+    server.on("GET", "/api/feed/entries", reply.json(feedPage([feedEntryRanged])));
+    renderWithProviders(
+      <>
+        <SettingsPage />
+        <FeedPage />
+      </>,
+      { route: "/settings" },
+    );
+    await screen.findByRole("button", { name: "저장" });
+    await within(feedRegion()).findByText("동기화 중 — 3건 받음");
+    await screen.findByText("evil-npm-pkg");
+    const before = server.count("GET", "/api/feed/entries");
+    // 진행 중에는 다시 받지 않는다
+    await advance(3100);
+    expect(server.count("GET", "/api/feed/entries")).toBe(before);
+    server.on("GET", FEED, reply.json({ ...feedStatusDefault, syncing: false }));
+    await advance(3100);
+    await waitFor(() => expect(server.count("GET", "/api/feed/entries")).toBeGreaterThan(before));
+  });
+
+  it("[SE-95] lastError 는 role=alert 가 아닌 일반 텍스트이고 장식 아이콘은 숨긴다", async () => {
+    setupServer({ ...feedStatusDefault, lastError: "boom" });
+    await renderSettings();
+    const text = await within(feedRegion()).findByText("마지막 동기화의 오류: boom");
+    expect(text.closest("[role=alert]")).toBeNull();
+    expect(text.parentElement?.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("[SE-96] 접힌 종류도 [모두 보기] 로 펼쳐 볼 수 있고 알 수 없는 종류는 키 그대로 보인다", async () => {
+    setupServer({ ...feedStatusDefault, byEcosystem: { ...feedStatusDefault.byEcosystem, "mystery-eco": 7 } });
+    const { user } = await renderSettings();
+    await within(feedRegion()).findByText("151,751건");
+    expect(within(feedRegion()).queryByText(/rubygems/)).not.toBeInTheDocument();
+    const toggle = within(feedRegion()).getByRole("button", { name: "모두 보기" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(within(feedRegion()).getByText(/rubygems 3,846/)).toBeInTheDocument();
+    expect(within(feedRegion()).getByText(/mystery-eco 7/)).toBeInTheDocument();
+    await user.click(toggle);
+    expect(within(feedRegion()).queryByText(/rubygems/)).not.toBeInTheDocument();
+  });
+
+  it("[SE-97] 폼에 저장하지 않은 변경이 있을 때만 '목록 검색' 옆에 안내한다 (이동은 막지 않는다)", async () => {
+    setupServer();
+    const { user } = await renderSettings();
+    expect(screen.queryByText("저장하지 않은 변경이 있습니다")).not.toBeInTheDocument();
+    await user.type(screen.getByRole("textbox", { name: "GitHub org" }), "x");
+    expect(within(feedRegion()).getByText("저장하지 않은 변경이 있습니다")).toBeInTheDocument();
+    expect(within(feedRegion()).getByRole("link", { name: "목록 검색" })).toHaveAttribute("href", "/feed");
+  });
+
+  it("[SE-98] 화면을 떠나면(unmount) 폴링 요청이 더 나가지 않는다", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const server = setupServer({ ...feedStatusDefault, syncing: true, syncedSoFar: 1 });
+    const { unmount } = await renderSettings();
+    await within(feedRegion()).findByText("동기화 중 — 1건 받음");
+    unmount();
+    const count = server.count("GET", FEED);
+    await advance(10_000);
+    expect(server.count("GET", FEED)).toBe(count);
   });
 });

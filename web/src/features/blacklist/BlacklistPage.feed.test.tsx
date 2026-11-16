@@ -115,4 +115,18 @@ describe("블랙리스트 — 외부 목록의 출처", () => {
     await chooseOption(user, screen.getByRole("combobox", { name: "출처" }), "자동");
     expect(await screen.findByText("조건에 맞는 항목이 없습니다")).toBeInTheDocument();
   });
+
+  it("[SE-103] 이름의 글자만 말줄임이고 '자동' 배지와 권고 링크는 그 밖에 있어 잘리지 않는다", async () => {
+    setupServer();
+    await renderBlacklist();
+    const row = await findRowWith("evil-feed-pkg");
+    const name = within(row).getByText("evil-feed-pkg");
+    expect(name.className).toContain("truncate");
+    const badge = within(row).getByText("자동");
+    const link = within(row).getByRole("link", { name: /GHSA-aaaa-bbbb-cccc/ });
+    expect(name.contains(badge)).toBe(false);
+    expect(name.contains(link)).toBe(false);
+    expect(badge.closest(".truncate")).toBeNull();
+    expect(link.closest(".truncate")).toBeNull();
+  });
 });

@@ -14,6 +14,8 @@ const SUMMARY_MAX = 300;
 const URL_MAX = 500;
 /** 증분 동기화가 "마지막 동기화의 시작 시각"보다 이만큼 더 거슬러 올라간다(그 사이의 갱신을 놓치지 않으려고) */
 const OVERLAP_MS = HOUR_MS;
+/** 마지막 전체 동기화가 끝난 지 이만큼 지나면 다음 동기화는 전체로 한다(철회·범위 변경을 증분이 놓칠 수 있다) */
+export const FULL_RESYNC_MS = 7 * 24 * HOUR_MS;
 
 const SEVERITY_OF: Record<string, Severity> = {
   CRITICAL: "critical",
@@ -58,16 +60,6 @@ function describeError(error: unknown): string {
   return errorMessage(error) || "알 수 없는 오류";
 }
 
-interface Group {
-  externalId: string;
-  ecosystem: FeedWrite["ecosystem"];
-  name: string;
-  entries: Map<string, FeedWrite>;
-}
-
-const groupKey = (externalId: string, ecosystem: string, name: string): string =>
-  `${externalId}\u0000${ecosystem}\u0000${name}`;
-
 function urlOf(permalink: string | null | undefined, ghsaId: string): string {
   const fallback = `https://github.com/advisories/${ghsaId}`;
   if (!permalink || !/^https:\/\//i.test(permalink) || permalink.length > URL_MAX) return fallback;
@@ -81,13 +73,15 @@ interface PageOutcome {
   reachedOld: boolean;
 }
 
-/** 페이지 1개를 반영한다. 호출 쪽이 연 트랜잭션 안에서 부른다. */
-function processPage(rawNodes: unknown[], repos: Repositories, replaced: Set<string>, threshold: number): PageOutcome {
+/**
+ * 페이지 1개를 반영한다. 호출 쪽이 연 트랜잭션 안에서 부른다. 더하기·갱신과 철회의 삭제만 하고 범위를 정리(prune)하지 않는다 —
+ * 같은 권고의 범위가 여러 페이지·여러 실행에 나뉘어 와도 잃지 않는다. 옛 범위는 전체 동기화의 sweep 이 지운다.
+ */
+function processPage(rawNodes: unknown[], repos: Repositories, seenRun: string | null, threshold: number): PageOutcome {
   let skipped = 0;
-  let changed = 0;
   let reachedOld = false;
   const withdrawn = new Set<string>();
-  const groups = new Map<string, Group>();
+  const entries: FeedWrite[] = [];
 
   for (const raw of rawNodes) {
     const parsed = nodeSchema.safeParse(raw);
@@ -112,23 +106,9 @@ function processPage(rawNodes: unknown[], repos: Repositories, replaced: Set<str
       : null;
     if (!severity || !converted) {
       skipped += 1;
-      // 지원하는 종류인데 범위만 읽지 못했다면 같은 권고의 옛 범위가 남지 않게 빈 집합으로 교체한다.
-      const known = convertAdvisory(node.package.ecosystem, node.package.name, ">= 0");
-      if (known) {
-        const key = groupKey(ghsaId, known.ecosystem, known.name);
-        if (!groups.has(key)) {
-          groups.set(key, { externalId: ghsaId, ecosystem: known.ecosystem, name: known.name, entries: new Map() });
-        }
-      }
       continue;
     }
-    const key = groupKey(ghsaId, converted.ecosystem, converted.name);
-    let group = groups.get(key);
-    if (!group) {
-      group = { externalId: ghsaId, ecosystem: converted.ecosystem, name: converted.name, entries: new Map() };
-      groups.set(key, group);
-    }
-    group.entries.set(converted.versionRange ?? "", {
+    entries.push({
       externalId: ghsaId,
       ecosystem: converted.ecosystem,
       name: converted.name,
@@ -141,23 +121,43 @@ function processPage(rawNodes: unknown[], repos: Repositories, replaced: Set<str
     });
   }
 
+  let changed = repos.feed.upsert(
+    entries.filter((entry) => !withdrawn.has(entry.externalId)),
+    seenRun,
+  );
   for (const externalId of withdrawn) changed += repos.feed.deleteByExternalId(externalId);
-  for (const [key, group] of groups) {
-    if (withdrawn.has(group.externalId)) continue;
-    changed += repos.feed.replaceGroup(
-      group.externalId,
-      group.ecosystem,
-      group.name,
-      [...group.entries.values()],
-      !replaced.has(key),
-    );
-    replaced.add(key);
-  }
   return { skipped, changed, reachedOld };
 }
 
 /**
- * 동기화 1회. 처음(또는 중단된 전체 동기화)이면 모든 페이지를, 아니면 마지막 동기화 이후 바뀐 것만 받는다.
+ * 전체 동기화의 마무리. 호출 쪽의 트랜잭션 안에서 부른다. 반환: 바뀐 행의 수(sweep 과 꺼진 항목).
+ * feed 에서 사라진 권고의 `source=feed` 항목은 끄고 그 검출은 resolved 로 한다(항목과 검출의 기록은 지우지 않는다).
+ */
+function finishFull(repos: Repositories, runId: string, skipped: number, startedAt: string, now: string): number {
+  const settings = repos.settings;
+  let changed = repos.feed.sweep(runId);
+  if (repos.feed.count() > 0) {
+    const disabled = repos.blacklist.disableWithdrawnFeedEntries(now);
+    for (const id of disabled) repos.findings.resolveByBlacklistEntry(id, now);
+    changed += disabled.length;
+  }
+  settings.set("feed_full_sync_done", "true");
+  settings.set("feed_cursor", null);
+  settings.set("feed_skipped", String(skipped));
+  settings.set("feed_last_started_at", settings.get("feed_full_started_at") ?? startedAt);
+  settings.set("feed_full_started_at", null);
+  settings.set("feed_run_id", null);
+  settings.set("feed_last_full_at", now);
+  settings.set("feed_last_synced_at", now);
+  settings.set("feed_last_error", null);
+  return changed;
+}
+
+/**
+ * 동기화 1회. 아래 중 하나이면 전체, 아니면 마지막 동기화 이후 바뀐 것만(증분) 받는다.
+ * - 첫 전체 동기화가 아직 끝나지 않았다(중단된 것은 저장된 cursor 에서 이어받는다)
+ * - 마지막 전체 동기화가 끝난 지 7일이 지났다
+ * 전체 동기화는 받은 행에 실행 id 를 남기고, 끝나면 이번 실행이 보지 못한 행을 지운다(sweep). 그 전까지 기존 행은 대조에 쓰인다.
  * 절대 throw 하지 않는다 — 실패는 `feed_last_error` 에 저장하고 호출 쪽(백그라운드)은 그대로 둔다.
  */
 export async function runFeedSync(deps: FeedSyncDeps): Promise<void> {
@@ -167,54 +167,80 @@ export async function runFeedSync(deps: FeedSyncDeps): Promise<void> {
   try {
     const startedAt = toIso(clock.now());
     const fullDone = settings.get("feed_full_sync_done") === "true";
-    let cursor: string | null = fullDone ? null : settings.get("feed_cursor");
-    let skipped = fullDone || cursor === null ? 0 : Number(settings.get("feed_skipped")) || 0;
+    let cursor: string | null = settings.get("feed_cursor");
+    const lastFullAt = Date.parse(settings.get("feed_last_full_at") ?? "");
+    const stale = fullDone && !Number.isNaN(lastFullAt) && clock.now().getTime() - lastFullAt >= FULL_RESYNC_MS;
+    const full = !fullDone || cursor !== null || stale;
+
+    let runId = "";
+    let skipped = 0;
     let threshold = Number.NEGATIVE_INFINITY;
-    if (fullDone) {
+    if (full) {
+      const saved = settings.get("feed_run_id");
+      if (cursor !== null && saved) {
+        runId = saved;
+        skipped = Number(settings.get("feed_skipped")) || 0;
+      } else {
+        // 새 전체 동기화. 여러 번에 나눠 받아도 같은 실행 id 와 시작 시각을 쓴다.
+        cursor = null;
+        runId = startedAt;
+        settings.set("feed_run_id", runId);
+        settings.set("feed_full_started_at", startedAt);
+      }
+    } else {
       const last = Date.parse(settings.get("feed_last_started_at") ?? "");
       // 시작 시각이 없으면(깨진 설정) 증분이 아니라 많이 받는다.
       threshold = Number.isNaN(last) ? Number.NEGATIVE_INFINITY : last - OVERLAP_MS;
-    } else if (cursor === null) {
-      // 새 전체 동기화. 여러 번에 나눠 받아도 이 시각이 나중의 증분 기준이 된다.
-      settings.set("feed_full_started_at", startedAt);
     }
-    // 이번 실행에서 이미 교체한 (권고, 패키지). 같은 권고의 범위가 여러 페이지에 나뉘어 와도 앞 페이지의 범위를 지우지 않는다.
-    const replaced = new Set<string>();
+    let resumed = cursor !== null;
     let processed = 0;
 
     for (;;) {
-      const page = await client.fetchPage(cursor);
+      let page;
+      try {
+        page = await client.fetchPage(cursor);
+      } catch (error) {
+        // 이어받던 cursor 를 거부하면(오류) 처음부터 다시 받는다. 같은 실행 id 라서 이미 받은 행은 그대로 유효하다.
+        if (!resumed || error instanceof RateLimitedError) throw error;
+        logger.warn("저장된 cursor 로 이어받지 못해 처음부터 다시 받습니다", error);
+        resumed = false;
+        cursor = null;
+        skipped = 0;
+        settings.set("feed_cursor", null);
+        settings.set("feed_skipped", "0");
+        continue;
+      }
+      resumed = false;
       const nextCursor = page.nextCursor;
+      let finished = 0;
       const outcome = repos.transaction(() => {
-        const result = processPage(page.nodes, repos, replaced, threshold);
-        if (!fullDone) {
-          // 이어받기 위치와 건너뛴 수를 페이지와 같은 트랜잭션에 저장한다.
+        const result = processPage(page.nodes, repos, full ? runId : null, threshold);
+        if (full) {
           settings.set("feed_cursor", nextCursor);
           settings.set("feed_skipped", String(skipped + result.skipped));
+          // 마지막 페이지와 마무리(sweep, fullSyncDone, cursor 삭제)는 한 트랜잭션이다 — 사이에 멈춰도 처음부터 다시 받지 않는다.
+          if (nextCursor === null) finished = finishFull(repos, runId, skipped + result.skipped, startedAt, toIso(clock.now()));
         }
         return result;
       });
       skipped += outcome.skipped;
       processed += page.nodes.length;
-      if (outcome.changed > 0) deps.onChange();
+      if (outcome.changed > 0 || finished > 0) deps.onChange();
       deps.onProgress(processed);
 
       cursor = nextCursor;
-      if (cursor === null || outcome.reachedOld) break;
+      if (cursor === null) {
+        if (full) return;
+        break;
+      }
+      if (!full && outcome.reachedOld) break;
       if (deps.shouldStop()) return;
       await yieldToEventLoop();
     }
 
+    // 증분 동기화의 마무리
     repos.transaction(() => {
-      if (!fullDone) {
-        settings.set("feed_full_sync_done", "true");
-        settings.set("feed_cursor", null);
-        settings.set("feed_skipped", String(skipped));
-        settings.set("feed_last_started_at", settings.get("feed_full_started_at") ?? startedAt);
-        settings.set("feed_full_started_at", null);
-      } else {
-        settings.set("feed_last_started_at", startedAt);
-      }
+      settings.set("feed_last_started_at", startedAt);
       settings.set("feed_last_synced_at", toIso(clock.now()));
       settings.set("feed_last_error", null);
     });

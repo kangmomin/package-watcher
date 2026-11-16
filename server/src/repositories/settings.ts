@@ -17,6 +17,8 @@ export type SettingKey =
   | "feed_full_sync_done"
   | "feed_cursor"
   | "feed_full_started_at"
+  | "feed_run_id"
+  | "feed_last_full_at"
   | "feed_last_started_at"
   | "feed_last_synced_at"
   | "feed_skipped"

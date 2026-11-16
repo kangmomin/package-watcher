@@ -47,11 +47,13 @@ describe("외부 목록 검색", () => {
     expect(link).toHaveAttribute("rel", expect.stringContaining("noreferrer"));
   });
 
-  it("[SE-72] 검색어는 300ms debounce 뒤 trim 해서 q 로 요청하고 page 는 1 로 돌아간다", async () => {
+  it("[SE-72] 2쪽에 간 뒤 검색어를 바꾸면 300ms debounce 뒤 trim 해서 q 와 page=1 로 요청한다", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    const server = setupServer();
+    const server = setupServer(feedPage([feedEntryRanged], { total: 120 }));
     const { user } = await renderFeed();
     await findRowWith("evil-npm-pkg");
+    await user.click(screen.getByRole("button", { name: "다음" }));
+    await waitFor(() => expect(server.last("GET", ENTRIES)?.query.page).toBe("2"));
     const before = server.count("GET", ENTRIES);
     await user.type(screen.getByRole("textbox", { name: "검색어" }), " GHSA-aaaa ");
     expect(server.count("GET", ENTRIES)).toBe(before);
@@ -103,11 +105,11 @@ describe("외부 목록 검색", () => {
 
   it("[SE-77] 로딩 중에는 skeleton, 실패하면 오류와 [다시 시도]", async () => {
     const server = setupFetchMock().on("GET", ENTRIES, reply.error(apiErrorOf("INTERNAL_ERROR", "x"), 500));
-    await renderFeed();
+    const { user } = await renderFeed();
     expect(queryAllSkeletons().length).toBeGreaterThan(0);
     const retry = await screen.findByRole("button", { name: "다시 시도" }, { timeout: 3000 });
     server.on("GET", ENTRIES, reply.json(feedPage([feedEntryRanged])));
-    retry.click();
+    await user.click(retry);
     await findRowWith("evil-npm-pkg");
   });
 
@@ -117,5 +119,45 @@ describe("외부 목록 검색", () => {
     await findRowWith("evil-npm-pkg");
     expect(screen.getByRole("link", { name: "설정으로" })).toHaveAttribute("href", "/settings");
     expect(screen.getByRole("table", { name: "외부 목록" })).toBeInTheDocument();
+  });
+
+  it("[SE-99] 마지막 쪽(15만 건, 3,000쪽)은 범위를 표시하고 [다음] 이 비활성이다", async () => {
+    setupServer(feedPage([feedEntryRanged], { total: 150000, page: 3000 }));
+    await renderFeed();
+    await findRowWith("evil-npm-pkg");
+    expect(screen.getByText("149951–150000 / 150000")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "다음" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "이전" })).toBeEnabled();
+  });
+
+  it("[SE-100] 보던 쪽이 비면(항목이 줄어듦) 마지막 쪽으로 옮겨 요청한다", async () => {
+    const server = setupFetchMock().on("GET", ENTRIES, (request) =>
+      request.query.page === "1"
+        ? reply.json(feedPage([feedEntryRanged], { total: 120 }))(request)
+        : reply.json(feedPage([], { total: 50, page: Number(request.query.page) }))(request),
+    );
+    const { user } = await renderFeed();
+    await findRowWith("evil-npm-pkg");
+    await user.click(screen.getByRole("button", { name: "다음" }));
+    await waitFor(() => expect(server.requests("GET", ENTRIES).map((r) => r.query.page)).toContain("2"));
+    await waitFor(() => expect(server.last("GET", ENTRIES)?.query.page).toBe("1"));
+  });
+
+  it("[SE-101] url 이 javascript: 인 항목은 링크가 아니라 글자로만 보인다", async () => {
+    setupServer(feedPage([{ ...feedEntryRanged, url: "javascript:alert(1)" }]));
+    await renderFeed();
+    const row = await findRowWith("evil-npm-pkg");
+    expect(within(row).queryByRole("link")).toBeNull();
+    expect(within(row).getByText("GHSA-aaaa-bbbb-cccc")).toBeInTheDocument();
+  });
+
+  it("[SE-102] 긴 요약은 잘리지 않고 줄바꿈된다", async () => {
+    const summary = "Malicious ".repeat(80).trim();
+    setupServer(feedPage([{ ...feedEntryRanged, summary }]));
+    await renderFeed();
+    const row = await findRowWith("evil-npm-pkg");
+    const cell = within(row).getByText(summary);
+    expect(cell.className).toContain("whitespace-normal");
+    expect(cell.className).not.toContain("truncate");
   });
 });

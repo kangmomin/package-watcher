@@ -11,6 +11,7 @@ import {
 } from "@pw/shared";
 import { ExternalLinkIcon, PencilIcon, Trash2Icon } from "lucide-react";
 import { useId } from "react";
+import { cn } from "@/lib/utils";
 import { DashText } from "@/components/DashText";
 import { RowHeaderCell } from "@/components/RowHeaderCell";
 import { SeverityBadge } from "@/components/SeverityBadge";
@@ -67,7 +68,7 @@ function FeedOrigin({ externalId }: { externalId: string | null }) {
         role="img"
         aria-label={description}
         title={description}
-        className="ml-2 align-middle font-sans text-[10px]"
+        className="shrink-0 font-sans text-[10px]"
       >
         자동
       </Badge>
@@ -77,7 +78,7 @@ function FeedOrigin({ externalId }: { externalId: string | null }) {
           target="_blank"
           rel="noreferrer"
           aria-label={`${externalId} 권고 (새 창)`}
-          className="ml-2 inline-flex items-center gap-0.5 align-middle font-sans text-[11px] font-normal underline underline-offset-2"
+          className="inline-flex shrink-0 items-center gap-0.5 font-sans text-[11px] font-normal underline underline-offset-2"
         >
           {externalId}
           <ExternalLinkIcon className="size-3" aria-hidden="true" />
@@ -152,16 +153,21 @@ export function BlacklistTable({
                   id={nameId}
                   className={
                     isUserManagedEcosystem(entry.ecosystem)
-                      ? "max-w-64 truncate font-mono text-xs font-medium"
+                      ? cn(
+                          "max-w-64 font-mono text-xs font-medium",
+                          // feed 항목은 칸이 아니라 이름의 span 만 말줄임이다(배지·링크가 잘리지 않게).
+                          entry.source !== "feed" && "truncate",
+                        )
                       : "max-w-64 font-medium whitespace-normal"
                   }
                   title={entry.name}
                 >
                   {isUserManagedEcosystem(entry.ecosystem) ? (
-                    <>
-                      <span>{entry.name}</span>
+                    // 이름의 글자만 말줄임이다. 배지와 링크는 줄어들지 않는 flex 항목이라 잘리지 않는다.
+                    <div className="flex items-center gap-2">
+                      <span className="min-w-0 truncate">{entry.name}</span>
                       {entry.source === "feed" && <FeedOrigin externalId={entry.externalId} />}
-                    </>
+                    </div>
                   ) : (
                     // 내장 검사: 사람이 읽는 title 을 크게, id 를 작게 보인다.
                     <>

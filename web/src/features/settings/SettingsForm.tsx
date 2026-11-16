@@ -253,7 +253,7 @@ export function SettingsForm({ settings, isFetchedAfterMount = true }: SettingsF
       <Controller
         control={form.control}
         name="feedEnabled"
-        render={({ field }) => <FeedSection enabled={field.value} onEnabledChange={field.onChange} />}
+        render={({ field }) => <FeedSection enabled={field.value} onEnabledChange={field.onChange} isFormDirty={isDirty} />}
       />
 
       <Separator />

@@ -60,6 +60,9 @@ import { needsSourceKind, scanSources, sourceFileOf, type SourceFile } from "./s
 import type { SourceFacts } from "../sources/index.ts";
 
 const NPM: Ecosystem = "npm";
+/** registry 에서 받지 않는 의존성의 spec */
+const LOCAL_SPEC = /^(?:workspace|link|file|portal):/i;
+const isFeedEntry = (entry: MatchableEntry): boolean => entry.id < 0 || entry.source === "feed";
 /** repo 동시 처리 수 */
 export const REPO_CONCURRENCY = 5;
 /** repo 1개 안의 파일 동시 조회 수 */
@@ -544,6 +547,8 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
         if (owners.some((lockPath) => lockedNames.get(lockPath)?.has(dep.name))) continue;
         for (const entry of entryIndex.match(NPM, dep.name)) {
           if (isNamePattern(entry.name) && internalNames.has(dep.name)) continue;
+          // 외부 목록의 항목은 registry 의 패키지에만 해당한다: 같은 repo 의 패키지와 registry 에서 받지 않는 spec 은 제외
+          if (isFeedEntry(entry) && (internalNames.has(dep.name) || LOCAL_SPEC.test(dep.spec.trim()))) continue;
           if (!matchRange(dep.spec, entry.versionRange)) continue;
           matches.push({
             repo: repo.name,
@@ -766,6 +771,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
   function materializeFeedEntries(
     outcomes: RepoOutcome[],
     entries: Map<number, BlacklistEntry>,
+    feedIndex: FeedIndex | null,
     now: string,
     today: string,
   ): Map<number, number> {
@@ -778,7 +784,10 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     for (const tempId of tempIds) {
       const row = repos.feed.get(feedRowIdOf(tempId));
       if (!row) continue;
-      const existing = repos.blacklist.findByKey(row.ecosystem, row.name, row.versionRange, today);
+      // 스캔이 본 임시 항목과 같은 (이름, 범위)의 행인가 — 행이 바뀌었거나 id 가 다른 행에 쓰였으면 이 일치는 버린다.
+      const seen = feedIndex?.match(row.ecosystem, row.name)?.find((item) => item.id === tempId);
+      if (!seen || seen.versionRange !== row.versionRange) continue;
+      const existing = repos.blacklist.findSameMeaning(row.ecosystem, row.name, row.versionRange, today);
       const entry =
         existing ??
         repos.blacklist.insert(
@@ -809,6 +818,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     org: string,
     snapshot: BlacklistEntry[],
     collected: Collected,
+    feedIndex: FeedIndex | null,
   ): { scan: Scan; sendMail: boolean } {
     return repos.transaction(() => {
       if (repos.settings.get("org") !== org) {
@@ -826,7 +836,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
 
       const now = toIso(clock.now());
       const entries = unchangedEntries(snapshot, today);
-      const feedIds = materializeFeedEntries(collected.outcomes, entries, now, today);
+      const feedIds = materializeFeedEntries(collected.outcomes, entries, feedIndex, now, today);
       const results = new Map<string, Match>();
       for (const outcome of collected.outcomes) {
         if (!outcome.ok) continue;
@@ -948,7 +958,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     let sendMail = false;
     try {
       const collected = await collect(scan.id, org, client, snapshot, feedContext);
-      ({ scan: finished, sendMail } = finalize(scan.id, org, snapshot, collected));
+      ({ scan: finished, sendMail } = finalize(scan.id, org, snapshot, collected, feedContext?.index ?? null));
     } catch (error) {
       logger.error(`스캔 #${scan.id} 중 예상하지 못한 오류`, error);
       finished = failUnexpected(scan, error);

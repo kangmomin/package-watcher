@@ -71,6 +71,8 @@ export interface MatchableEntry {
   name: string;
   ecosystem: string;
   versionRange: string | null;
+  /** 항목의 출처. 외부 목록(feed)이 만든 항목은 'feed' (임시 항목은 id 가 음수) */
+  source?: string;
 }
 
 export interface EntryIndex<E extends { name: string; ecosystem: string }> {

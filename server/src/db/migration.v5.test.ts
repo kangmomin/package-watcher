@@ -126,6 +126,7 @@ describe("DB 마이그레이션 v5 (외부 목록, 브랜치·작성자의 준�
       "summary",
       "url",
       "updated_at",
+      "seen_run",
     ]);
     expect(columnsOf(db, "repo_authors")).toEqual(["repo", "author", "first_seen_at"]);
     expect(columnsOf(db, "blacklist_entries")).toEqual(expect.arrayContaining(["source", "external_id"]));

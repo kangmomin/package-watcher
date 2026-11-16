@@ -33,6 +33,7 @@ export const queryKeys = {
     ["scans", scanId, "repos", { status: filter.status, q: filter.q }, page] as const,
   settings: () => ["settings"] as const,
   feedStatus: () => ["feed", "status"] as const,
+  feedEntriesAll: () => ["feed", "entries"] as const,
   feedEntries: (filter: FeedEntriesFilter, page: number) =>
     ["feed", "entries", { q: filter.q, ecosystem: filter.ecosystem }, page] as const,
 };

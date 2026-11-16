@@ -30,11 +30,13 @@ export interface StoredFeedEntry extends FeedWrite {
 /** SQL 만 담당한다. 동기화·스캔이 호출 쪽 트랜잭션 안에서 쓴다. */
 export interface FeedRepository {
   /**
-   * 한 권고의 한 패키지(external_id, ecosystem, name)를 `entries` 의 범위 집합으로 교체한다.
-   * 집합에 없는 옛 범위는 지우고, 있는 범위는 값이 바뀐 것만 갱신한다. 바뀐 행의 수를 반환한다.
-   * `prune` 이 false 이면 지우지 않고 더하기만 한다(같은 권고의 범위가 여러 페이지에 나뉘어 온 경우).
+   * 항목을 더하거나, 값이 바뀐 것만 갱신한다. 바뀐(새로 생기거나 값이 달라진) 행의 수를 반환한다.
+   * `seenRun` 이 있으면(전체 동기화) 그 행에 실행 id 를 남긴다 — 값이 같아도 남기지만 바뀐 행의 수에는 세지 않는다.
+   * 지우지 않는다(옛 범위는 전체 동기화의 `sweep` 이 정리한다).
    */
-  replaceGroup(externalId: string, ecosystem: Ecosystem, name: string, entries: FeedWrite[], prune?: boolean): number;
+  upsert(entries: FeedWrite[], seenRun: string | null): number;
+  /** 이번 전체 동기화(`runId`)가 보지 못한 행을 모두 지운다. 지운 행의 수 */
+  sweep(runId: string): number;
   /** 철회된 권고: 그 `external_id` 의 항목을 모두 지운다. 지운 행의 수 */
   deleteByExternalId(externalId: string): number;
   count(): number;
@@ -81,19 +83,20 @@ const toStored = (row: FeedRow): StoredFeedEntry => ({
 export function createFeedRepository(db: Db): FeedRepository {
   // 값이 같으면 갱신하지 않아서 `changes` 가 "정말 바뀐 행"의 수가 된다.
   const upsertStmt = db.prepare<unknown[]>(
-    `INSERT INTO feed_entries (${COLUMNS.replace("id, ", "")})
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO feed_entries (external_id, ecosystem, name, version_range, raw_range, severity, summary, url, updated_at, seen_run)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (external_id, ecosystem, name, version_range) DO UPDATE SET
        raw_range = excluded.raw_range, severity = excluded.severity, summary = excluded.summary,
        url = excluded.url, updated_at = excluded.updated_at
      WHERE raw_range IS NOT excluded.raw_range OR severity IS NOT excluded.severity
         OR summary IS NOT excluded.summary OR url IS NOT excluded.url OR updated_at IS NOT excluded.updated_at`,
   );
-  const pruneStmt = db.prepare<[string, string, string, string]>(
-    `DELETE FROM feed_entries
-     WHERE external_id = ? AND ecosystem = ? AND name = ?
-       AND version_range NOT IN (SELECT value FROM json_each(?))`,
+  const seenStmt = db.prepare<[string, string, string, string, string, string]>(
+    `UPDATE feed_entries SET seen_run = ?
+     WHERE external_id = ? AND ecosystem = ? AND name = ? AND version_range = ? AND seen_run IS NOT ?`,
   );
+  const sweepStmt = db.prepare<[string]>("DELETE FROM feed_entries WHERE seen_run IS NOT ?");
+  const seenAnyStmt = db.prepare<[string], { found: number }>("SELECT 1 AS found FROM feed_entries WHERE seen_run = ? LIMIT 1");
   const deleteByIdStmt = db.prepare<[string]>("DELETE FROM feed_entries WHERE external_id = ?");
   const countStmt = db.prepare<[], { count: number }>("SELECT COUNT(*) AS count FROM feed_entries");
   const byEcosystemStmt = db.prepare<[], { ecosystem: string; count: number }>(
@@ -105,24 +108,28 @@ export function createFeedRepository(db: Db): FeedRepository {
   const getStmt = db.prepare<[number], FeedRow>(`SELECT ${COLUMNS} FROM feed_entries WHERE id = ?`);
 
   return {
-    replaceGroup(externalId, ecosystem, name, entries, prune = true) {
-      const ranges = JSON.stringify([...new Set(entries.map((entry) => toDbRange(entry.versionRange)))]);
-      let changes = prune ? pruneStmt.run(externalId, ecosystem, name, ranges).changes : 0;
+    upsert(entries, seenRun) {
+      let changes = 0;
       for (const entry of entries) {
+        const range = toDbRange(entry.versionRange);
         changes += upsertStmt.run(
           entry.externalId,
           entry.ecosystem,
           entry.name,
-          toDbRange(entry.versionRange),
+          range,
           entry.rawRange,
           entry.severity,
           entry.summary,
           entry.url,
           entry.updatedAt,
+          seenRun,
         ).changes;
+        if (seenRun !== null) seenStmt.run(seenRun, entry.externalId, entry.ecosystem, entry.name, range, seenRun);
       }
       return changes;
     },
+    // 이번 실행이 한 행도 보지 못했으면(빈 응답 등) 아무것도 지우지 않는다 - 목록 전체를 잃지 않으려고.
+    sweep: (runId) => (seenAnyStmt.get(runId) ? sweepStmt.run(runId).changes : 0),
     deleteByExternalId: (externalId) => deleteByIdStmt.run(externalId).changes,
     count: () => countStmt.get()?.count ?? 0,
     countsByEcosystem: () => Object.fromEntries(byEcosystemStmt.all().map((row) => [row.ecosystem, row.count])),

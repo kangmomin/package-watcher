@@ -39,9 +39,9 @@ function parseComparators(raw: string): Comparator[] | null {
   return out;
 }
 
-/** `>= 0` 은 아무 제약이 아니다. 다른 비교식과 함께 있으면 뺀다 (`>= 0, < 3` = `< 3`). */
+/** `>= 0`·`> 0` 은 아무 제약이 아니다(GitHub 는 둘 다 "모든 버전"으로 쓴다). 다른 비교식과 함께 있으면 뺀다 (`>= 0, < 3` = `< 3`). */
 function dropZeroLower(comparators: Comparator[]): Comparator[] {
-  return comparators.filter((item) => !(item.op === ">=" && ZERO.test(item.version)));
+  return comparators.filter((item) => !((item.op === ">=" || item.op === ">") && ZERO.test(item.version)));
 }
 
 type Formatter = (comparators: Comparator[]) => string | null;

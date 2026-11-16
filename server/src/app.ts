@@ -190,7 +190,7 @@ export function createApp(deps: AppDeps): AppInstance {
     findings: createFindingService({ repos, githubTokenSource }),
     blacklist: createBlacklistService({ repos, clock }),
     scans,
-    settings: createSettingsService({ repos, clock, githubTokenSource, smtpConfigured }),
+    settings: createSettingsService({ repos, clock, githubTokenSource, smtpConfigured, onFeedEnabled: () => feed.startBackground() }),
     notifier,
   };
   const scheduler = createScheduler({ repos, scans, feed, feedWaitMs: deps.feedWaitMs, notifier, clock, githubTokenSource, logger });

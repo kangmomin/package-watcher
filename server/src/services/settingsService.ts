@@ -20,10 +20,12 @@ export interface SettingsServiceDeps {
   clock: Clock;
   githubTokenSource: TokenSource;
   smtpConfigured: boolean;
+  /** 외부 목록(feed)이 꺼짐에서 켜짐으로 바뀐 직후(저장 뒤)에 부른다 — 동기화를 시작한다 */
+  onFeedEnabled?: () => void;
 }
 
 export function createSettingsService(deps: SettingsServiceDeps): SettingsService {
-  const { repos, clock, githubTokenSource, smtpConfigured } = deps;
+  const { repos, clock, githubTokenSource, smtpConfigured, onFeedEnabled } = deps;
 
   function get(): Settings {
     const stored = readStoredSettings(repos.settings);
@@ -45,6 +47,7 @@ export function createSettingsService(deps: SettingsServiceDeps): SettingsServic
     update(input) {
       const data = parseInput(settingsInputSchema, input);
       const now = clock.now();
+      const wasFeedEnabled = readStoredSettings(repos.settings).feedEnabled;
       repos.transaction(() => {
         const previous = readStoredSettings(repos.settings);
         const orgChanged = previous.org !== data.org;
@@ -72,6 +75,13 @@ export function createSettingsService(deps: SettingsServiceDeps): SettingsServic
           );
         }
       });
+      if (!wasFeedEnabled && data.feedEnabled === true) {
+        try {
+          onFeedEnabled?.();
+        } catch {
+          // 동기화 시작의 실패가 설정 저장을 실패로 만들지 않는다
+        }
+      }
       return get();
     },
   };

@@ -209,7 +209,7 @@ export function migrateToV4(db: Db): void {
 // findings.ref(브랜치 스캔)와 repo_authors(작성자 감시)는 뒤 묶음이 쓴다 — DB 를 한 번만 올리려고 지금 넣는다.
 const V5_SQL = `
 CREATE TABLE feed_entries (
-  id            INTEGER PRIMARY KEY,
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
   external_id   TEXT NOT NULL,
   ecosystem     TEXT NOT NULL,
   name          TEXT NOT NULL,
@@ -219,6 +219,8 @@ CREATE TABLE feed_entries (
   summary       TEXT NOT NULL,
   url           TEXT NOT NULL,
   updated_at    TEXT NOT NULL,
+  -- 마지막으로 이 행을 본 전체 동기화의 실행 id. 전체 동기화가 끝나면 이번 실행이 보지 못한 행을 지운다(sweep)
+  seen_run      TEXT,
   UNIQUE (external_id, ecosystem, name, version_range)
 );
 CREATE INDEX feed_entries_name ON feed_entries (ecosystem, name);
