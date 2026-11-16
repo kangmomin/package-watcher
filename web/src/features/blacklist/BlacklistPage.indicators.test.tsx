@@ -240,7 +240,7 @@ describe("침해의 흔적 — 수정 Dialog와 표", () => {
       .on("GET", "/api/summary", reply.json(summaryDefault))
       .on("GET", FINDINGS, reply.json(pageOf([finding], { total: 1, page: 1, limit: 50 })));
     renderWithProviders(<DashboardPage />);
-    const row = await findRowWith("wfx-docs@—");
+    const row = await findRowWith("wfx-docs@");
     expect(within(row).getByText("브랜치 이름")).toBeInTheDocument();
     expect(within(row).getByText("refs/heads/wfx-docs")).toBeInTheDocument();
   });

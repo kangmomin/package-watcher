@@ -33,7 +33,7 @@ export interface GitHubClient {
   getTree(org: string, repo: string, ref: string): Promise<RepoTree>;
   /** blob API(`git/blobs/{sha}`)로 읽어 UTF-8 문자열로 반환한다. contents API 는 1MB 초과 파일을 읽지 못한다. */
   getFile(org: string, repo: string, sha: string): Promise<string>;
-  /** 모든 브랜치 이름(모든 페이지). 404·빈 repo(409)는 `[]`. */
+  /** 모든 브랜치 이름(모든 페이지, 최대 10,000개 — 넘으면 throw). 빈 repo(409)는 `[]`, 404 는 throw. */
   listBranches(org: string, repo: string): Promise<string[]>;
 }
 
@@ -58,6 +58,8 @@ const SECONDARY_RETRY_AFTER_LIMIT_S = 60;
 /** 5xx·네트워크 오류만 재시도한다. 409(빈 repo)를 포함한 4xx 는 모두 재시도하지 않는다. */
 const DO_NOT_RETRY = Array.from({ length: 100 }, (_, index) => 400 + index);
 const SYMLINK_MODE = "120000";
+const MAX_BRANCH_PAGES = 100;
+const MAX_BRANCHES = MAX_BRANCH_PAGES * 100;
 
 interface RepoResponse {
   name: string;
@@ -177,17 +179,23 @@ export function createOctokitClient(options: OctokitClientOptions): GitHubClient
 
     listBranches: (org, repo) =>
       call(async () => {
+        // 직접 페이지를 돈다. 상한을 넘는 부분 결과가 resolve 의 근거가 되면 안 되므로 자르지 않고 throw 한다.
+        const names: string[] = [];
         try {
-          const branches = await octokit.paginate(octokit.rest.repos.listBranches, {
-            owner: org,
-            repo,
-            per_page: 100,
-          });
-          return branches.map((branch) => branch.name);
+          for (let page = 1; page <= MAX_BRANCH_PAGES; page += 1) {
+            const { data, headers } = await octokit.rest.repos.listBranches({ owner: org, repo, per_page: 100, page });
+            for (const branch of data) names.push(branch.name);
+            if (!/rel="next"/.test(headers.link ?? "")) break;
+            if (page === MAX_BRANCH_PAGES) {
+              throw new Error(`브랜치가 너무 많습니다(${MAX_BRANCHES.toLocaleString("en-US")}개 초과)`);
+            }
+          }
         } catch (error) {
-          if (error instanceof RequestError && (error.status === 404 || error.status === 409)) return [];
+          // 빈 repo(409)만 `[]`. 404 는 이미 tree 를 읽은 repo 에서는 이상 상황이라 실패로 둔다(기존 검출을 유지).
+          if (error instanceof RequestError && error.status === 409) return [];
           throw error;
         }
+        return names;
       }),
 
     getFile: (org, repo, sha) =>

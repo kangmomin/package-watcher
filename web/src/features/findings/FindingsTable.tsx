@@ -5,6 +5,7 @@
 import type { Finding } from "@pw/shared";
 import { EllipsisVerticalIcon, EyeOffIcon, ExternalLinkIcon, RotateCcwIcon } from "lucide-react";
 import { useId } from "react";
+import { DashText } from "@/components/DashText";
 import { RowHeaderCell } from "@/components/RowHeaderCell";
 import { SeverityBadge } from "@/components/SeverityBadge";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -17,7 +18,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { usePendingFindingIds, useSetFindingStatus, type SetFindingStatusVariables } from "@/features/findings/hooks";
-import { NOT_APPLICABLE_LABEL, dependencyTypeLabel, ecosystemLabel } from "@/lib/format";
+import { NO_VERSION_SR_TEXT, dependencyTypeLabel, ecosystemLabel } from "@/lib/format";
 
 export interface FindingsTableProps {
   items: Finding[];
@@ -44,7 +45,7 @@ export function FindingsTable({ items }: FindingsTableProps) {
             <TableHead scope="col">repo</TableHead>
             <TableHead scope="col">파일 경로</TableHead>
             <TableHead scope="col">종류</TableHead>
-            <TableHead scope="col">패키지@버전</TableHead>
+            <TableHead scope="col">대상</TableHead>
             <TableHead scope="col">심각도</TableHead>
             <TableHead scope="col">직접/전이</TableHead>
             <TableHead scope="col">상태</TableHead>
@@ -66,8 +67,13 @@ export function FindingsTable({ items }: FindingsTableProps) {
                   {finding.filePath}
                 </TableCell>
                 <TableCell>{ecosystemLabel(finding.ecosystem)}</TableCell>
-                <TableCell id={packageId} className="font-mono text-xs">
-                  {`${finding.packageName}@${finding.version === "" ? NOT_APPLICABLE_LABEL : finding.version}`}
+                <TableCell
+                  id={packageId}
+                  className="max-w-72 truncate font-mono text-xs"
+                  title={`${finding.packageName}@${finding.version}`}
+                >
+                  {finding.packageName}@
+                  {finding.version === "" ? <DashText srText={NO_VERSION_SR_TEXT} /> : finding.version}
                 </TableCell>
                 <TableCell>
                   <SeverityBadge severity={finding.severity} />

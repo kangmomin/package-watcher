@@ -5,6 +5,7 @@
 import { entryStatusOf, usesVersionRange, type BlacklistEntry, type EntryStatus } from "@pw/shared";
 import { PencilIcon, Trash2Icon } from "lucide-react";
 import { useId } from "react";
+import { DashText } from "@/components/DashText";
 import { RowHeaderCell } from "@/components/RowHeaderCell";
 import { SeverityBadge } from "@/components/SeverityBadge";
 import { Badge } from "@/components/ui/badge";
@@ -20,7 +21,7 @@ import {
 } from "@/components/ui/table";
 import {
   ALL_VERSIONS_LABEL,
-  NOT_APPLICABLE_LABEL,
+  NOT_APPLICABLE_SR_TEXT,
   ecosystemLabel,
   entryStatusLabel,
 } from "@/lib/format";
@@ -73,7 +74,7 @@ export function BlacklistTable({
               />
             </TableHead>
             <TableHead scope="col">종류</TableHead>
-            <TableHead scope="col">패키지 이름</TableHead>
+            <TableHead scope="col">이름</TableHead>
             <TableHead scope="col">버전 범위</TableHead>
             <TableHead scope="col">심각도</TableHead>
             <TableHead scope="col">상태</TableHead>
@@ -105,12 +106,18 @@ export function BlacklistTable({
                   />
                 </TableCell>
                 <TableCell>{ecosystemLabel(entry.ecosystem)}</TableCell>
-                <RowHeaderCell id={nameId} className="font-mono text-xs font-medium">
+                <RowHeaderCell
+                  id={nameId}
+                  className="max-w-64 truncate font-mono text-xs font-medium"
+                  title={entry.name}
+                >
                   {entry.name}
                 </RowHeaderCell>
                 <TableCell className="font-mono text-xs">
                   {!usesVersionRange(entry.ecosystem) ? (
-                    <span className="font-sans text-muted-foreground">{NOT_APPLICABLE_LABEL}</span>
+                    <span className="font-sans text-muted-foreground">
+                      <DashText srText={NOT_APPLICABLE_SR_TEXT} />
+                    </span>
                   ) : (
                     (entry.versionRange ?? (
                       <span className="font-sans text-muted-foreground">{ALL_VERSIONS_LABEL}</span>
@@ -126,7 +133,7 @@ export function BlacklistTable({
                   </Badge>
                 </TableCell>
                 <TableCell className="font-mono text-xs">{entry.expiresAt ?? "-"}</TableCell>
-                <TableCell className="max-w-96 whitespace-normal">{entry.reason}</TableCell>
+                <TableCell className="max-w-96 whitespace-normal [overflow-wrap:anywhere]">{entry.reason}</TableCell>
                 <TableCell className="text-center">
                   <Button
                     variant="ghost"

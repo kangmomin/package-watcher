@@ -5,7 +5,7 @@ import type { SmtpConfig } from "../config.ts";
 import { AppError } from "../errors.ts";
 import type { Logger } from "../logger.ts";
 import type { Repositories } from "../repositories/index.ts";
-import { readStoredSettings, toIso, toKst } from "./common.ts";
+import { printable, readStoredSettings, toIso, toKst } from "./common.ts";
 
 /** 메일 본문 최대 행 수. 넘으면 "외 N건, GUI에서 확인" 을 붙인다. */
 export const MAIL_MAX_ROWS = 200;
@@ -120,11 +120,11 @@ export function renderFindings(findings: Finding[]): string {
   for (const finding of shown) {
     if (finding.repo !== currentRepo) {
       if (currentRepo !== null) lines.push("");
-      lines.push(`[${finding.repo}]`);
+      lines.push(`[${printable(finding.repo)}]`);
       currentRepo = finding.repo;
     }
     lines.push(
-      `- [${finding.severity}][${finding.ecosystem}] ${finding.filePath}: ${finding.packageName}@${versionLabel(finding)} (${typeLabel(finding)}) — 사유: ${finding.reason}`,
+      `- [${finding.severity}][${finding.ecosystem}] ${printable(finding.filePath)}: ${printable(finding.packageName)}@${printable(versionLabel(finding))} (${typeLabel(finding)}) — 사유: ${printable(finding.reason)}`,
       `  ${finding.htmlUrl}`,
     );
   }

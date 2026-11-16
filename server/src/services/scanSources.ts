@@ -13,7 +13,7 @@ import {
   type ImageRef,
   type SourceKind,
 } from "../sources/index.ts";
-import { mapWithConcurrency } from "./common.ts";
+import { mapWithConcurrency, printable } from "./common.ts";
 
 /** repo 1개 안의 파일 동시 조회 수 */
 const FILE_CONCURRENCY = 4;
@@ -213,7 +213,7 @@ export async function scanSources(
   );
   const matches: SourceMatch[] = [];
   fetchable.forEach((file, index) => {
-    const where = `${org}/${repo.name}/${file.path}`;
+    const where = printable(`${org}/${repo.name}/${file.path}`);
     const content = contents[index] ?? "";
     received?.set(file.path, content);
     if (content.length > MAX_SOURCE_LENGTH) {

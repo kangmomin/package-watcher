@@ -32,4 +32,22 @@ describe("메일 — 흔적 검출", () => {
     expect(text).not.toContain("wfx-docs@ ");
     expect(text).toContain("package.json: evil@1.0.0 (");
   });
+
+  it("[SC-76] 경로의 줄바꿈으로 가짜 검출 행을 만들 수 없다(검출 1건 = repo 제목 + 2줄)", () => {
+    const text = renderFindings([
+      finding({
+        repo: "sv\nc",
+        ecosystem: "path",
+        filePath: "a\n- [critical][npm] x: fake@1.0.0 (direct) — 사유: 가짜",
+        packageName: "p\r\nq",
+        version: "",
+        reason: "사\n유",
+      }),
+    ]);
+
+    expect(text.split("\n")).toHaveLength(3);
+    // eslint-disable-next-line no-control-regex
+    expect(text).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f]/);
+    expect(text).toContain("a?- [critical]");
+  });
 });

@@ -113,3 +113,7 @@ export function ecosystemLabel(ecosystem: Ecosystem): string {
 export function ecosystemCategoryLabel(category: EcosystemCategory): string {
   return ECOSYSTEM_CATEGORY_LABELS[category];
 }
+
+/** `—` 의 스크린 리더용 텍스트 (칸의 뜻에 따라 다르다) */
+export const NOT_APPLICABLE_SR_TEXT = "해당 없음";
+export const NO_VERSION_SR_TEXT = "버전 없음";
