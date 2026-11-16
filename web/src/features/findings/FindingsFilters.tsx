@@ -11,6 +11,8 @@ import type { FindingsFilter } from "@/lib/api";
 export interface FindingsFiltersProps {
   filter: FindingsFilter;
   onFilterChange: (filter: FindingsFilter) => void;
+  /** policy = "위험한 설정" 탭: 종류·패키지 필터가 없다(종류는 policy 하나, 대상은 검사마다 다르다) */
+  variant?: "findings" | "policy";
 }
 
 interface FilterSelectProps<T extends string> {
@@ -35,7 +37,8 @@ function toTextFilter(value: string): string | undefined {
   return trimmed === "" ? undefined : trimmed;
 }
 
-export function FindingsFilters({ filter, onFilterChange }: FindingsFiltersProps) {
+export function FindingsFilters({ filter, onFilterChange, variant = "findings" }: FindingsFiltersProps) {
+  const isPolicy = variant === "policy";
   const id = useId();
   const [repoDraft, setRepoDraft] = useState(filter.repo ?? "");
   const [packageDraft, setPackageDraft] = useState(filter.package ?? "");
@@ -61,15 +64,17 @@ export function FindingsFilters({ filter, onFilterChange }: FindingsFiltersProps
         options={STATUS_OPTIONS}
         onChange={(status) => onFilterChange({ ...filter, status })}
       />
-      <FilterSelect
-        id={`${id}-ecosystem`}
-        label="종류"
-        value={filter.ecosystem}
-        options={SUPPORTED_ECOSYSTEMS}
-        renderOptions={() => <EcosystemSelectItems />}
-        triggerClassName="w-44"
-        onChange={(ecosystem) => onFilterChange({ ...filter, ecosystem })}
-      />
+      {!isPolicy && (
+        <FilterSelect
+          id={`${id}-ecosystem`}
+          label="종류"
+          value={filter.ecosystem}
+          options={SUPPORTED_ECOSYSTEMS}
+          renderOptions={() => <EcosystemSelectItems includePolicy={false} />}
+          triggerClassName="w-44"
+          onChange={(ecosystem) => onFilterChange({ ...filter, ecosystem })}
+        />
+      )}
       <FilterSelect
         id={`${id}-severity`}
         label="심각도"
@@ -88,17 +93,19 @@ export function FindingsFilters({ filter, onFilterChange }: FindingsFiltersProps
           onChange={(event) => setRepoDraft(event.target.value)}
         />
       </div>
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor={`${id}-package`}>패키지</Label>
-        <Input
-          id={`${id}-package`}
-          type="text"
-          placeholder="검색"
-          className="w-48"
-          value={packageDraft}
-          onChange={(event) => setPackageDraft(event.target.value)}
-        />
-      </div>
+      {!isPolicy && (
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor={`${id}-package`}>패키지</Label>
+          <Input
+            id={`${id}-package`}
+            type="text"
+            placeholder="검색"
+            className="w-48"
+            value={packageDraft}
+            onChange={(event) => setPackageDraft(event.target.value)}
+          />
+        </div>
+      )}
     </div>
   );
 }

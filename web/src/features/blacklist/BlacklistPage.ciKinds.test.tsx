@@ -122,7 +122,8 @@ describe("새 종류 — 종류 select 그룹", () => {
     const all = within(listbox).getAllByRole("option");
     expect(all[0]).toHaveTextContent("전체");
     expect(all[0]?.closest('[role="group"]')).toBeNull();
-    expect(groupsOf(listbox)).toEqual(GROUPS);
+    // 블랙리스트 필터에는 위험한 설정 그룹이 더 있다.
+    expect(groupsOf(listbox)).toEqual([...GROUPS, { label: "위험한 설정", options: ["위험한 설정"] }]);
     await user.click(within(listbox).getByRole("option", { name: "Docker 이미지" }));
     await waitFor(() => expect(server.last("GET", BLACKLIST)?.query).toMatchObject({ ecosystem: "docker" }));
     expect(filter).toHaveTextContent("Docker 이미지");

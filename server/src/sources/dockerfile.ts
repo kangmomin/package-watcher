@@ -1,4 +1,5 @@
 import { extractCommandPackages } from "./commands.ts";
+import { hasCurlPipeShell } from "./curlPipe.ts";
 import { MAX_REF_LENGTH, parseImageRef } from "./images.ts";
 import type { ImageRef, SourceRefs } from "./types.ts";
 
@@ -94,6 +95,7 @@ export function extractDockerfile(content: string): SourceRefs {
   };
   const add = (text: string): void => {
     for (const pkg of extractCommandPackages(text)) found.commands.push(pkg);
+    if (!found.curlPipe && hasCurlPipeShell(text)) found.curlPipe = true;
   };
   let at = 0;
   for (;;) {

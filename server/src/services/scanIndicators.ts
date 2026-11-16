@@ -49,8 +49,8 @@ function longestLiteral(pattern: string): string {
   return best;
 }
 
-/** 항목마다 검출 수를 세어 상한을 넘으면 버리고, 넘은 항목마다 경고를 1줄만 남긴다. */
-function createLimiter(logger: Logger, where: string, label: string) {
+/** 항목마다 검출 수를 세어 상한을 넘으면 버리고, 넘은 항목마다 경고를 1줄만 남긴다. (policy 검사도 쓴다) */
+export function createLimiter(logger: Logger, where: string, label: string) {
   const counts = new Map<number, number>();
   return (entry: BlacklistEntry): boolean => {
     const count = (counts.get(entry.id) ?? 0) + 1;

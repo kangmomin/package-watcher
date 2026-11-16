@@ -1,4 +1,11 @@
-import { SEVERITY_RANK, usesVersionRange, type Finding, type TestEmailResult } from "@pw/shared";
+import {
+  POLICY_ECOSYSTEM,
+  SEVERITY_RANK,
+  policyCheckOf,
+  usesVersionRange,
+  type Finding,
+  type TestEmailResult,
+} from "@pw/shared";
 import { createTransport } from "nodemailer";
 import type { Clock } from "../clock.ts";
 import type { SmtpConfig } from "../config.ts";
@@ -6,6 +13,7 @@ import { AppError } from "../errors.ts";
 import type { Logger } from "../logger.ts";
 import type { Repositories } from "../repositories/index.ts";
 import { printable, readStoredSettings, toIso, toKst } from "./common.ts";
+import { todayKst } from "./entryActivity.ts";
 
 /** 메일 본문 최대 행 수. 넘으면 "외 N건, GUI에서 확인" 을 붙인다. */
 export const MAIL_MAX_ROWS = 200;
@@ -73,7 +81,10 @@ export interface Notifier {
    * SMTP 실패는 throw 하지 않는다(로그만).
    */
   notifyNewFindings(): Promise<void>;
-  /** 일일 요약: `open` 검출만. 0건 또는 수신자 0명이면 보내지 않는다. */
+  /**
+   * 일일 요약: `open` 검출만. 0건 또는 수신자 0명이면 보내지 않는다.
+   * `policy`(위험한 설정)는 행에 넣지 않고 끝에 검사별 건수만 붙인다. policy 만 있으면 "보낼 것"이 없다.
+   */
   sendDigest(): Promise<void>;
   /** 저장된 수신자에게 테스트 메일. `NO_RECIPIENTS` / `SMTP_NOT_CONFIGURED` / `SMTP_FAILED` (AppError) */
   sendTestEmail(): Promise<TestEmailResult>;
@@ -133,6 +144,17 @@ export function renderFindings(findings: Finding[]): string {
   return lines.join("\n");
 }
 
+/** 위험한 설정의 구역: 총 건수와 검사별 건수(많은 순, 같으면 id 순). 0건인 검사는 생략한다. */
+function renderPolicySection(policy: Finding[], titleOfEntry: ReadonlyMap<number, string>): string {
+  const counts = new Map<number, number>();
+  for (const finding of policy) {
+    counts.set(finding.blacklistEntryId, (counts.get(finding.blacklistEntryId) ?? 0) + 1);
+  }
+  const rows = [...counts].map(([entryId, count]) => ({ title: titleOfEntry.get(entryId) ?? `검사 #${entryId}`, count }));
+  rows.sort((x, y) => y.count - x.count || (x.title < y.title ? -1 : x.title > y.title ? 1 : 0));
+  return [`위험한 설정: 총 ${policy.length}건`, ...rows.map((row) => `- ${printable(row.title)}: ${row.count}건`)].join("\n");
+}
+
 export function createNotifier(deps: NotifierDeps): Notifier {
   const { repos, mailer, smtpConfigured, clock, logger } = deps;
 
@@ -183,15 +205,26 @@ export function createNotifier(deps: NotifierDeps): Notifier {
     },
 
     async sendDigest() {
-      const findings = repos.findings.listOpen();
+      const open = repos.findings.listOpen();
+      const findings = open.filter((finding) => finding.ecosystem !== POLICY_ECOSYSTEM);
       if (findings.length === 0) return;
       const to = recipientsForMail("일일 요약");
       if (!to) return;
       const { date } = toKst(clock.now());
+      const policy = open.filter((finding) => finding.ecosystem === POLICY_ECOSYSTEM);
+      let section = "";
+      if (policy.length > 0) {
+        const titles = new Map(
+          repos.blacklist
+            .list({ ecosystem: POLICY_ECOSYSTEM, q: undefined }, todayKst(clock))
+            .map((entry) => [entry.id, policyCheckOf(entry.name)?.title ?? entry.name] as const),
+        );
+        section = `\n${renderPolicySection(policy, titles)}\n`;
+      }
       await trySend("일일 요약", {
         to,
         subject: `${SUBJECT_PREFIX} 일일 요약 (${date}): 미해결 검출 ${findings.length}건`,
-        text: `미해결(open) 블랙리스트 검출이 ${findings.length}건 있습니다.\n\n${renderFindings(findings)}\n`,
+        text: `미해결(open) 블랙리스트 검출이 ${findings.length}건 있습니다.\n\n${renderFindings(findings)}\n${section}`,
       });
     },
 

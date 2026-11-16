@@ -11,9 +11,11 @@ import {
   type ActionRef,
   type CommandPackage,
   type ImageRef,
+  type SourceFacts,
   type SourceKind,
 } from "../sources/index.ts";
-import { mapWithConcurrency, printable } from "./common.ts";
+import { cleanVersion, mapWithConcurrency, printable } from "./common.ts";
+import { policyNeedsSourceKind } from "./scanPolicy.ts";
 
 /** repo 1개 안의 파일 동시 조회 수 */
 const FILE_CONCURRENCY = 4;
@@ -23,20 +25,6 @@ const MAX_SOURCE_LENGTH = 1_048_576;
 const MAX_COMMANDS_PER_FILE = 5000;
 /** 파일 1개에서 검출에 쓰는 action·이미지 수의 상한(각각) */
 const MAX_REFS_PER_FILE = 5000;
-/** 검출에 남기는 버전의 최대 길이 */
-const MAX_VERSION_LENGTH = 128;
-
-/** 제어 문자를 빼고 128자로 자른다 (원문이 그대로 DB·화면·메일에 간다). */
-function cleanVersion(version: string): string {
-  let out = "";
-  for (const char of version) {
-    const code = char.charCodeAt(0);
-    if (code >= 0x20 && code !== 0x7f) out += char;
-    if (out.length >= MAX_VERSION_LENGTH) break;
-  }
-  return out;
-}
-
 export interface SourceFile extends TreeEntry {
   kind: SourceKind;
 }
@@ -68,14 +56,31 @@ const KIND_ECOSYSTEMS: Record<SourceKind, readonly string[]> = {
   mcp: ["npm", "pypi", "content"],
 };
 
-/** 이 종류의 보조 파일을 받아야 하는가 (GitHub 요청을 늘리지 않는다). */
-export function needsSourceKind(kind: SourceKind, activeEcosystems: ReadonlySet<string>): boolean {
-  return KIND_ECOSYSTEMS[kind].some((ecosystem) => activeEcosystems.has(ecosystem));
+/**
+ * 이 종류의 보조 파일을 받아야 하는가 (GitHub 요청을 늘리지 않는다).
+ * 활성 policy 검사(`activePolicyChecks`)가 필요로 하는 종류도 받는다. 활성 검사가 없으면 이전과 같다.
+ */
+export function needsSourceKind(
+  kind: SourceKind,
+  activeEcosystems: ReadonlySet<string>,
+  activePolicyChecks: ReadonlySet<string> = NO_CHECKS,
+): boolean {
+  return (
+    KIND_ECOSYSTEMS[kind].some((ecosystem) => activeEcosystems.has(ecosystem)) ||
+    policyNeedsSourceKind(kind, activePolicyChecks)
+  );
 }
 
+const NO_CHECKS: ReadonlySet<string> = new Set();
+
 /** 보조 파일을 하나라도 받아야 하는가 */
-export function needsSources(activeEcosystems: ReadonlySet<string>): boolean {
-  return (Object.keys(KIND_ECOSYSTEMS) as SourceKind[]).some((kind) => needsSourceKind(kind, activeEcosystems));
+export function needsSources(
+  activeEcosystems: ReadonlySet<string>,
+  activePolicyChecks: ReadonlySet<string> = NO_CHECKS,
+): boolean {
+  return (Object.keys(KIND_ECOSYSTEMS) as SourceKind[]).some((kind) =>
+    needsSourceKind(kind, activeEcosystems, activePolicyChecks),
+  );
 }
 
 /** 검출에 남기는 버전: 정확한 버전이거나 원문의 버전 부분(`latest`, `^1.0` 등), 없으면 "" */
@@ -205,6 +210,8 @@ export async function scanSources(
   activeEcosystems?: ReadonlySet<string>,
   /** 받은 파일의 (경로 → 내용)을 담는다 (content 검사용, 같은 파일을 다시 받지 않게) */
   received?: Map<string, string>,
+  /** policy 검사용: 해석에 성공한 파일의 사실을 담는다 (크기·형식 때문에 건너뛴 파일은 없다) */
+  facts?: SourceFacts[],
 ): Promise<{ matches: SourceMatch[]; fileCount: number }> {
   // 호출자가 활성 종류를 주면 그 종류에서 쓸 수 있는 파일만 받는다.
   const fetchable = activeEcosystems ? files.filter((file) => needsSourceKind(file.kind, activeEcosystems)) : files;
@@ -221,15 +228,16 @@ export async function scanSources(
       return;
     }
     try {
-      const facts = extractSource(file.kind, file.path, content);
+      const extracted = extractSource(file.kind, file.path, content);
       const limit = <T>(items: T[], max: number, label: string): T[] => {
         if (items.length <= max) return items;
         logger.warn(`보조 파일의 ${label}이(가) ${max}개를 넘어 앞의 것만 검사합니다: ${where}`);
         return items.slice(0, max);
       };
-      const commands = limit(facts.commands, MAX_COMMANDS_PER_FILE, "명령");
-      const actions = limit(facts.actions, MAX_REFS_PER_FILE, "action");
-      const images = limit(facts.images, MAX_REFS_PER_FILE, "이미지");
+      const commands = limit(extracted.commands, MAX_COMMANDS_PER_FILE, "명령");
+      const actions = limit(extracted.actions, MAX_REFS_PER_FILE, "action");
+      const images = limit(extracted.images, MAX_REFS_PER_FILE, "이미지");
+      facts?.push({ ...extracted, commands, actions, images });
       for (const match of detectCommands(repo.name, file.path, commands, entryIndex)) matches.push(match);
       for (const match of detectActions(repo.name, file.path, actions, entryIndex)) matches.push(match);
       for (const match of detectImages(repo.name, file.path, images, entryIndex)) matches.push(match);

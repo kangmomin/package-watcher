@@ -59,6 +59,7 @@ export function createFindingService(deps: FindingServiceDeps): FindingService {
       const org = repos.settings.get("org");
       return {
         openCount: repos.findings.countByStatus("open"),
+        policyOpenCount: repos.findings.countPolicyByStatus("open"),
         ignoredCount: repos.findings.countByStatus("ignored"),
         lastScan: repos.scans.latest(),
         nextScanAt: canScan(org, githubTokenSource) ? repos.settings.get("next_scan_at") : null,

@@ -97,7 +97,7 @@ Docker 로 실행할 때는 `.env` 에 `PORT`, `HOST`, `DATA_DIR`, `WEB_DIST_DIR
 
 | 필드 | 설명 |
 |------|------|
-| `ecosystem` | 종류. 패키지(`npm`, `go`, `pypi`, `nuget`, `cargo`, `pub`, `maven`, 기본 `npm`)와 CI(`actions`, `docker`), 침해의 흔적(`path`, `content`, `branch`). 같은 이름·버전 범위라도 종류가 다르면 다른 항목이다. **등록한 뒤에는 바꿀 수 없다**(PUT 으로 다른 종류를 보내면 400, 새 항목으로 등록한다) |
+| `ecosystem` | 종류. 패키지(`npm`, `go`, `pypi`, `nuget`, `cargo`, `pub`, `maven`, 기본 `npm`)와 CI(`actions`, `docker`), 침해의 흔적(`path`, `content`, `branch`), 위험한 설정(`policy`, 내장 검사라서 추가·삭제 불가 — 아래 "위험한 설정"). 같은 이름·버전 범위라도 종류가 다르면 다른 항목이다. **등록한 뒤에는 바꿀 수 없다**(PUT 으로 다른 종류를 보내면 400, 새 항목으로 등록한다) |
 | `name` | 패키지 이름(`actions` 는 `owner/repo`, `docker` 는 이미지 저장소, `path` 는 경로, `content` 는 찾을 문자열, `branch` 는 브랜치 이름) 또는 `*` 패턴(`content` 제외). 종류마다 이름 규칙과 비교 방법이 다르다(아래 표) |
 | `versionRange` | 그 종류의 범위 문법(아래 표). 비우면 모든 버전. `path`·`content`·`branch` 는 범위를 쓰지 않으므로 항상 비어 있고, 값을 주면 400 이다(`details.versionRange`) |
 | `severity` | `critical` > `high` > `medium` > `low`. 기본 `medium`. 대시보드는 심각도가 높은 검출부터 보여 준다 |
@@ -153,6 +153,29 @@ Docker 로 실행할 때는 `.env` 에 `PORT`, `HOST`, `DATA_DIR`, `WEB_DIST_DIR
 임계값 이상인 검출이 없으면 즉시 메일을 보내지 않는다. 빠진 검출은 `notifiedAt` 이 비어 있어서, 임계값을 낮추거나 항목의 심각도를 올리면 다음 스캔 종료 메일에 들어간다.
 **업그레이드 직전에 만든 기존 항목은 모두 `medium` 이다.** 임계값을 `high` 이상으로 올리기 전에 항목마다 심각도를 지정하지 않으면 즉시 메일이 조용히 끊긴다(설정 화면이 이 항목 수를 경고로 알려 준다).
 메일 본문은 심각도 높은 순으로 정렬하고 각 행에 `[심각도][종류]` 를 붙인다.
+
+## 위험한 설정
+
+블랙리스트에 없어도 보고하는 **내장 검사 9개**다. 종류 `policy` 의 항목으로 서버가 시작할 때 없는 것만 만든다(2번 시작해도 9개, 이미 있으면 아무것도 바꾸지 않는다). 항목의 `name` 이 검사의 id 이고 `versionRange` 는 쓰지 않는다.
+
+| id | 내용 | 기본 심각도 |
+|----|------|-------------|
+| `unpinned-action` | workflow·`action.yml` 의 외부 action 이 40자 commit SHA 가 아님 (`actions/*`, `github/*`, 같은 org, `./` 로컬은 제외) | medium |
+| `missing-lockfile` | 의존성이 있는 `package.json`(`node_modules` 밖)에 담당 lock 파일이 없음 | medium |
+| `non-registry-dependency` | npm 의존성이 `git+…`·`git://`·`http(s)://`·`github:`·`gitlab:`·`bitbucket:`·`user/repo` 이거나 `.tgz`·`.tar.gz` 파일(`file:` 폴더, `workspace:`, `link:`, `npm:` 는 제외) | medium |
+| `unpinned-exec` | 버전 없이 받아서 바로 실행(`npx`, `pnpm dlx`·`pnpx`, `yarn dlx`, `bunx`·`bun x`, `npm exec`, `uvx`, `uv tool run`, `pipx run`). 같은 repo 의 `package.json` 에 선언된 이름(`npx vitest`)은 제외 | medium |
+| `curl-pipe-shell` | `curl`·`wget` 의 출력을 `sh`·`bash`·`zsh` 로 실행(`\| sh`, `bash <(curl …)`, `sh -c "$(curl …)"`). 파일당 1건 | medium |
+| `workflow-no-permissions` | workflow 에 최상위 `permissions` 가 없고 모든 job 에 있지도 않음. 파일당 1건 | low |
+| `unpinned-image` | Docker 이미지의 tag 가 없거나 `latest`(digest 가 있으면 제외) | low |
+| `committed-node-modules` | tree 에 `node_modules/<이름>/package.json` 이 있음. repo 당 1건 | low |
+| `suspicious-filename` | 경로에 제어 문자(코드 0x20 미만, 0x7f)가 있음 | low |
+
+- **바꿀 수 있는 것은 켬·끔(`enabled`), 심각도, 사유, 만료일뿐이다.** 추가(POST, 가져오기의 새 행)는 `VALIDATION_ERROR`, 삭제(DELETE, 일괄 `delete` 에 1개라도 포함)는 `INVALID_STATE` 이고, 이름 변경(PUT)은 `VALIDATION_ERROR` 다. 일괄 `enable`·`disable`, 가져오기의 기존 항목 갱신, 내보내기는 된다.
+- 끄면 그 검사의 검출은 즉시 `resolved` 가 되고, 다시 켜면 다음 스캔에서 다시 나온다. 검사 1개가 repo 1개에서 내는 검출은 정렬 순의 앞쪽 100건까지다(넘으면 로그에 경고).
+- 검출은 `ecosystem: "policy"`, `dependencyType: "direct"` 이고 `packageName`·`version` 은 검사마다 다르다(action 이면 `owner/repo`·ref, 의존성이면 이름·spec, `curl-pipe-shell` 은 `curl | sh` 등). 해석하지 못한 파일(YAML 오류 등)은 그 파일에 대한 검사만 건너뛴다.
+- **메일:** 즉시 메일에는 넣지 않고, policy 검출만 새로 생긴 스캔은 메일을 보내지 않는다. 일일 요약의 행 목록에도 넣지 않고, 열린 검출이 1건 이상이면 끝에 `위험한 설정: 총 n건` 과 검사별 건수(많은 순, 0건은 생략)만 붙인다. policy 만 있고 다른 열린 검출이 없는 날은 요약을 보내지 않는다.
+- **숫자에서 제외:** `GET /api/summary` 의 `openCount`·`ignoredCount` 는 policy 를 세지 않고 `policyOpenCount` 가 열린 policy 검출을 센다. 스캔의 repo 상태(`통과`/`이슈`)와 `openFindingCount`·`newFindingCount`(스캔과 repo 모두)도 policy 를 세지 않는다(policy 검출만 있는 repo 는 `통과`). `GET /api/findings` 는 `category`(그 분류만), `excludeCategory`(그 분류 제외)로 거른다(`ecosystem` 과 함께 쓸 수 있다).
+- **요청 수가 늘어난다:** 활성 검사가 필요로 하는 보조 파일을 항상 받는다 — `unpinned-action`·`workflow-no-permissions`: workflow·`action.yml`, `curl-pipe-shell`: 거기에 Dockerfile, `unpinned-exec`: 거기에 MCP 설정, `unpinned-image`: workflow·`action.yml`·Dockerfile·compose. `package.json` 은 이미 받으므로 `missing-lockfile`·`non-registry-dependency` 와, tree 만 보는 `committed-node-modules`·`suspicious-filename` 은 요청이 늘지 않는다. 활성 검사가 하나도 없으면 요청 수는 이전과 같다. 활성 검사가 있으면 의존성 파일이 없는 repo 도 파일이 있으면 `건너뜀`이 아니라 검사 대상이다(tree 검사).
 
 ## 일괄 작업, 가져오기, 내보내기
 
@@ -258,7 +281,7 @@ HTTP 전송을 직접 지원하지 않는 클라이언트(예: Claude Desktop)�
 
 | tool | 동작 |
 |------|------|
-| `list_findings` | 검출 목록 (`status`, `repo`, `package`, `ecosystem`, `severity`, `page`, `limit`). `severity` 는 정확히 일치하는 값만 거른다 |
+| `list_findings` | 검출 목록 (`status`, `repo`, `package`, `ecosystem`, `category`, `excludeCategory`, `severity`, `page`, `limit`). `category`/`excludeCategory` 는 `package`·`ci`·`indicator`·`policy`. `severity` 는 정확히 일치하는 값만 거른다 |
 | `set_finding_status` | 검출을 `ignored` 또는 `open` 으로 변경 (`id`, `status`) |
 | `list_blacklist` | 블랙리스트 목록 (`ecosystem?`, `enabled?`, `q?`, `status?`). `enabled=true` 는 사용자가 켠 항목이라서 만료된 항목도 포함된다. 만료 여부는 각 항목의 `isExpired` 로 본다 |
 | `add_blacklist_entry` | 블랙리스트 항목 추가 (`name`, `versionRange?`, `reason`, `ecosystem?`, `severity?`, `enabled?`, `expiresAt?`). `severity` 기본값은 `medium`, 즉시 메일 기준은 `get_settings` 의 `notifyMinSeverity` |

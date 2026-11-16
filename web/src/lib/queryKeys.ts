@@ -13,6 +13,8 @@ export const queryKeys = {
         repo: filter.repo,
         package: filter.package,
         ecosystem: filter.ecosystem,
+        category: filter.category,
+        excludeCategory: filter.excludeCategory,
         severity: filter.severity,
       },
       page,

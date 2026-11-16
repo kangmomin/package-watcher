@@ -2,6 +2,7 @@
 import {
   blacklistCreateSchema,
   ECOSYSTEM_RULES,
+  isUserManagedEcosystem,
   SUPPORTED_ECOSYSTEMS,
   type ApiError,
   type BlacklistEntry,
@@ -118,12 +119,14 @@ describe("블랙리스트 종류 — 종류 select", () => {
     const { user } = await renderBlacklist();
 
     const dialog = await openAddDialog(user);
-    expect(SUPPORTED_ECOSYSTEMS).toHaveLength(12);
+    // 등록 Dialog 에는 위험한 설정(policy)이 없다.
+    const selectable = SUPPORTED_ECOSYSTEMS.filter(isUserManagedEcosystem);
+    expect(selectable).toHaveLength(12);
     expect(dialog.ecosystem).toBeEnabled();
     expect(dialog.ecosystem).toHaveTextContent("npm");
     await user.click(dialog.ecosystem);
     const options = within(await screen.findByRole("listbox")).getAllByRole("option");
-    expect(options.map((option) => option.textContent?.trim())).toEqual(SUPPORTED_ECOSYSTEMS.map(ecosystemLabel));
+    expect(options.map((option) => option.textContent?.trim())).toEqual(selectable.map(ecosystemLabel));
   });
 
   it("[ME-20][v2-AC-10] go 를 골라 저장하면 요청 본문에 ecosystem 과 입력한 이름·범위가 들어간다", async () => {

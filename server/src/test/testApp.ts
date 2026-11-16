@@ -52,6 +52,8 @@ export interface TestAppOptions {
   /** 재시작 테스트: 앞선 앱의 dbPath 를 넘긴다 */
   dbPath?: string;
   initialSettings?: InitialSettingsEnv;
+  /** 내장 검사(policy) 항목 9개를 만든다. 기본 false (기존 테스트의 항목 수·스캔 결과가 바뀌지 않게) */
+  seedPolicy?: boolean;
 }
 
 export interface TestApp {
@@ -95,6 +97,7 @@ export function createTestApp(options: TestAppOptions = {}): TestApp {
     clock,
     logger,
     initialSettings: options.initialSettings,
+    seedPolicy: options.seedPolicy ?? false,
     webDistDir: null,
   });
 

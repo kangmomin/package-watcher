@@ -4,6 +4,7 @@ import {
   blacklistCreateSchema,
   kstDateOf,
   SEVERITIES,
+  isUserManagedEcosystem,
   SUPPORTED_ECOSYSTEMS,
   type ApiError,
   type BlacklistEntry,
@@ -213,7 +214,7 @@ describe("블랙리스트 v2 — 추가 Dialog", () => {
 
     const dialog = await openAddDialog(user);
     expect(dialog.ecosystem).toHaveTextContent("npm");
-    expect(SUPPORTED_ECOSYSTEMS).toHaveLength(12);
+    expect(SUPPORTED_ECOSYSTEMS.filter(isUserManagedEcosystem)).toHaveLength(12);
     expect(dialog.ecosystem).toBeEnabled();
     expect(dialog.severity).toHaveTextContent("medium");
     expect(dialog.enabled).toBeChecked();

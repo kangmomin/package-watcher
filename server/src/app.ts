@@ -32,6 +32,7 @@ import { todayKst } from "./services/entryActivity.ts";
 import { createFindingService } from "./services/findingService.ts";
 import type { AppServices } from "./services/index.ts";
 import { createNotifier, type Mailer } from "./services/notifier.ts";
+import { seedPolicyEntries } from "./services/policySeed.ts";
 import { createScanService } from "./services/scanService.ts";
 import { createSettingsService } from "./services/settingsService.ts";
 
@@ -49,6 +50,8 @@ export interface AppDeps {
   logger?: Logger;
   /** 설정 초기값 env. 키가 settings 에 없을 때만 넣는다 */
   initialSettings?: InitialSettingsEnv;
+  /** 내장 검사(policy) 항목을 시작할 때 없는 것만 만든다. 기본 true (테스트 앱만 끈다) */
+  seedPolicy?: boolean;
   /** 빌드된 web 위치. null 이거나 없으면 정적 파일과 SPA 폴백을 건너뛴다 */
   webDistDir?: string | null;
 }
@@ -143,6 +146,11 @@ export function createApp(deps: AppDeps): AppInstance {
   try {
     repos.findings.resolveForInactiveEntries(todayKst(clock), toIso(startedAt));
     repos.findings.syncSeverityFromEntries();
+    // 스케줄러가 시작하기 전에 만들어서 첫 스캔부터 내장 검사가 있다.
+    if (deps.seedPolicy !== false) {
+      const created = seedPolicyEntries(repos, clock);
+      if (created > 0) logger.info(`내장 검사 항목 ${created}개를 만들었습니다`);
+    }
     const interrupted = repos.scans.failRunning(RESTART_ERROR, toIso(startedAt));
     if (interrupted > 0) logger.warn(`서버 재시작으로 중단된 스캔 ${interrupted}건을 failed 로 기록했습니다`);
     applyInitialSettings(repos, deps.initialSettings ?? {}, logger);

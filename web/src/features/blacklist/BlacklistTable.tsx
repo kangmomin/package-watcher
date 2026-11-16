@@ -2,7 +2,13 @@
 // 열: 선택(체크박스), 종류, 이름, 버전 범위(null = "(모든 버전)"), 심각도, 상태(켬/끔/만료), 만료일(null = "-"), 사유, 수정, 삭제.
 // 아이콘 버튼은 aria-label 로 이름을 준다.
 // 접근성: 이름 셀이 행 헤더다. 수정·삭제 버튼은 이름을 바꾸지 않고 이름 셀을 설명으로 연결한다.
-import { entryStatusOf, usesVersionRange, type BlacklistEntry, type EntryStatus } from "@pw/shared";
+import {
+  entryStatusOf,
+  isUserManagedEcosystem,
+  usesVersionRange,
+  type BlacklistEntry,
+  type EntryStatus,
+} from "@pw/shared";
 import { PencilIcon, Trash2Icon } from "lucide-react";
 import { useId } from "react";
 import { DashText } from "@/components/DashText";
@@ -24,6 +30,7 @@ import {
   NOT_APPLICABLE_SR_TEXT,
   ecosystemLabel,
   entryStatusLabel,
+  policyCheckTitle,
 } from "@/lib/format";
 
 export interface BlacklistTableProps {
@@ -40,6 +47,9 @@ export interface BlacklistTableProps {
   /** 목록이 아직 지금의 필터 응답이 아니다 */
   busy?: boolean;
 }
+
+/** 내장 검사(policy) 행의 삭제 버튼이 비활성인 이유 */
+const POLICY_NO_DELETE_LABEL = "내장 검사는 삭제할 수 없습니다";
 
 const ENTRY_STATUS_CLASSES: Record<EntryStatus, string> = {
   active: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200",
@@ -108,10 +118,22 @@ export function BlacklistTable({
                 <TableCell>{ecosystemLabel(entry.ecosystem)}</TableCell>
                 <RowHeaderCell
                   id={nameId}
-                  className="max-w-64 truncate font-mono text-xs font-medium"
+                  className={
+                    isUserManagedEcosystem(entry.ecosystem)
+                      ? "max-w-64 truncate font-mono text-xs font-medium"
+                      : "max-w-64 font-medium whitespace-normal"
+                  }
                   title={entry.name}
                 >
-                  {entry.name}
+                  {isUserManagedEcosystem(entry.ecosystem) ? (
+                    entry.name
+                  ) : (
+                    // 내장 검사: 사람이 읽는 title 을 크게, id 를 작게 보인다.
+                    <>
+                      <span className="block font-sans text-sm">{policyCheckTitle(entry.name)}</span>
+                      <span className="block text-xs font-normal text-muted-foreground">{entry.name}</span>
+                    </>
+                  )}
                 </RowHeaderCell>
                 <TableCell className="font-mono text-xs">
                   {!usesVersionRange(entry.ecosystem) ? (
@@ -150,9 +172,10 @@ export function BlacklistTable({
                   <Button
                     variant="ghost"
                     size="icon-sm"
-                    aria-label="삭제"
+                    aria-label={isUserManagedEcosystem(entry.ecosystem) ? "삭제" : POLICY_NO_DELETE_LABEL}
                     aria-describedby={nameId}
-                    title={`${entry.name} 삭제`}
+                    title={isUserManagedEcosystem(entry.ecosystem) ? `${entry.name} 삭제` : POLICY_NO_DELETE_LABEL}
+                    disabled={!isUserManagedEcosystem(entry.ecosystem)}
                     className="text-destructive hover:text-destructive"
                     onClick={() => onDelete(entry)}
                   >

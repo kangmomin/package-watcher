@@ -1,8 +1,11 @@
 import {
+  ECOSYSTEM_CATEGORY,
+  POLICY_ECOSYSTEM,
   SEVERITIES,
   SEVERITY_RANK,
   type DependencyType,
   type Ecosystem,
+  type EcosystemCategory,
   type Finding,
   type FindingStatus,
   type Page,
@@ -35,6 +38,10 @@ export interface FindingsFilter {
   package?: string;
   /** 정확히 일치하는 값만 ("이상" 이 아니다) */
   ecosystem?: Ecosystem;
+  /** 그 분류의 종류만 (`ECOSYSTEM_CATEGORY` 에서 만든 목록을 bind 한다) */
+  category?: EcosystemCategory;
+  /** 그 분류의 종류를 뺀다 */
+  excludeCategory?: EcosystemCategory;
   severity?: Severity;
   page: number;
   limit: number;
@@ -45,10 +52,16 @@ export interface FindingsRepository {
   /** 심각도 높은 순 → `firstSeenAt` 내림차순 → `id` 내림차순. `total` = 필터 적용 후 개수 */
   list(filter: FindingsFilter): Page<Finding>;
   get(id: number): Finding | null;
+  /** `policy`(위험한 설정)를 뺀 검출의 수 — 대시보드의 숫자가 policy 로 뛰지 않게 한다 */
   countByStatus(status: FindingStatus): number;
+  /** `policy` 검출의 수 */
+  countPolicyByStatus(status: FindingStatus): number;
   listActive(): Finding[];
   listOpen(): Finding[];
-  /** `notifiedAt` 이 null 인 `open` 검출 중 심각도 순위가 `minRank` 이상인 것 */
+  /**
+   * `notifiedAt` 이 null 인 `open` 검출 중 심각도 순위가 `minRank` 이상인 것. `policy` 는 즉시 메일의 대상이 아니라서
+   * 조회에서 뺀다 (notified_at 이 영원히 null 이어도 매번 다시 평가되지 않는다).
+   */
   listUnnotifiedOpen(minRank: number): Finding[];
   insertOpen(finding: NewFinding, now: string): Finding;
   /** 다시 보인 활성 행: `last_seen_at`, `dependency_type` 만 갱신 */
@@ -91,6 +104,8 @@ const COLUMNS =
   "id, repo, file_path, ecosystem, package_name, version, severity, dependency_type, blacklist_entry_id, " +
   "status, reason, html_url, first_seen_at, resolved_at, notified_at";
 const ACTIVE = "status IN ('open', 'ignored')";
+const ecosystemsOf = (category: EcosystemCategory): string[] =>
+  Object.entries(ECOSYSTEM_CATEGORY).flatMap(([ecosystem, value]) => (value === category ? [ecosystem] : []));
 const ORDER = "ORDER BY first_seen_at DESC, id DESC";
 // 심각도 순위의 SQL 조각. 검출 정렬과 알림 임계값이 같은 정의를 쓴다.
 const SEVERITY_RANK_SQL = `CASE severity ${SEVERITIES.map(
@@ -123,7 +138,10 @@ export function createFindingsRepository(db: Db): FindingsRepository {
     `SELECT ${COLUMNS} FROM findings WHERE id = ?`,
   );
   const countStmt = db.prepare<[string], { count: number }>(
-    "SELECT COUNT(*) AS count FROM findings WHERE status = ?",
+    `SELECT COUNT(*) AS count FROM findings WHERE status = ? AND ecosystem <> '${POLICY_ECOSYSTEM}'`,
+  );
+  const countPolicyStmt = db.prepare<[string], { count: number }>(
+    `SELECT COUNT(*) AS count FROM findings WHERE status = ? AND ecosystem = '${POLICY_ECOSYSTEM}'`,
   );
   const activeStmt = db.prepare<[], FindingRow>(
     `SELECT ${COLUMNS} FROM findings WHERE ${ACTIVE} ${ORDER}`,
@@ -133,7 +151,8 @@ export function createFindingsRepository(db: Db): FindingsRepository {
   );
   const unnotifiedStmt = db.prepare<[number], FindingRow>(
     `SELECT ${COLUMNS} FROM findings
-     WHERE status = 'open' AND notified_at IS NULL AND ${SEVERITY_RANK_SQL} >= ? ${ORDER}`,
+     WHERE status = 'open' AND notified_at IS NULL AND ecosystem <> '${POLICY_ECOSYSTEM}'
+       AND ${SEVERITY_RANK_SQL} >= ? ${ORDER}`,
   );
   const insertStmt = db.prepare<unknown[], FindingRow>(
     `INSERT INTO findings (repo, file_path, ecosystem, package_name, version, severity, dependency_type,
@@ -195,6 +214,12 @@ export function createFindingsRepository(db: Db): FindingsRepository {
         where.push("ecosystem = ?");
         params.push(filter.ecosystem);
       }
+      for (const [category, negate] of [[filter.category, false], [filter.excludeCategory, true]] as const) {
+        if (!category) continue;
+        const list = ecosystemsOf(category);
+        where.push(`ecosystem ${negate ? "NOT IN" : "IN"} (${list.map(() => "?").join(", ")})`);
+        params.push(...list);
+      }
       if (filter.severity) {
         where.push("severity = ?");
         params.push(filter.severity);
@@ -219,6 +244,7 @@ export function createFindingsRepository(db: Db): FindingsRepository {
       return row ? toFinding(row) : null;
     },
     countByStatus: (status) => countStmt.get(status)?.count ?? 0,
+    countPolicyByStatus: (status) => countPolicyStmt.get(status)?.count ?? 0,
     listActive: () => activeStmt.all().map(toFinding),
     listOpen: () => openStmt.all().map(toFinding),
     listUnnotifiedOpen: (minRank) => unnotifiedStmt.all(minRank).map(toFinding),

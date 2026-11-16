@@ -1,6 +1,7 @@
 import { parse as parseYaml } from "yaml";
 import { isPlainObject } from "../lockfiles/common.ts";
 import { extractCommandPackages } from "./commands.ts";
+import { hasCurlPipeShell } from "./curlPipe.ts";
 import { MAX_REF_LENGTH, parseImageRef, parseUses } from "./images.ts";
 import type { SourceRefs } from "./types.ts";
 
@@ -28,7 +29,10 @@ export function collectSteps(steps: unknown, out: SourceRefs): void {
   for (const step of steps) {
     if (!isPlainObject(step)) continue;
     collectUses(step.uses, out);
-    if (typeof step.run === "string") for (const pkg of extractCommandPackages(step.run)) out.commands.push(pkg);
+    if (typeof step.run === "string") {
+      for (const pkg of extractCommandPackages(step.run)) out.commands.push(pkg);
+      if (!out.curlPipe && hasCurlPipeShell(step.run)) out.curlPipe = true;
+    }
   }
 }
 
@@ -37,10 +41,21 @@ export function collectSteps(steps: unknown, out: SourceRefs): void {
  * `services.*.image`)를 모은다. YAML 문법 오류는 그대로 throw 한다.
  */
 export function extractWorkflow(content: string): SourceRefs {
+  return extractWorkflowFacts(content).refs;
+}
+
+/**
+ * `extractWorkflow` + permissions 판정. 최상위 `permissions` 가 있거나, job 이 1개 이상이고 모두 `permissions` 가 있으면
+ * 통과다. jobs 가 없는 파일(빈 파일, workflow 가 아닌 YAML)은 판정할 수 없으므로 missing 이 아니다.
+ */
+export function extractWorkflowFacts(content: string): { refs: SourceRefs; missingPermissions: boolean } {
   const out: SourceRefs = { commands: [], actions: [], images: [] };
   const data: unknown = parseYaml(content, YAML_OPTIONS);
-  if (!isPlainObject(data) || !isPlainObject(data.jobs)) return out;
-  for (const job of Object.values(data.jobs)) {
+  if (!isPlainObject(data) || !isPlainObject(data.jobs)) return { refs: out, missingPermissions: false };
+  const jobs = Object.values(data.jobs);
+  const missingPermissions =
+    !("permissions" in data) && !(jobs.length > 0 && jobs.every((job) => isPlainObject(job) && "permissions" in job));
+  for (const job of jobs) {
     if (!isPlainObject(job)) continue;
     collectUses(job.uses, out);
     collectSteps(job.steps, out);
@@ -51,7 +66,7 @@ export function extractWorkflow(content: string): SourceRefs {
       }
     }
   }
-  return out;
+  return { refs: out, missingPermissions };
 }
 
 /** `action.yml`: composite 의 `runs.steps` 와 docker action 의 `runs.image: docker://…`. */

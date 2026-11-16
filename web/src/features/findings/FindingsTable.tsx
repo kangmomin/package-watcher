@@ -24,7 +24,7 @@ export interface FindingsTableProps {
   items: Finding[];
 }
 
-interface RowMenuProps {
+export interface RowMenuProps {
   finding: Finding;
   isDisabled: boolean;
   /** 행을 식별하는 셀 id 들 (aria-describedby) */
@@ -99,7 +99,7 @@ export function FindingsTable({ items }: FindingsTableProps) {
   );
 }
 
-function RowMenu({ finding, isDisabled, describedBy, onChangeStatus }: RowMenuProps) {
+export function RowMenu({ finding, isDisabled, describedBy, onChangeStatus }: RowMenuProps) {
   const newTabHintId = useId();
   return (
     <DropdownMenu>
