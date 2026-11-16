@@ -93,6 +93,9 @@ export function parseGradle(content: string, file = "build.gradle"): DeclaredDep
   return deps;
 }
 
+/** 확장 도중 이 길이를 넘으면 풀 수 없는 속성으로 본다 */
+const MAX_VERSION_LENGTH = 1024;
+
 const asList = (value: unknown): unknown[] => (Array.isArray(value) ? value : value === undefined ? [] : [value]);
 
 /** `${prop}` 을 properties 와 project.version 으로 푼다. 풀 수 없으면 null */
@@ -100,6 +103,8 @@ function resolveVersion(version: string, properties: Map<string, string>): strin
   let text = version;
   for (let round = 0; round < 5 && text.includes("${"); round += 1) {
     text = text.replace(/\$\{([^}]*)\}/g, (whole, key: string) => properties.get(key.trim()) ?? whole);
+    // 속성이 서로를 여러 번 가리키면 길이가 지수로 커진다.
+    if (text.length > MAX_VERSION_LENGTH) return null;
   }
   return text.includes("${") ? null : text;
 }

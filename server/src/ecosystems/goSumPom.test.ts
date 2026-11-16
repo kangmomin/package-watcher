@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { expectInputRejected } from "../test/assertions.ts";
 import { classifyFile } from "./index.ts";
-import { parseGoSum } from "./go.ts";
+import { parseGoMod, parseGoSum } from "./go.ts";
 import { parsePomXml } from "./maven.ts";
 
 const decl = (deps: { name: string; spec: string; dependencyType: string }[]) =>
@@ -78,5 +78,24 @@ describe("pom.xml", () => {
     expectInputRejected(() => parsePomXml("<other/>"));
     expectInputRejected(() => parsePomXml("<project><dependencies>"));
     expect(parsePomXml(pom(""))).toEqual([]);
+  });
+});
+
+describe("리뷰 반영", () => {
+  it("[SA-111] pom.xml: 지수로 커지는 속성 확장은 빈 spec 으로 끝나고 빨리 끝난다", () => {
+    const props = ["<p0>x</p0>"];
+    for (let n = 1; n < 30; n += 1) props.push(`<p${n}>$\{p${n - 1}}$\{p${n - 1}}</p${n}>`);
+    const started = Date.now();
+    const deps = parsePomXml(
+      pom(`<properties>${props.join("")}</properties><dependencies><dependency><groupId>g</groupId><artifactId>a</artifactId><version>$\{p29}</version></dependency></dependencies>`),
+    );
+    expect(decl(deps)).toEqual(["g:a||direct"]);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it("[SA-112] go.sum·go.mod 의 오류 메시지에 넣는 줄은 200자로 자른다", () => {
+    const long = "x".repeat(1000);
+    expect(() => parseGoSum(`${long}\n`)).toThrow(/^[^]{0,400}$/);
+    expect(() => parseGoMod(`module m\nrequire ${long}\n`)).toThrow(/^[^]{0,400}$/);
   });
 });

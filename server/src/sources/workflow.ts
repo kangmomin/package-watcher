@@ -11,7 +11,8 @@ export function extractWorkflowCommands(content: string): CommandPackage[] {
   for (const job of Object.values(data.jobs)) {
     if (!isPlainObject(job) || !Array.isArray(job.steps)) continue;
     for (const step of job.steps) {
-      if (isPlainObject(step) && typeof step.run === "string") found.push(...extractCommandPackages(step.run));
+      if (!isPlainObject(step) || typeof step.run !== "string") continue;
+      for (const pkg of extractCommandPackages(step.run)) found.push(pkg);
     }
   }
   return found;

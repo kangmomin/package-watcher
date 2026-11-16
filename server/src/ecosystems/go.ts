@@ -4,6 +4,9 @@ import type { DeclaredDependency, EcosystemSupport, LockedPackage } from "./type
 /** 인용부호로 감싼 모듈 경로("a/b")를 푼다 */
 const unquote = (token: string): string => token.replace(/^["`](.*)["`]$/, "$1");
 
+/** 오류 메시지에 넣는 줄은 200자까지만 */
+const clip = (line: string): string => (line.length > 200 ? `${line.slice(0, 200)}…` : line);
+
 function toDependency(name: string, version: string, comment: string): DeclaredDependency {
   return {
     name: unquote(name),
@@ -35,7 +38,7 @@ export function parseGoMod(content: string, file = "go.mod"): DeclaredDependency
       }
       if (block !== "require") continue;
       const parts = code.split(/\s+/);
-      if (parts.length !== 2) fail(file, `require 항목을 읽을 수 없습니다: ${code}`);
+      if (parts.length !== 2) fail(file, `require 항목을 읽을 수 없습니다: ${clip(code)}`);
       deps.push(toDependency(parts[0] as string, parts[1] as string, comment));
       continue;
     }
@@ -49,7 +52,7 @@ export function parseGoMod(content: string, file = "go.mod"): DeclaredDependency
     const parts = code.split(/\s+/);
     if (parts[0] === "module") hasModule = true;
     if (parts[0] === "require") {
-      if (parts.length !== 3) fail(file, `require 항목을 읽을 수 없습니다: ${code}`);
+      if (parts.length !== 3) fail(file, `require 항목을 읽을 수 없습니다: ${clip(code)}`);
       deps.push(toDependency(parts[1] as string, parts[2] as string, comment));
     }
   }
@@ -71,7 +74,7 @@ export function parseGoSum(content: string, file = "go.sum"): LockedPackage[] {
     if (line === "") continue;
     const parts = line.split(/\s+/);
     if (parts.length !== 3 || !/^v\S*$/.test(parts[1] as string) || !/^\w+:/.test(parts[2] as string)) {
-      fail(file, `go.sum 줄을 읽을 수 없습니다: ${line}`);
+      fail(file, `go.sum 줄을 읽을 수 없습니다: ${clip(line)}`);
     }
     const [name, version] = parts as [string, string, string];
     if (version.endsWith("/go.mod")) continue;

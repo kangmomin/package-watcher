@@ -53,7 +53,7 @@ describe("명령에서 패키지 추출 - npm", () => {
     expect(keys("npx $PKG")).toEqual([]);
     expect(keys("npm i ${{ matrix.pkg }}")).toEqual([]);
     expect(keys("npm i $(cat pkgs)")).toEqual([]);
-    expect(keys("npm i pkg@$VERSION")).toEqual([]);
+    expect(keys("npm i pkg@$VERSION")).toEqual(["npm:pkg@"]); // 버전만 변수면 이름은 살린다 (SA-93)
   });
 });
 

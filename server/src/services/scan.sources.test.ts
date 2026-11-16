@@ -277,4 +277,58 @@ describe("보조 파일 검출", () => {
 
     expect(await allFindings(t)).toHaveLength(0);
   });
+
+  it("[SA-105] 1MB 를 넘는 보조 파일은 추출하지 않고 경고 후 건너뛴다", async () => {
+    await entry("npm", "evil-cli");
+    const big = `${workflow("npx evil-cli")}# ${"x".repeat(1_048_577)}\n`;
+    t.github.setRepos([{ name: "svc", files: { [WF]: big } }]);
+
+    const scan = await runScan(t);
+
+    expect(scan.status).toBe("success");
+    expect(await allFindings(t)).toHaveLength(0);
+    expect(t.logger.texts("warn").some((text) => text.includes(WF))).toBe(true);
+  });
+
+  it("[SA-106] 파일당 명령 5000개까지만 검출한다", async () => {
+    await entry("npm", "evil-cli");
+    const runs = Array.from({ length: 5000 }, (_, n) => `npx filler${n}`);
+    runs.push("npx evil-cli");
+    t.github.setRepos([{ name: "svc", files: { [WF]: workflow(...runs) } }]);
+
+    await runScan(t);
+
+    expect(await allFindings(t)).toHaveLength(0);
+    expect(t.logger.texts("warn").some((text) => text.includes(WF))).toBe(true);
+  });
+
+  it("[SA-107] compose 는 받지 않지만 declaredCount 에는 센다", async () => {
+    await entry("npm", "evil-cli");
+    t.github.setRepos([{ name: "svc", files: { "docker-compose.yml": "services:\n  a:\n    image: x\n" } }]);
+
+    const scan = await runScan(t);
+
+    expect(t.github.callsOf("getFile", "svc")).toHaveLength(0);
+    expect(rowOf(await repoRows(scan.id), "svc")).toMatchObject({ status: "passed", fileCount: 0 });
+  });
+
+  it("[SA-108] 검출의 버전은 128자로 자른다", async () => {
+    await entry("npm", "evil-cli");
+    t.github.setRepos([{ name: "svc", files: { [WF]: workflow(`npx evil-cli@${"v".repeat(150)}`) } }]);
+
+    await runScan(t);
+
+    expect((await allFindings(t))[0]?.version).toHaveLength(128);
+  });
+
+  it("[SA-109] 같은 파일에서 버전 없음 변형(evil, evil@latest)은 검출 1건이고 정확한 버전은 따로", async () => {
+    await entry("npm", "evil-cli");
+    t.github.setRepos([
+      { name: "svc", files: { [WF]: workflow("npx evil-cli", "npx evil-cli@latest", "npx evil-cli@1.0.0") } },
+    ]);
+
+    await runScan(t);
+
+    expect(await allFindings(t)).toHaveLength(2);
+  });
 });

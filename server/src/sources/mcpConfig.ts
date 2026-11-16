@@ -15,6 +15,8 @@ function commandName(command: string): string {
 
 /** 서버 1개의 command + args 를 셸 명령 문자열 1개로 만든다. `cmd /c`·`sh -c` 형태는 감싼 명령을 꺼낸다. */
 function commandLine(command: string, args: string[]): string {
+  // command 에 공백이 있으면 전체 명령이다. 경로로 보고 이름만 떼면 인자를 잃는다.
+  if (/\s/.test(command.trim())) return [command.trim(), ...args.map(quoteIfNeeded)].join(" ");
   const name = commandName(command);
   const [flag, script] = args;
   if (name.toLowerCase() === "cmd" && flag?.toLowerCase() === "/c") {
@@ -39,7 +41,7 @@ export function extractMcpCommands(content: string): CommandPackage[] {
       const args = Array.isArray(server.args)
         ? server.args.filter((arg): arg is string => typeof arg === "string")
         : [];
-      found.push(...extractCommandPackages(commandLine(server.command, args)));
+      for (const pkg of extractCommandPackages(commandLine(server.command, args))) found.push(pkg);
     }
   }
   return found;

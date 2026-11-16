@@ -66,7 +66,10 @@ export function detectEcosystem(
   for (const manifest of manifests) {
     for (const owner of ownersByManifest.get(manifest.path) ?? []) {
       const names = directNamesByLock.get(owner.path) ?? new Set<string>();
-      for (const dep of manifest.deps) names.add(normalize(dep.name));
+      // lock 이 직접 여부를 알려 주지 않는 종류(go.sum)는 선언이 direct 인 이름만 direct 다(go.mod 의 // indirect 제외).
+      for (const dep of manifest.deps) {
+        if (dep.dependencyType === "direct") names.add(normalize(dep.name));
+      }
       directNamesByLock.set(owner.path, names);
     }
   }

@@ -10,6 +10,23 @@ import { mapWithConcurrency } from "./common.ts";
 
 /** repo 1개 안의 파일 동시 조회 수 */
 const FILE_CONCURRENCY = 4;
+/** 이보다 큰 보조 파일은 추출하지 않는다 (문자 수) */
+const MAX_SOURCE_LENGTH = 1_048_576;
+/** 파일 1개에서 검출에 쓰는 명령 수의 상한 */
+const MAX_COMMANDS_PER_FILE = 5000;
+/** 검출에 남기는 버전의 최대 길이 */
+const MAX_VERSION_LENGTH = 128;
+
+/** 제어 문자를 빼고 128자로 자른다 (원문이 그대로 DB·화면·메일에 간다). */
+function cleanVersion(version: string): string {
+  let out = "";
+  for (const char of version) {
+    const code = char.charCodeAt(0);
+    if (code >= 0x20 && code !== 0x7f) out += char;
+    if (out.length >= MAX_VERSION_LENGTH) break;
+  }
+  return out;
+}
 
 export interface SourceFile extends TreeEntry {
   kind: SourceKind;
@@ -53,11 +70,12 @@ function detectCommands(
 ): SourceMatch[] {
   const matches: SourceMatch[] = [];
   const seen = new Set<string>();
-  const add = (found: Omit<SourceMatch, "repo">): void => {
-    const key = [found.packageName, found.version, found.blacklistEntryId].join("\u0000");
+  // dedupe 키의 버전은 정확한 버전 또는 "" 라서 `evil`, `evil@latest` 는 1건으로 합쳐진다.
+  const add = (found: Omit<SourceMatch, "repo">, keyVersion: string): void => {
+    const key = [found.packageName, keyVersion, found.blacklistEntryId].join("\u0000");
     if (seen.has(key)) return;
     seen.add(key);
-    matches.push({ repo, ...found });
+    matches.push({ repo, ...found, version: cleanVersion(found.version) });
   };
 
   const pypiDeps: DeclaredDependency[] = [];
@@ -75,17 +93,20 @@ function detectCommands(
       if (entry.versionRange !== null && (pkg.version === "" || !matchExact(pkg.version, entry.versionRange))) {
         continue;
       }
-      add({
-        filePath: path,
-        packageName: pkg.name,
-        version: npmVersionOf(pkg),
-        dependencyType: "direct",
-        blacklistEntryId: entry.id,
-      });
+      add(
+        {
+          filePath: path,
+          packageName: pkg.name,
+          version: npmVersionOf(pkg),
+          dependencyType: "direct",
+          blacklistEntryId: entry.id,
+        },
+        pkg.version,
+      );
     }
   }
   if (pypiDeps.length > 0) {
-    for (const found of detectEcosystem("pypi", [{ path, deps: pypiDeps }], [], entryIndex)) add(found);
+    for (const found of detectEcosystem("pypi", [{ path, deps: pypiDeps }], [], entryIndex)) add(found, found.version);
   }
   return matches;
 }
@@ -103,17 +124,29 @@ export async function scanSources(
   files: SourceFile[],
   logger: Logger,
 ): Promise<{ matches: SourceMatch[]; fileCount: number }> {
-  const contents = await mapWithConcurrency(files, FILE_CONCURRENCY, (file) =>
+  // compose 는 이미지를 읽는 묶음 전까지 받지 않는다.
+  const fetchable = files.filter((file) => file.kind !== "compose");
+  const contents = await mapWithConcurrency(fetchable, FILE_CONCURRENCY, (file) =>
     client.getFile(org, repo.name, file.sha),
   );
   const matches: SourceMatch[] = [];
-  files.forEach((file, index) => {
+  fetchable.forEach((file, index) => {
+    const where = `${org}/${repo.name}/${file.path}`;
+    const content = contents[index] ?? "";
+    if (content.length > MAX_SOURCE_LENGTH) {
+      logger.warn(`보조 파일이 너무 커서 건너뜁니다: ${where}`);
+      return;
+    }
     try {
-      const facts = extractSource(file.kind, file.path, contents[index] ?? "");
-      matches.push(...detectCommands(repo.name, file.path, facts.commands, entryIndex));
+      let commands = extractSource(file.kind, file.path, content).commands;
+      if (commands.length > MAX_COMMANDS_PER_FILE) {
+        logger.warn(`보조 파일의 명령이 ${MAX_COMMANDS_PER_FILE}개를 넘어 앞의 것만 검사합니다: ${where}`);
+        commands = commands.slice(0, MAX_COMMANDS_PER_FILE);
+      }
+      for (const match of detectCommands(repo.name, file.path, commands, entryIndex)) matches.push(match);
     } catch (error) {
-      logger.warn(`보조 파일을 해석하지 못해 건너뜁니다: ${org}/${repo.name}/${file.path}: ${errorMessage(error)}`);
+      logger.warn(`보조 파일을 해석하지 못해 건너뜁니다: ${where}: ${errorMessage(error)}`);
     }
   });
-  return { matches, fileCount: files.length };
+  return { matches, fileCount: fetchable.length };
 }
