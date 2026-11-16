@@ -15,12 +15,15 @@ const SHUTDOWN_TIMEOUT_MS = 10_000;
 function main(): void {
   const logger = consoleLogger;
   const config = loadConfig(process.env, readGhAuthToken);
+  // 녹화·재생 도구를 가리킬 때만 값이 있다. 없으면 octokit 의 기본 주소(api.github.com)를 쓴다.
+  const githubApi = config.githubApiUrl ? { baseUrl: config.githubApiUrl } : {};
+  if (config.githubApiUrl) logger.warn(`GitHub API 의 주소를 바꿨습니다: ${config.githubApiUrl}`);
 
   const instance = createApp({
     dbPath: join(config.dataDir, DB_FILE_NAME),
-    github: config.github.token ? createOctokitClient({ token: config.github.token }) : null,
+    github: config.github.token ? createOctokitClient({ token: config.github.token, ...githubApi }) : null,
     // 외부 목록(권고)은 공개 데이터라서 스캔과 같은 토큰을 쓴다. 토큰이 없으면 동기화하지 않는다.
-    feedClient: config.github.token ? createFeedClient({ token: config.github.token }) : null,
+    feedClient: config.github.token ? createFeedClient({ token: config.github.token, ...githubApi }) : null,
     githubTokenSource: config.github.source,
     // blob 내용은 sha 가 같으면 바뀌지 않아서 디스크에 두고 다음 스캔이 다시 받지 않는다. BLOB_CACHE=off 로 끈다.
     blobCacheDir: config.blobCacheDir,

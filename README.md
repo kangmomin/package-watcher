@@ -73,6 +73,7 @@ npm start          # node server/dist/index.js (http://127.0.0.1:3000)
 | `PORT` | `3000` | listen 포트 |
 | `HOST` | `127.0.0.1` (Docker 이미지: `0.0.0.0`) | listen 주소 |
 | `DATA_DIR` | `./data` (Docker 이미지: `/data`) | SQLite 파일(`package-watcher.db`)을 두는 디렉터리. 없으면 만든다 |
+| `GITHUB_API_URL` | `https://api.github.com` | GitHub API 의 주소. 개발·확인용 녹화·재생 도구(`scripts/github-replay.mjs`)를 가리킬 때만 쓴다. 아래 "GitHub 응답의 녹화와 재생" 참고 |
 | `BLOB_CACHE` | (켬) | `off` 이면 blob 의 디스크 캐시(`$DATA_DIR/blob-cache`)를 쓰지 않는다. 아래 "GitHub 요청 수와 blob 캐시" 참고 |
 | `WEB_DIST_DIR` | 번들 위치 기준 `../../web/dist` (Docker 이미지: `/app/web/dist`) | 빌드된 GUI 위치. 없으면 정적 파일 제공을 건너뛴다 |
 | `GITHUB_TOKEN` | (없음) | GitHub 토큰. 없으면 `gh auth token` 을 실행하고, 그것도 없으면 토큰 없음(스캔 불가). 서버 시작 시 1회 해석한다 |
@@ -380,6 +381,26 @@ tool 은 모두 15개다. 결과는 JSON 문자열(text content)이고(`export_b
 - **끄는 방법:** `BLOB_CACHE=off`. 폴더를 지워도 된다(다음 스캔이 다시 채운다).
 - **요청 수의 기록:** 스캔이 끝나면 로그에 `스캔 #n: GitHub 요청 REST x회, GraphQL y회, blob 캐시 적중 z회, t초` 를 1줄 남긴다(화면·API 에는 없다).
 - 캐시가 찬 뒤의 스캔 1회: repo 목록 `ceil(R/100)` + repo 마다 tree 1 + 바뀐 파일 + (최근 push 가 있는 repo P 마다 GraphQL 1 + events 1) + 평가하는 브랜치 B 마다 tree 1 + 브랜치의 새 파일. 삭제 이벤트가 있는 브랜치는 조회하지 않는다.
+
+## GitHub 응답의 녹화와 재생 (개발·확인용)
+
+실제 org 로 여러 번 확인하면 GitHub 의 시간당 한도(5,000회)가 모자란다. `scripts/github-replay.mjs` 는 GitHub API 의 응답을 **1번 녹화**하고 그 뒤에는 **저장한 응답으로 재생**한다. 재생은 실제 GitHub 에 요청하지 않는다.
+
+```bash
+# 1) 녹화: 실제 GitHub 으로 전달하면서 응답을 저장한다 (이때만 한도를 쓴다)
+node scripts/github-replay.mjs record --dir data/github-recording --port 3200
+GITHUB_API_URL=http://localhost:3200 npm run dev -w server     # 스캔을 1번 실행한다
+
+# 2) 재생: 저장한 응답만 돌려준다. 녹화에 없는 요청은 404 다
+node scripts/github-replay.mjs replay --dir data/github-recording --port 3200
+GITHUB_API_URL=http://localhost:3200 npm run dev -w server
+```
+
+- Docker 안의 서버는 `GITHUB_API_URL=http://host.docker.internal:3200` 을 쓴다.
+- 상태: `GET http://localhost:3200/__stats` (요청 수, 적중, 녹화에 없던 요청의 수).
+- 시각에 따라 바뀌는 query(`since=`)는 요청의 키에서 뺀다. 그래서 다른 날에 재생해도 같은 응답이 나온다. 단, 서버는 "최근 N일" 을 지금의 시각으로 판정하므로 오래된 녹화에서는 브랜치·커밋의 대상이 줄어든다.
+- 토큰(Authorization 헤더)은 저장하지 않는다. 5xx 와 rate limit 응답도 저장하지 않는다.
+- **녹화 폴더에는 private repo 의 파일 내용, 커밋 메시지, 계정 이름이 들어간다.** 커밋하지 않는다(`data/` 는 `.gitignore` 와 `.dockerignore` 에 있다). 도구는 기본으로 `127.0.0.1` 에만 열린다 — 재생은 인증 없이 그 내용을 돌려주므로 `--host` 를 바꾸지 않는다.
 
 ## 알려진 한계
 

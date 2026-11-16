@@ -37,6 +37,8 @@ export interface AppConfig {
   blobCacheDir: string | null;
   webDistDir: string;
   github: { token: string | null; source: TokenSource };
+  /** GitHub API 의 주소. 없으면 `https://api.github.com`. 녹화·재생 도구(`scripts/github-replay.mjs`)를 가리킬 때 쓴다 */
+  githubApiUrl: string | null;
   smtp: SmtpConfig | null;
   initialSettings: InitialSettingsEnv;
 }
@@ -49,6 +51,7 @@ export const ENV_KEYS = [
   "BLOB_CACHE",
   "WEB_DIST_DIR",
   "GITHUB_TOKEN",
+  "GITHUB_API_URL",
   "GITHUB_ORG",
   "SCAN_INTERVAL_HOURS",
   "DIGEST_TIME",
@@ -98,6 +101,22 @@ function readPort(env: Env, key: EnvKey, fallback: number): number {
   return port;
 }
 
+/** http·https 주소만 받는다(끝의 `/` 는 뗀다). 형식이 틀리면 시작을 막는다 — 조용히 실제 GitHub 으로 가면 안 된다. */
+function readHttpUrl(env: Env, key: EnvKey): string | null {
+  const value = read(env, key);
+  if (value === null) return null;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`${key} 는 http 또는 https 주소입니다: ${value}`);
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error(`${key} 는 http 또는 https 주소입니다: ${value}`);
+  }
+  return value.replace(/\/+$/, "");
+}
+
 /** env 로드. 빈 문자열 env 는 "없음". boolean env 는 "true"/"1" 만 true. */
 export function loadConfig(env: Env, ghAuthToken: () => string | null): AppConfig {
   const initialSettings: InitialSettingsEnv = {};
@@ -117,6 +136,7 @@ export function loadConfig(env: Env, ghAuthToken: () => string | null): AppConfi
     blobCacheDir: read(env, "BLOB_CACHE")?.toLowerCase() === "off" ? null : join(read(env, "DATA_DIR") ?? DEFAULT_DATA_DIR, "blob-cache"),
     webDistDir: read(env, "WEB_DIST_DIR") ?? defaultWebDistDir(),
     github: resolveGithubToken(env, ghAuthToken),
+    githubApiUrl: readHttpUrl(env, "GITHUB_API_URL"),
     smtp: readSmtp(env),
     initialSettings,
   };
