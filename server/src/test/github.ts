@@ -1,10 +1,13 @@
 import { createHash } from "node:crypto";
 import {
   RateLimitedError,
+  type CommitInfo,
   type GitHubClient,
+  type PullInfo,
   type RecentBranch,
   type RepoInfo,
   type RepoTree,
+  type WorkflowCommit,
 } from "../github/client.ts";
 
 export interface FakeRepoInput {
@@ -25,7 +28,10 @@ export type FakeMethod =
   | "getFile"
   | "listBranches"
   | "listRecentBranches"
-  | "listRecentPushes";
+  | "listRecentPushes"
+  | "listRecentCommits"
+  | "listWorkflowCommits"
+  | "listRecentPulls";
 
 /** 기본 브랜치 외의 브랜치 1개 */
 export interface FakeBranchInput {
@@ -78,6 +84,12 @@ interface RepoState {
   /** 브랜치 이름 → 마지막 push 시각 (listRecentPushes) */
   pushes: Map<string, string>;
   pushError: Error | null;
+  commits: CommitInfo[];
+  commitsError: Error | null;
+  workflowCommits: WorkflowCommit[];
+  workflowError: Error | null;
+  pulls: PullInfo[];
+  pullsError: Error | null;
 }
 
 interface PendingGate {
@@ -133,7 +145,39 @@ export class FakeGitHubClient implements GitHubClient {
       recentError: null,
       pushes: new Map(),
       pushError: null,
+      commits: [],
+      commitsError: null,
+      workflowCommits: [],
+      workflowError: null,
+      pulls: [],
+      pullsError: null,
     });
+  }
+
+  /** 기본 브랜치의 커밋 (listRecentCommits 가 `since` 로 거른다) */
+  setCommits(name: string, commits: CommitInfo[]): void {
+    this.mustGet(name).commits = [...commits];
+  }
+
+  /** `.github/workflows` 를 바꾼 커밋 (listWorkflowCommits) */
+  setWorkflowCommits(name: string, commits: WorkflowCommit[]): void {
+    this.mustGet(name).workflowCommits = [...commits];
+  }
+
+  setPulls(name: string, pulls: PullInfo[]): void {
+    this.mustGet(name).pulls = [...pulls];
+  }
+
+  failCommits(name: string, error: Error | null): void {
+    this.mustGet(name).commitsError = error;
+  }
+
+  failWorkflowCommits(name: string, error: Error | null): void {
+    this.mustGet(name).workflowError = error;
+  }
+
+  failPulls(name: string, error: Error | null): void {
+    this.mustGet(name).pullsError = error;
   }
 
   setFiles(name: string, files: Record<string, string>): void {
@@ -355,6 +399,30 @@ export class FakeGitHubClient implements GitHubClient {
     if (!state) return new Map();
     if (state.pushError) throw state.pushError;
     return new Map([...state.pushes].filter(([, at]) => Date.parse(at) >= Date.parse(sinceIso)));
+  }
+
+  async listRecentCommits(org: string, repo: string, branch: string, sinceIso: string): Promise<CommitInfo[]> {
+    await this.enter("listRecentCommits", org, repo, `${branch}|${sinceIso}`);
+    const state = this.repos.get(repo);
+    if (!state) return [];
+    if (state.commitsError) throw state.commitsError;
+    return state.commits.filter((commit) => Date.parse(commit.committedAt) >= Date.parse(sinceIso)).slice(0, 100);
+  }
+
+  async listWorkflowCommits(org: string, repo: string, branch: string, sinceIso: string): Promise<WorkflowCommit[]> {
+    await this.enter("listWorkflowCommits", org, repo, `${branch}|${sinceIso}`);
+    const state = this.repos.get(repo);
+    if (!state) return [];
+    if (state.workflowError) throw state.workflowError;
+    return state.workflowCommits.filter((commit) => Date.parse(commit.committedAt) >= Date.parse(sinceIso)).slice(0, 100);
+  }
+
+  async listRecentPulls(org: string, repo: string): Promise<PullInfo[]> {
+    await this.enter("listRecentPulls", org, repo, null);
+    const state = this.repos.get(repo);
+    if (!state) return [];
+    if (state.pullsError) throw state.pullsError;
+    return state.pulls.slice(0, 50);
   }
 
   private async enter(

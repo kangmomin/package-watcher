@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { parse as parseJsonc, type ParseError } from "jsonc-parser";
 import {
   BRANCH_SCAN_MAX_BRANCHES,
@@ -21,6 +22,7 @@ import type { TokenSource } from "../config.ts";
 import { AppError } from "../errors.ts";
 import {
   RateLimitedError,
+  type CommitInfo,
   type GitHubClient,
   type RecentBranch,
   type RepoInfo,
@@ -170,7 +172,30 @@ interface TreeScan {
   skippedPaths: ReadonlySet<string>;
 }
 
+/** 커밋·PR 조회의 종류. 같은 조회를 쓰는 commit 과 committer 도 따로 센다 */
+type HistoryKind = "commit" | "pr" | "workflow" | "committer";
+
+/** 커밋·PR 의 감시(파일이 아니다) 중 resolve 판정에 쓰는 것 */
+interface HistoryEvaluation {
+  /** 조회하려 했지만 하지 못한 종류(오류, rate limit) — 그 검출은 그대로 둔다. 조회하지 않은 종류는 여기 없다(기간 경과 등 → resolve) */
+  failed: Set<HistoryKind>;
+  /** 이번 스캔의 커밋 중 작성자의 기록이 아직 기간 안인 것 — 그 작성자의 기존 검출은 "아직 새 작성자"라 유지한다 */
+  retainedShas: ReadonlySet<string>;
+  /** 이번에 처음 본 작성자(기준선의 첫 평가면 본 작성자 전부). 종료 트랜잭션에서 기록한다 */
+  authorsToRecord: readonly string[];
+  /** 기록을 허용하는 new-committer 항목의 id (항목이 바뀌었으면 기록하지 않는다). 평가하지 않았으면 null */
+  committerEntryId: number | null;
+}
+
+const emptyHistory = (): HistoryEvaluation => ({
+  failed: new Set(),
+  retainedShas: new Set(),
+  authorsToRecord: [],
+  committerEntryId: null,
+});
+
 interface RepoScan extends TreeScan {
+  history: HistoryEvaluation;
   /** 이번 스캔이 tree 를 받아 끝까지 평가한 브랜치 */
   branches: Map<string, BranchEvaluation>;
   /** 평가한 브랜치 중 평가할 파일이 있었던 브랜치의 수 (`branch_count`) */
@@ -215,6 +240,7 @@ type RepoOutcome =
       branches: Map<string, BranchEvaluation>;
       keptRefs: ReadonlySet<string>;
       branchesUnknown: boolean;
+      history: HistoryEvaluation;
     }
   | { repo: string; ok: false; error: string };
 
@@ -284,14 +310,61 @@ function isSameRepo(fullName: string, org: string, repo: string): boolean {
 }
 
 const BRANCH_REF_PREFIX = "refs/heads/";
+const WORKFLOW_DIR = ".github/workflows/";
+const COMMIT_PATH_PREFIX = "commit/";
+const PULL_PATH_PREFIX = "pull/";
+/** 작성자 키의 최대 길이 (login 은 신뢰할 수 없는 입력이다) */
+const AUTHOR_KEY_MAX = 100;
+
+/** 새 작성자 판정에서 뺀다: GitHub 이 만드는 계정(웹 UI 의 커밋)과 bot */
+const isBotLogin = (login: string): boolean => login === "web-flow" || login.endsWith("[bot]");
+
+/**
+ * 작성자의 키: login(소문자), 없으면 `email:<SHA-256(소문자 이메일)의 앞 12자>`. 이메일 원문은 이 함수 밖으로 나가지 않는다.
+ * 구분할 수 없거나 무시할 계정(bot)이면 null.
+ */
+export function authorKeyOf(commit: Pick<CommitInfo, "authorLogin" | "authorEmail">): string | null {
+  if (commit.authorLogin !== null && commit.authorLogin.trim() !== "") {
+    const login = commit.authorLogin.trim().toLowerCase();
+    return isBotLogin(login) ? null : login.slice(0, AUTHOR_KEY_MAX);
+  }
+  const email = commit.authorEmail?.trim().toLowerCase();
+  if (!email) return null;
+  return `email:${createHash("sha256").update(email).digest("hex").slice(0, 12)}`;
+}
+
+/** 이 검출이 커밋·PR 의 감시(파일이 아닌 검출)인가, 그렇다면 어느 조회의 것인가 */
+function historyKindOf(ecosystem: Ecosystem, checkId: string | undefined): HistoryKind | null {
+  if (ecosystem === "commit") return "commit";
+  if (ecosystem === "pr") return "pr";
+  if (ecosystem !== POLICY_ECOSYSTEM) return null;
+  if (checkId === "workflow-changed") return "workflow";
+  if (checkId === "new-committer") return "committer";
+  return null;
+}
 
 // org·repo·경로 조각을 percent-encoding 한다 — 근거: 공백·`#` 이 든 경로도 유효한 URL 이 되게 한다(일반 이름은 계약 형식과 같다).
 // branch 검출(`refs/heads/<이름>`)은 파일이 아니라 브랜치의 tree 로 연결한다. 실제 파일 `refs/heads/x`(path 검출)와 구분하려고 종류로 판정한다.
 // 짝 없는 surrogate 가 든 경로는 encodeURIComponent 가 던지므로 repo 루트로 대신한다(finalize 트랜잭션 전체를 실패시키지 않는다).
-function htmlUrlOf(org: string, repo: string, filePath: string, ecosystem: Ecosystem, ref: string): string {
+// 커밋·PR 의 검출(`commit/<sha>`, `pull/<번호>`)도 종류(policy 는 검사 id)로 판정한다 — 실제 파일 `commit/x` 와 구분한다.
+function htmlUrlOf(
+  org: string,
+  repo: string,
+  filePath: string,
+  ecosystem: Ecosystem,
+  ref: string,
+  checkId = "",
+): string {
   const root = `https://github.com/${org}/${repo}`;
   try {
     const base = `https://github.com/${encodeURIComponent(org)}/${encodeURIComponent(repo)}`;
+    const history = ref === DEFAULT_BRANCH_REF ? historyKindOf(ecosystem, checkId) : null;
+    if (history === "pr" && filePath.startsWith(PULL_PATH_PREFIX)) {
+      return `${base}/pull/${encodeURIComponent(filePath.slice(PULL_PATH_PREFIX.length))}`;
+    }
+    if (history !== null && history !== "pr" && filePath.startsWith(COMMIT_PATH_PREFIX)) {
+      return `${base}/commit/${encodeURIComponent(filePath.slice(COMMIT_PATH_PREFIX.length))}`;
+    }
     // 브랜치의 검출은 그 브랜치의 파일로 연결한다 (브랜치에서는 파일 검출만 나온다).
     if (ref !== DEFAULT_BRANCH_REF) {
       const branch = ref.split("/").map(encodeURIComponent).join("/");
@@ -410,9 +483,152 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       keptRefs: new Set(),
       branchesUnknown: false,
       rateLimited: false,
+      history: emptyHistory(),
     };
     await scanBranches(org, blobs, repo, tree.entries, rules, result);
+    await scanHistory(org, client, repo, tree.entries, rules, result);
     return result;
+  }
+
+  /** 이 repo 가 최근 N일에 push 됐는가 (브랜치 스캔과 같은 조건 — `branchScanDays = 0` 이면 아니다) */
+  function pushedRecently(repo: RepoInfo, rules: ScanRules): boolean {
+    if (rules.branchScanDays <= 0 || repo.pushedAt === null) return false;
+    const pushedAt = Date.parse(repo.pushedAt);
+    return !Number.isNaN(pushedAt) && pushedAt >= rules.branchSince.getTime();
+  }
+
+  /**
+   * 기본 브랜치의 최근 커밋과 최근 PR 을 조회해서 흔적(commit·pr)과 내장 검사(workflow-changed·new-committer)를 평가한다.
+   * 필요한 조회만 한다(repo 당 최대 3회). 조회 1개의 실패는 repo 의 실패가 아니다 — warn 만 남기고 그 종류는 "평가하지 못함"으로 둔다.
+   * rate limit 은 기본 브랜치의 결과를 살린 채 `rateLimited` 로 알리고 이어지는 조회를 하지 않는다.
+   */
+  async function scanHistory(
+    org: string,
+    client: GitHubClient,
+    repo: RepoInfo,
+    defaultEntries: TreeEntry[],
+    rules: ScanRules,
+    result: RepoScan,
+  ): Promise<void> {
+    if (!pushedRecently(repo, rules)) return;
+    const { indicators, policy } = rules;
+    const wantCommits = indicators.hasCommit || policy.active.has("new-committer");
+    const wantPulls = indicators.hasPr;
+    const wantWorkflow =
+      policy.active.has("workflow-changed") && defaultEntries.some((entry) => entry.path.startsWith(WORKFLOW_DIR));
+    if (!wantCommits && !wantPulls && !wantWorkflow) return;
+
+    const where = `${org}/${repo.name}`;
+    const sinceIso = toIso(rules.branchSince);
+    const { failed } = result.history;
+    let blocked = result.rateLimited;
+    const attempt = async <T>(kinds: HistoryKind[], run: () => Promise<T>): Promise<T | null> => {
+      if (blocked) {
+        for (const kind of kinds) failed.add(kind);
+        return null;
+      }
+      try {
+        return await run();
+      } catch (error) {
+        for (const kind of kinds) failed.add(kind);
+        if (error instanceof RateLimitedError) {
+          blocked = true;
+          result.rateLimited = true;
+        } else {
+          logger.warn(`커밋·PR 을 가져오지 못해 건너뜁니다: ${printable(where)}: ${printable(describeError(error))}`);
+        }
+        return null;
+      }
+    };
+    const matches: Match[] = [];
+    let evaluated = false;
+    let workflowCommits: string[] = [];
+    let newCommitters: { author: string; sha: string }[] = [];
+
+    if (wantCommits) {
+      const commits = await attempt(["commit", "committer"], () =>
+        client.listRecentCommits(org, repo.name, repo.defaultBranch, sinceIso),
+      );
+      if (commits !== null) {
+        evaluated = true;
+        if (indicators.hasCommit) {
+          const found = await indicators.matchCommits(repo.name, where, commits, logger);
+          matches.push(...found.map((match): Match => ({ ...match, ref: DEFAULT_BRANCH_REF })));
+        }
+        if (policy.active.has("new-committer")) {
+          const judged = judgeAuthors(repo.name, commits, sinceIso);
+          newCommitters = judged.candidates;
+          result.history = {
+            ...result.history,
+            retainedShas: judged.retainedShas,
+            authorsToRecord: judged.authorsToRecord,
+            committerEntryId: policy.entryIds.get("new-committer") ?? null,
+          };
+        }
+      }
+    }
+    if (wantWorkflow) {
+      const workflow = await attempt(["workflow"], () =>
+        client.listWorkflowCommits(org, repo.name, repo.defaultBranch, sinceIso),
+      );
+      if (workflow !== null) {
+        evaluated = true;
+        workflowCommits = workflow.map((commit) => commit.sha);
+      }
+    }
+    if (wantPulls) {
+      const pulls = await attempt(["pr"], () => client.listRecentPulls(org, repo.name));
+      if (pulls !== null) {
+        evaluated = true;
+        const found = await indicators.matchPulls(repo.name, where, pulls, logger);
+        matches.push(...found.map((match): Match => ({ ...match, ref: DEFAULT_BRANCH_REF })));
+      }
+    }
+
+    result.matches.push(...matches);
+    // 조회에 성공했으면 의존성 파일이 없는 repo 도 검사한 것이다 (흔적의 path·branch 와 같다)
+    if (evaluated) result.traced = true;
+    if (workflowCommits.length > 0 || newCommitters.length > 0) {
+      const history = { workflowCommits, newCommitters };
+      result.policyMatches.push(
+        ...(await policy.evaluate({ org, repo: repo.name, treePaths: [], manifests: [], sources: [], history }, logger)),
+      );
+    }
+  }
+
+  /**
+   * 새 작성자의 판정(DB 는 읽기만 한다 — 기록은 종료 트랜잭션이 한다).
+   * 기록이 하나도 없으면 첫 평가라서 본 작성자를 모두 기록만 하고 검출은 없다.
+   */
+  function judgeAuthors(
+    repoName: string,
+    commits: readonly CommitInfo[],
+    sinceIso: string,
+  ): {
+    candidates: { author: string; sha: string }[];
+    retainedShas: Set<string>;
+    authorsToRecord: string[];
+  } {
+    const known = repos.repoAuthors.list(repoName);
+    const oldest = new Map<string, { sha: string; time: number }>();
+    const retainedShas = new Set<string>();
+    for (const commit of commits) {
+      const author = authorKeyOf(commit);
+      if (author === null) continue;
+      const firstSeen = known.get(author);
+      if (firstSeen !== undefined && firstSeen >= sinceIso) retainedShas.add(commit.sha);
+      const time = Date.parse(commit.committedAt);
+      const previous = oldest.get(author);
+      if (!previous || time < previous.time || (time === previous.time && commit.sha < previous.sha)) {
+        oldest.set(author, { sha: commit.sha, time });
+      }
+    }
+    const unseen = [...oldest].filter(([author]) => !known.has(author));
+    return {
+      candidates: known.size === 0 ? [] : unseen.map(([author, { sha }]) => ({ author, sha })),
+      retainedShas,
+      authorsToRecord: unseen.map(([author]) => author),
+    };
   }
 
   /** 브랜치의 로그용 표시 — 신뢰할 수 없는 입력이라 제어 문자를 바꾸고 길이를 자른다 */
@@ -1185,7 +1401,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
             ecosystem: entry.ecosystem,
             severity: entry.severity,
             reason: entry.reason,
-            htmlUrl: htmlUrlOf(org, match.repo, match.filePath, entry.ecosystem, match.ref),
+            htmlUrl: htmlUrlOf(org, match.repo, match.filePath, entry.ecosystem, match.ref, entry.name),
           },
           now,
         );
@@ -1198,6 +1414,14 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
 
       const scanned = new Map<string, Extract<RepoOutcome, { ok: true }>>();
       for (const outcome of collected.outcomes) if (outcome.ok) scanned.set(outcome.repo, outcome);
+      // 처음 본 작성자의 기록은 검출과 같은 트랜잭션에서 한다(스캔이 버려지면 기록도 남지 않는다). 항목이 바뀌었으면 기록하지 않는다.
+      for (const outcome of scanned.values()) {
+        const { committerEntryId, authorsToRecord } = outcome.history;
+        if (committerEntryId !== null && entries.has(committerEntryId) && authorsToRecord.length > 0) {
+          repos.repoAuthors.insertMany(outcome.repo, authorsToRecord, now);
+        }
+      }
+      const checkIdOf = new Map(snapshot.map((entry) => [entry.id, entry.name]));
       // 흔적 검출(path·content·branch)은 선언 파일 수가 아니라 이번 스캔의 결과에 따른다.
       const resolveRepos = new Set(collected.resolveRepos);
       const toResolve: number[] = [];
@@ -1209,6 +1433,19 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
         }
         const outcome = scanned.get(finding.repo);
         if (!outcome) continue; // 실패한 repo 는 그대로 둔다
+        // 커밋·PR 의 감시는 파일이 아니다: skippedPaths·declaredCount 와 섞지 않고 "이번에 그 조회를 하려다 못했는가"로만 판정한다.
+        // 조회를 하지 않은 경우(최근 push 없음, 기간 0, 항목·검사 꺼짐, workflow 파일 없음)는 resolve 다.
+        const historyKind = historyKindOf(finding.ecosystem, checkIdOf.get(finding.blacklistEntryId));
+        if (historyKind !== null) {
+          if (outcome.history.failed.has(historyKind)) continue;
+          if (!entries.has(finding.blacklistEntryId)) continue;
+          // new-committer: 그 작성자의 기록이 아직 기간 안이고 커밋이 이번 목록에 있으면 아직 "새 작성자"다
+          const sha = finding.filePath.slice(COMMIT_PATH_PREFIX.length);
+          if (historyKind === "committer" && outcome.history.retainedShas.has(sha)) {
+            repos.findings.touch(finding.id, finding.dependencyType, now);
+          } else toResolve.push(finding.id);
+          continue;
+        }
         // 평가의 범위(검출의 ref): 기본 브랜치는 repo 전체, 브랜치는 이번에 평가한 그 브랜치의 달라진 파일.
         let count = outcome.declaredCount;
         let skipped = outcome.skippedPaths;

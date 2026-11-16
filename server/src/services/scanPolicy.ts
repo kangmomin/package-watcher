@@ -31,6 +31,13 @@ export interface PolicyInput {
   packageScripts?: readonly { path: string; scripts: Readonly<Record<string, string>> }[];
   /** lock 파일이 공식이 아닌 주소에서 받는 host (공식뿐이면 항목이 없다) */
   lockHosts?: readonly { path: string; hosts: readonly string[] }[];
+  /** 커밋 기록에서 온 사실 (파일이 아니라서 위의 파일 입력과 따로 둔다) */
+  history?: {
+    /** 최근 N일에 `.github/workflows` 를 바꾼 커밋의 sha */
+    workflowCommits?: readonly string[];
+    /** 처음 본 작성자(키)와 그 작성자의 가장 오래된 커밋의 sha */
+    newCommitters?: readonly { author: string; sha: string }[];
+  };
 }
 
 /** 설치할 때 npm 이 실행하는 script 의 이름 */
@@ -51,6 +58,8 @@ export function installScriptsOf(raw: Record<string, unknown>): Record<string, s
 export interface PolicyRules {
   /** 활성(켜짐·만료 안 됨) 검사의 id. 비어 있으면 평가할 것이 없다 */
   active: ReadonlySet<string>;
+  /** 활성 검사의 id → 그 항목의 id */
+  entryIds: ReadonlyMap<string, number>;
   /** 활성 검사를 모두 평가한다. 검사마다 정렬한 앞의 100건만 낸다 */
   evaluate(input: PolicyInput, logger: Logger): Promise<PolicyMatch[]>;
 }
@@ -334,6 +343,26 @@ function externalSubmodules(input: PolicyInput): Candidate[] {
   );
 }
 
+/** 커밋은 파일이 아니라서 위치를 `commit/<sha>` 로 쓴다. 버전은 sha 의 앞 7자 */
+const commitPath = (sha: string): string => `commit/${sha}`;
+const shortSha = (sha: string): string => sha.slice(0, 7);
+
+function workflowChanges(input: PolicyInput): Candidate[] {
+  return (input.history?.workflowCommits ?? []).map((sha) => ({
+    filePath: commitPath(sha),
+    packageName: ".github/workflows",
+    version: shortSha(sha),
+  }));
+}
+
+function newCommitters(input: PolicyInput): Candidate[] {
+  return (input.history?.newCommitters ?? []).map(({ author, sha }) => ({
+    filePath: commitPath(sha),
+    packageName: author,
+    version: shortSha(sha),
+  }));
+}
+
 /** package.json 과 보조 파일의 사실을 쓰는 검사 */
 const SOURCE_CHECKS: Partial<Record<PolicyCheckId, (input: PolicyInput) => Candidate[]>> = {
   "unpinned-action": unpinnedActions,
@@ -348,6 +377,8 @@ const SOURCE_CHECKS: Partial<Record<PolicyCheckId, (input: PolicyInput) => Candi
   "custom-registry": customRegistries,
   "npmrc-token": npmrcTokens,
   "external-submodule": externalSubmodules,
+  "workflow-changed": workflowChanges,
+  "new-committer": newCommitters,
 };
 
 /** 활성 policy 항목(스냅샷에서 1번 만들어 repo 마다 쓴다). id 가 내장 검사가 아닌 항목은 무시한다. */
@@ -361,6 +392,7 @@ export function createPolicyRules(snapshot: BlacklistEntry[]): PolicyRules {
 
   return {
     active: new Set(entries.keys()),
+    entryIds: new Map([...entries].map(([id, entry]) => [id, entry.id])),
 
     async evaluate(input, logger) {
       const where = `${input.org}/${input.repo}`;

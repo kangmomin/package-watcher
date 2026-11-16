@@ -30,6 +30,15 @@ describe("[SG-01] rubygems·cocoapods: gem 의 버전과 요구식", () => {
     expect(satisfies("1.0", "not a range")).toBe(false);
   });
 
+  it("prerelease 앞의 0 은 뜻이 없다 (Ruby 의 규칙)", () => {
+    const { satisfies } = rule("rubygems");
+    expect(satisfies("1.0.0.a", "= 1.0.a")).toBe(true);
+    expect(satisfies("1.a", "= 1.0.a")).toBe(true);
+    expect(satisfies("1.0.a", "< 1.0")).toBe(true);
+    expect(satisfies("1.0.0.rc1", "< 1")).toBe(true);
+    expect(satisfies("0.0.a", "< 0.0.1")).toBe(true);
+  });
+
   it("~> 는 마지막 마디만 올라갈 수 있다", () => {
     const { satisfies } = rule("rubygems");
     expect(satisfies("1.2.9", "~> 1.2.3")).toBe(true);
@@ -83,7 +92,28 @@ describe("[SG-02] composer", () => {
     expect(satisfies("dev-master", ">=1.0")).toBe(false);
   });
 
+  it("Composer 의 뜻으로 읽는다: ~1.2 는 2.0 미만, 연산자 없는 1.2 는 정확히 1.2.0", () => {
+    const { satisfies, validateRange } = rule("composer");
+    expect(satisfies("1.5.0", "~1.2")).toBe(true);
+    expect(satisfies("2.0.0", "~1.2")).toBe(false);
+    expect(satisfies("1.1.9", "~1.2")).toBe(false);
+    expect(satisfies("1.2.9", "~1.2.3")).toBe(true);
+    expect(satisfies("1.3.0", "~1.2.3")).toBe(false);
+    expect(satisfies("1.2.0", "1.2")).toBe(true);
+    expect(satisfies("1.2.5", "1.2")).toBe(false);
+    expect(satisfies("1.2.5", "1.2.*")).toBe(true);
+    expect(satisfies("3.1.0", ">=1.0 <2.0 || >=3.0")).toBe(true);
+    expect(satisfies("2.5.0", ">=1.0 <2.0 || >=3.0")).toBe(false);
+    expect(validateRange("1.0 - 2.0")).toBeNull();
+    expect(satisfies("1.5.0", "1.0 - 2.0")).toBe(true);
+    expect(satisfies("0.3.9", "^0.3")).toBe(true);
+    expect(satisfies("0.4.0", "^0.3")).toBe(false);
+  });
+
   it("선언의 고정 버전", () => {
+    expect(rule("composer").exactVersionOf("1.x")).toBeNull();
+    expect(rule("composer").exactVersionOf("1.x-dev")).toBeNull();
+    expect(rule("composer").exactVersionOf("1.2.3.4")).toBe("1.2.3.4");
     expect(rule("composer").exactVersionOf("5.0.2")).toBe("5.0.2");
     expect(rule("composer").exactVersionOf("v5.0.2")).toBe("v5.0.2");
     expect(rule("composer").exactVersionOf("^5.0")).toBeNull();

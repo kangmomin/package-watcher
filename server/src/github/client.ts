@@ -47,6 +47,97 @@ export interface GitHubClient {
    * 오래된 커밋을 새로 push 한 브랜치를 커밋 시각만으로는 놓치므로 함께 본다. 404 → 빈 Map.
    */
   listRecentPushes(org: string, repo: string, sinceIso: string): Promise<Map<string, string>>;
+  /** `branch` 의 `sinceIso` 이후 커밋(최근 순 100개, 1쪽만). 빈 repo(409)·404 → `[]` */
+  listRecentCommits(org: string, repo: string, branch: string, sinceIso: string): Promise<CommitInfo[]>;
+  /** 위와 같되 `.github/workflows` 를 바꾼 커밋만(1쪽). 어느 파일이 바뀌었는지는 받지 않는다 */
+  listWorkflowCommits(org: string, repo: string, branch: string, sinceIso: string): Promise<WorkflowCommit[]>;
+  /** 최근에 바뀐 PR 50개(state 무관, 1쪽). 404 → `[]` */
+  listRecentPulls(org: string, repo: string): Promise<PullInfo[]>;
+}
+
+export interface CommitInfo {
+  sha: string;
+  /** 첫 2000자 */
+  message: string;
+  authorLogin: string | null;
+  /** 작성자를 구분하는 데만 쓴다(hash 로 바꾼 뒤 버린다). 저장하지 않는다 */
+  authorEmail: string | null;
+  committedAt: string;
+  url: string;
+}
+
+export interface WorkflowCommit {
+  sha: string;
+  committedAt: string;
+  url: string;
+  authorLogin: string | null;
+}
+
+export interface PullInfo {
+  number: number;
+  /** 첫 500자 */
+  title: string;
+  state: string;
+  updatedAt: string;
+  authorLogin: string | null;
+  url: string;
+}
+
+export const COMMIT_MESSAGE_MAX = 2000;
+export const PULL_TITLE_MAX = 500;
+const SHA_FORMAT = /^[0-9a-f]{7,64}$/i;
+
+const str = (value: unknown): string | null => (typeof value === "string" ? value : null);
+
+/** `GET /commits` 응답의 항목을 고른다. sha 나 시각의 형식이 맞지 않는 항목은 건너뛴다(신뢰할 수 없는 입력) */
+export function pickCommits(data: unknown): CommitInfo[] {
+  if (!Array.isArray(data)) return [];
+  const found: CommitInfo[] = [];
+  for (const item of data as ({
+    sha?: unknown;
+    html_url?: unknown;
+    author?: { login?: unknown } | null;
+    commit?: { message?: unknown; author?: { email?: unknown; date?: unknown } | null; committer?: { date?: unknown } | null };
+  } | null)[]) {
+    const sha = str(item?.sha);
+    const committedAt = str(item?.commit?.committer?.date) ?? str(item?.commit?.author?.date);
+    if (sha === null || !SHA_FORMAT.test(sha) || committedAt === null || Number.isNaN(Date.parse(committedAt))) continue;
+    found.push({
+      sha,
+      message: (str(item?.commit?.message) ?? "").slice(0, COMMIT_MESSAGE_MAX),
+      authorLogin: str(item?.author?.login),
+      authorEmail: str(item?.commit?.author?.email),
+      committedAt,
+      url: str(item?.html_url) ?? "",
+    });
+  }
+  return found;
+}
+
+/** `GET /pulls` 응답의 항목을 고른다 */
+export function pickPulls(data: unknown): PullInfo[] {
+  if (!Array.isArray(data)) return [];
+  const found: PullInfo[] = [];
+  for (const item of data as ({
+    number?: unknown;
+    title?: unknown;
+    state?: unknown;
+    updated_at?: unknown;
+    html_url?: unknown;
+    user?: { login?: unknown } | null;
+  } | null)[]) {
+    const number = item?.number;
+    if (typeof number !== "number" || !Number.isInteger(number) || number <= 0) continue;
+    found.push({
+      number,
+      title: (str(item?.title) ?? "").slice(0, PULL_TITLE_MAX),
+      state: str(item?.state) ?? "",
+      updatedAt: str(item?.updated_at) ?? "",
+      authorLogin: str(item?.user?.login),
+      url: str(item?.html_url) ?? "",
+    });
+  }
+  return found;
 }
 
 export interface RecentBranch {
@@ -312,6 +403,53 @@ export function createOctokitClient(options: OctokitClientOptions): GitHubClient
           return pickRecentPushes(data, sinceIso);
         } catch (error) {
           if (error instanceof RequestError && error.status === 404) return new Map<string, string>();
+          throw error;
+        }
+      }),
+
+    listRecentCommits: (org, repo, branch, sinceIso) =>
+      call(async () => {
+        try {
+          const { data } = await octokit.rest.repos.listCommits({ owner: org, repo, sha: branch, since: sinceIso, per_page: 100 });
+          return pickCommits(data);
+        } catch (error) {
+          if (error instanceof RequestError && (error.status === 404 || error.status === 409)) return [];
+          throw error;
+        }
+      }),
+
+    listWorkflowCommits: (org, repo, branch, sinceIso) =>
+      call(async () => {
+        try {
+          const { data } = await octokit.rest.repos.listCommits({
+            owner: org,
+            repo,
+            sha: branch,
+            since: sinceIso,
+            path: ".github/workflows",
+            per_page: 100,
+          });
+          return pickCommits(data).map(({ sha, committedAt, url, authorLogin }) => ({ sha, committedAt, url, authorLogin }));
+        } catch (error) {
+          if (error instanceof RequestError && (error.status === 404 || error.status === 409)) return [];
+          throw error;
+        }
+      }),
+
+    listRecentPulls: (org, repo) =>
+      call(async () => {
+        try {
+          const { data } = await octokit.rest.pulls.list({
+            owner: org,
+            repo,
+            state: "all",
+            sort: "updated",
+            direction: "desc",
+            per_page: 50,
+          });
+          return pickPulls(data);
+        } catch (error) {
+          if (error instanceof RequestError && error.status === 404) return [];
           throw error;
         }
       }),

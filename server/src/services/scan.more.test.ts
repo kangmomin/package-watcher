@@ -233,13 +233,15 @@ describe("내장 검사 5개", () => {
 
   const hash12 = (text: string): string => createHash("sha256").update(text).digest("hex").slice(0, 12);
 
-  it("[SG-64] 시작할 때 16개가 있고 workflow-changed·new-committer 는 평가되지 않아도 스캔이 성공한다", async () => {
+  it("[SG-64] 시작할 때 16개가 있고 workflow-changed·new-committer 는 최근 push 가 없는 repo 에서 조회하지 않아도 스캔이 성공한다", async () => {
     expect(await policyEntries()).toHaveLength(16);
     policyApp.github.setRepos([{ name: "svc", files: { "package.json": pkgJson(), "package-lock.json": npmLockV3({}) } }]);
 
     const scan = await runScan(policyApp);
 
     expect(scan.status).toBe("success");
+    expect(policyApp.github.callsOf("listRecentCommits")).toHaveLength(0);
+    expect(policyApp.github.callsOf("listWorkflowCommits")).toHaveLength(0);
     expect(policyApp.logger.texts("error")).toEqual([]);
   });
 

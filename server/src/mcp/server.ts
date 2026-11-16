@@ -90,7 +90,7 @@ const perEcosystem = (pick: (rule: EcosystemRule) => string): string =>
 const NAME = field({
   type: "string",
   description:
-    "패키지 이름(actions 는 owner/repo, docker 는 이미지 저장소, path 는 파일 경로 또는 `*` 패턴, content 는 파일 내용에서 찾을 글자 그대로의 문자열 6~200자, branch 는 브랜치 이름 또는 `*` 패턴, policy 는 내장 검사의 id 이고 추가·삭제·이름 변경은 할 수 없다: " +
+    "패키지 이름(actions 는 owner/repo, docker 는 이미지 저장소, path 는 파일 경로 또는 `*` 패턴, content 는 파일 내용에서 찾을 글자 그대로의 문자열 6~200자, branch 는 브랜치 이름 또는 `*` 패턴, commit 은 기본 브랜치의 최근 커밋 메시지에서 찾을 글자 그대로의 문자열 6~200자, pr 은 최근 PR 제목에서 찾을 글자 그대로의 문자열 6~200자, policy 는 내장 검사의 id 이고 추가·삭제·이름 변경은 할 수 없다: " +
     POLICY_CHECK_IDS.join(", ") +
     "). 종류의 규칙을 따른다 (예: " +
     perEcosystem((rule) => rule.nameExample) +
@@ -103,13 +103,13 @@ const VERSION_RANGE = field({
     "종류의 버전 범위 문법 (예: " +
     perEcosystem((rule) => rule.rangeExample) +
     "). actions·docker 는 semver 가 아니라 쉼표로 나눈 정확한 tag·commit SHA(7자 이상의 앞부분 허용)·digest(sha256:…) 의 목록. " +
-    "path·content·branch 는 범위를 쓰지 않는다(생략하거나 null, 값을 주면 400). null 또는 빈 문자열 = 모든 버전",
+    "path·content·branch·commit·pr 는 범위를 쓰지 않는다(생략하거나 null, 값을 주면 400). null 또는 빈 문자열 = 모든 버전",
 });
 const ECOSYSTEM = field({
   type: "string",
   enum: SUPPORTED_ECOSYSTEMS,
   description:
-    "종류. 패키지(npm, go, pypi, nuget, cargo, pub, maven)와 CI(actions: workflow 의 uses, docker: Dockerfile·compose·workflow 의 이미지), 침해의 흔적(path: repo 의 파일 경로, content: 받은 파일 내용의 문자열, branch: 브랜치 이름), 위험한 설정(policy: 서버가 만든 내장 검사 9개 — 추가·삭제할 수 없고 켬·끔과 심각도만 바꾼다. add_blacklist_entry 에 주면 VALIDATION_ERROR). 기본 npm. 등록한 뒤에는 바꿀 수 없다 (바꾸려면 새 항목으로 등록)",
+    "종류. 패키지(npm, go, pypi, nuget, cargo, pub, maven)와 CI(actions: workflow 의 uses, docker: Dockerfile·compose·workflow 의 이미지), 침해의 흔적(path: repo 의 파일 경로, content: 받은 파일 내용의 문자열, branch: 브랜치 이름, commit: 기본 브랜치의 최근 커밋 메시지의 문자열, pr: 최근 PR 제목의 문자열), 위험한 설정(policy: 서버가 만든 내장 검사 9개 — 추가·삭제할 수 없고 켬·끔과 심각도만 바꾼다. add_blacklist_entry 에 주면 VALIDATION_ERROR). 기본 npm. 등록한 뒤에는 바꿀 수 없다 (바꾸려면 새 항목으로 등록)",
 });
 const SEVERITY = field({ type: "string", enum: SEVERITIES, description: "심각도. 기본 medium" });
 const ENABLED = field({ type: "boolean", description: "켜기. 기본 true" });

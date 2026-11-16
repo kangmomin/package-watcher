@@ -97,9 +97,9 @@ Docker 로 실행할 때는 `.env` 에 `PORT`, `HOST`, `DATA_DIR`, `WEB_DIST_DIR
 
 | 필드 | 설명 |
 |------|------|
-| `ecosystem` | 종류. 패키지(`npm`, `go`, `pypi`, `nuget`, `cargo`, `pub`, `maven`, `rubygems`, `composer`, `cocoapods`, 기본 `npm`)와 CI(`actions`, `docker`, `vscode`, `helm`, `terraform`), 침해의 흔적(`path`, `content`, `branch`), 위험한 설정(`policy`, 내장 검사라서 추가·삭제 불가 — 아래 "위험한 설정"). 같은 이름·버전 범위라도 종류가 다르면 다른 항목이다. **등록한 뒤에는 바꿀 수 없다**(PUT 으로 다른 종류를 보내면 400, 새 항목으로 등록한다) |
-| `name` | 패키지 이름(`actions` 는 `owner/repo`, `docker` 는 이미지 저장소, `path` 는 경로, `content` 는 찾을 문자열, `branch` 는 브랜치 이름) 또는 `*` 패턴(`content` 제외). 종류마다 이름 규칙과 비교 방법이 다르다(아래 표) |
-| `versionRange` | 그 종류의 범위 문법(아래 표). 비우면 모든 버전. `path`·`content`·`branch` 는 범위를 쓰지 않으므로 항상 비어 있고, 값을 주면 400 이다(`details.versionRange`) |
+| `ecosystem` | 종류. 패키지(`npm`, `go`, `pypi`, `nuget`, `cargo`, `pub`, `maven`, `rubygems`, `composer`, `cocoapods`, 기본 `npm`)와 CI(`actions`, `docker`, `vscode`, `helm`, `terraform`), 침해의 흔적(`path`, `content`, `branch`, `commit`, `pr`), 위험한 설정(`policy`, 내장 검사라서 추가·삭제 불가 — 아래 "위험한 설정"). 같은 이름·버전 범위라도 종류가 다르면 다른 항목이다. **등록한 뒤에는 바꿀 수 없다**(PUT 으로 다른 종류를 보내면 400, 새 항목으로 등록한다) |
+| `name` | 패키지 이름(`actions` 는 `owner/repo`, `docker` 는 이미지 저장소, `path` 는 경로, `content` 는 찾을 문자열, `branch` 는 브랜치 이름, `commit` 은 커밋 메시지에서, `pr` 은 PR 제목에서 찾을 문자열) 또는 `*` 패턴(`content`·`commit`·`pr` 제외). 종류마다 이름 규칙과 비교 방법이 다르다(아래 표) |
+| `versionRange` | 그 종류의 범위 문법(아래 표). 비우면 모든 버전. `path`·`content`·`branch`·`commit`·`pr` 는 범위를 쓰지 않으므로 항상 비어 있고, 값을 주면 400 이다(`details.versionRange`) |
 | `severity` | `critical` > `high` > `medium` > `low`. 기본 `medium`. 대시보드는 심각도가 높은 검출부터 보여 준다 |
 | `enabled` | 끄면 검사에서 제외하고, 그 항목의 검출(무시한 것 포함)은 즉시 `resolved` 가 된다. 다시 켜면 다음 스캔에서 새 검출(과 메일)이 생긴다 |
 | `expiresAt` | 만료일(`YYYY-MM-DD`, KST). 만료일 당일까지 검사하고 다음 날 00:00(KST)부터 `만료`로 보고 끈 것과 같이 처리한다. 비우면 만료 없음 |
@@ -162,7 +162,7 @@ Docker 로 실행할 때는 `.env` 에 `PORT`, `HOST`, `DATA_DIR`, `WEB_DIST_DIR
 
 ## 위험한 설정
 
-블랙리스트에 없어도 보고하는 **내장 검사**다. 종류 `policy` 의 항목 16개를 서버가 시작할 때 없는 것만 만든다(2번 시작해도 16개, 이미 있으면 아무것도 바꾸지 않는다. 업그레이드한 설치에는 새 7개만 더해지고 기존 항목의 켬·끔·심각도는 그대로다). 아래 표는 14개이고, 커밋을 보는 `workflow-changed`·`new-committer` 는 항목만 만들어 두고 아직 평가하지 않는다(모르는 검사는 조용히 건너뛴다). 항목의 `name` 이 검사의 id 이고 `versionRange` 는 쓰지 않는다.
+블랙리스트에 없어도 보고하는 **내장 검사**다. 종류 `policy` 의 항목 16개를 서버가 시작할 때 없는 것만 만든다(2번 시작해도 16개, 이미 있으면 아무것도 바꾸지 않는다. 업그레이드한 설치에는 새 7개만 더해지고 기존 항목의 켬·끔·심각도는 그대로다). 아래 표는 14개이고, 커밋을 보는 `workflow-changed`·`new-committer` 는 아래 "커밋과 PR 의 감시"에서 설명한다. 항목의 `name` 이 검사의 id 이고 `versionRange` 는 쓰지 않는다.
 
 | id | 내용 | 기본 심각도 |
 |----|------|-------------|
@@ -222,6 +222,19 @@ GitHub Advisory Database 의 **악성 패키지(malware) 권고만** 자동으�
 - **상한:** 브랜치 1개에서 받는 파일은 **최대 300개**다. 넘는 브랜치(대규모 리팩터링 등)는 요청 없이 건너뛰고 경고를 남기며, 부분 평가는 resolve 의 근거가 되지 않는다.
 - **요청 수의 영향:** 최근 push 가 있는 repo 마다 GraphQL 1회 + events 1회, 평가하는 브랜치마다 tree 1회, 기본 브랜치에서 받지 않은 파일(달라진 파일과 캐시에 없는 의존성 파일)만큼이 더해진다(repo 당 최대 20개 브랜치 × 300개). 최근 push 가 없는 repo 는 늘지 않는다.
 - **끄는 방법:** 설정의 `branchScanDays` 를 0 으로 저장한다(화면의 브랜치 스캔 기간, `PUT /api/settings`). 0 이면 브랜치 관련 요청이 전혀 없고 기존 브랜치의 검출은 다음 스캔에서 resolve 된다.
+
+## 커밋과 PR 의 감시
+
+커밋 메시지와 PR 제목을 보고, workflow 를 바꾼 커밋과 처음 보는 작성자를 알려 준다. 저장소에 이미 들어온 변경의 "흔적"을 찾는 기능이다.
+
+- **대상:** 최근 N일(`branchScanDays`, 브랜치 스캔과 같은 값·같은 조건)에 push 된 repo 만이다. 기본 브랜치의 **최근 커밋 100개**(N일 안)와 **최근에 바뀐 PR 50개**(state 무관)를 본다. 둘 다 1쪽만 받는다. `branchScanDays` 가 0 이면 이 조회는 전혀 없다.
+- **종류 2개(흔적):** `commit`(커밋 메시지에서 찾을 문자열), `pr`(PR 제목에서 찾을 문자열). 글자 그대로의 문자열 6~200자이고 대소문자를 무시하며 `*` 패턴과 범위는 없다. 검출의 위치는 `commit/<40자 sha>`, `pull/<번호>` 이고 링크는 그 커밋·PR 이다. 메일에서는 `커밋 <앞 7자>`, `PR #<번호>` 로 나가고 일반 검출처럼 즉시 메일 대상이며 repo 의 `openFindingCount` 에 센다.
+- **검사 2개(위험한 설정):** `workflow-changed`(최근 N일에 `.github/workflows` 를 바꾼 커밋마다 1건. 그 repo 의 tree 에 `.github/workflows/` 파일이 있을 때만 조회한다. 어느 파일이 바뀌었는지는 받지 않는다), `new-committer`(기본 브랜치에서 **처음 본 작성자**의 커밋 — 작성자마다 1건, 그 작성자의 가장 오래된 새 커밋). 둘 다 `policy` 의 규칙을 따른다(즉시 메일 없음, 요약에 건수, repo 의 검출 수에 넣지 않음).
+- **`new-committer` 의 기준선:** repo 마다 본 작성자를 기록한다(`repo_authors`). 기록이 하나도 없는 첫 평가는 **기록만 하고 검출을 만들지 않는다**(커밋이 없던 평가는 기준선이 아니다). 그 뒤 기록에 없는 작성자의 커밋이 새 검출이다. 작성자의 키는 계정(login, 소문자)이고, 계정이 없는 커밋은 `email:<이메일의 SHA-256 앞 12자>` 다. **이메일 원문은 DB·검출·로그·메일 어디에도 저장하지 않는다.** bot(`[bot]` 으로 끝나는 계정)과 `web-flow` 는 무시한다. 기록은 스캔이 끝나는 트랜잭션에서 검출과 함께 하므로 버려진 스캔은 기록을 남기지 않는다.
+- **검출이 사라지는 조건:** 그 조회를 이번 스캔에서 했는데 다시 나오지 않으면 resolve 된다(N일이 지남, 항목·검사를 껐음). `new-committer` 는 그 커밋이 이번 목록에 있고 작성자의 첫 기록이 N일 안이면 유지된다. repo 에 최근 push 가 없어지거나 `branchScanDays` 를 0 으로 꺼도 resolve 된다. 반대로 **조회가 실패하면(오류, rate limit) 그대로 둔다.** 조회 1개의 실패는 repo 의 실패가 아니라 경고 로그만 남고, rate limit 은 기본 브랜치의 결과를 살린 채 뒤의 repo 를 멈춘다.
+- **요청 수:** 대상 repo 당 최대 3회다 — 커밋 목록(`commit` 항목이 있거나 `new-committer` 가 켜져 있을 때 1회), workflow 를 바꾼 커밋(`workflow-changed` 가 켜져 있고 tree 에 workflow 파일이 있을 때 1회), PR 목록(`pr` 항목이 있을 때 1회). 조건이 맞지 않으면 0회다.
+- **끄는 방법:** `branchScanDays` 를 0 으로 저장하거나(브랜치 스캔도 함께 꺼진다), `commit`·`pr` 항목과 두 검사를 끈다.
+- **한계:** 커밋 목록은 최근 100개까지만 본다(그 앞의 커밋은 보지 못한다). 작성자가 로그인과 이메일로 번갈아 나오면 서로 다른 작성자로 센다.
 
 ## 일괄 작업, 가져오기, 내보내기
 

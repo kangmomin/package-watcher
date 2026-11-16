@@ -2,6 +2,7 @@ import type { Db } from "../db/index.ts";
 import { createBlacklistRepository, type BlacklistRepository } from "./blacklist.ts";
 import { createFeedRepository, type FeedRepository } from "./feed.ts";
 import { createFindingsRepository, type FindingsRepository } from "./findings.ts";
+import { createRepoAuthorsRepository, type RepoAuthorsRepository } from "./repoAuthors.ts";
 import { createScanReposRepository, type ScanReposRepository } from "./scanRepos.ts";
 import { createScansRepository, type ScansRepository } from "./scans.ts";
 import { createSettingsRepository, type SettingsRepository } from "./settings.ts";
@@ -13,6 +14,7 @@ export interface Repositories {
   scans: ScansRepository;
   scanRepos: ScanReposRepository;
   settings: SettingsRepository;
+  repoAuthors: RepoAuthorsRepository;
   /** 동기 트랜잭션 (better-sqlite3 `db.transaction`) */
   transaction<T>(fn: () => T): T;
 }
@@ -25,6 +27,7 @@ export function createRepositories(db: Db): Repositories {
     scans: createScansRepository(db),
     scanRepos: createScanReposRepository(db),
     settings: createSettingsRepository(db),
+    repoAuthors: createRepoAuthorsRepository(db),
     transaction: (fn) => db.transaction(fn)(),
   };
 }

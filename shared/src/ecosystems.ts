@@ -400,7 +400,13 @@ function parseGemVersion(text: string): string[] | null {
   const normalized = text.trim().replace(/-/g, ".pre.");
   if (!GEM_VERSION.test(normalized)) return null;
   // `1.0.rc1` → ["1", "0", "rc", "1"]: 문자와 숫자의 경계에서도 나눈다.
-  return normalized.split(".").flatMap((part) => part.match(/\d+|[A-Za-z]+/g) ?? []);
+  const parts = normalized.split(".").flatMap((part) => part.match(/\d+|[A-Za-z]+/g) ?? []);
+  // Ruby 는 prerelease 앞의 0 을 뗀다 (`1.0.0.a` = `1.0.a` = `1.a`). 숫자 마디는 1개 이상 남긴다.
+  const firstText = parts.findIndex((part) => !DIGITS.test(part));
+  if (firstText === -1) return parts;
+  let end = firstText;
+  while (end > 1 && /^0+$/.test(parts[end - 1] as string)) end -= 1;
+  return [...parts.slice(0, end), ...parts.slice(firstText)];
 }
 
 function compareGemVersions(a: string[], b: string[]): number {
@@ -491,16 +497,32 @@ function gemRule(message: string): Pick<EcosystemRule, "validateRange" | "satisf
 
 // ---------------------------------------------------------------- Composer
 
+/**
+ * Composer 와 npm 이 다르게 읽는 조각을 npm 의 뜻으로 고친다.
+ * `~1.2` 는 Composer 에서 `>=1.2 <2.0` 이고(npm 은 `<1.3`), 연산자 없는 `1.2` 는 정확히 `1.2.0` 이다(npm 은 `1.2.x`).
+ */
+function composerToken(token: string): string {
+  const tilde = /^~(\d+)\.(\d+)$/.exec(token);
+  if (tilde) return `>=${tilde[1]}.${tilde[2]}.0 <${(BigInt(tilde[1] as string) + 1n).toString()}.0.0`;
+  const partial = /^(\d+)(?:\.(\d+))?$/.exec(token);
+  if (partial) return `=${partial[1]}.${partial[2] ?? "0"}.0`;
+  return token;
+}
+
 /** Composer 의 제약을 semver 범위로 바꾼다: `,` 는 AND, `|` 는 OR, `v` 접두와 `@stable` 같은 표지는 뗀다. */
 function composerToSemver(range: string): string | null {
   if (typeof range !== "string") return null;
-  const converted = range
+  const normalized = range
     .replace(/@[A-Za-z]+/g, "")
     .replace(/\|{1,2}/g, " || ")
     .replace(/,/g, " ")
     .replace(/(^|[\s<>=^~])v(?=\d)/g, "$1")
     .replace(/\s+/g, " ")
     .trim();
+  // 하이픈 범위(`1.0 - 2.0`)는 조각을 고치지 않는다 — 양 끝의 부분 버전은 범위의 경계다.
+  const converted = normalized.includes(" - ")
+    ? normalized
+    : normalized.split(" ").map(composerToken).join(" ");
   return converted !== "" && semverValidRange(converted) !== null ? converted : null;
 }
 
@@ -789,7 +811,10 @@ export const ECOSYSTEM_RULES: Record<Ecosystem, EcosystemRule> = {
       return exact !== null && converted !== null && semverSatisfies(exact, converted, SEMVER_OPTIONS);
     }),
     // `dev-master` 같은 브랜치 별칭과 범위는 정확한 버전이 아니다.
-    exactVersionOf: safeExact((spec) => (/^v?\d[0-9A-Za-z.+-]*$/.test(spec) && composerVersion(spec) !== null ? spec : null)),
+    // `1.x`, `1.0.*` 같은 와일드카드는 범위다.
+    exactVersionOf: safeExact((spec) =>
+      /^v?\d+(?:\.\d+){0,3}(?:[-+][0-9A-Za-z.+-]*)?$/.test(spec) && composerVersion(spec) !== null ? spec : null,
+    ),
   },
 
   cocoapods: {
