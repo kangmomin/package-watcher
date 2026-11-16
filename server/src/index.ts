@@ -3,6 +3,7 @@ import { serve } from "@hono/node-server";
 import { createApp, hasWebDist } from "./app.ts";
 import { systemClock } from "./clock.ts";
 import { loadConfig, readGhAuthToken } from "./config.ts";
+import { createFeedClient } from "./feed/client.ts";
 import { createOctokitClient } from "./github/client.ts";
 import { consoleLogger } from "./logger.ts";
 import { createSmtpMailer, unconfiguredMailer } from "./services/notifier.ts";
@@ -18,6 +19,8 @@ function main(): void {
   const instance = createApp({
     dbPath: join(config.dataDir, DB_FILE_NAME),
     github: config.github.token ? createOctokitClient({ token: config.github.token }) : null,
+    // 외부 목록(권고)은 공개 데이터라서 스캔과 같은 토큰을 쓴다. 토큰이 없으면 동기화하지 않는다.
+    feedClient: config.github.token ? createFeedClient({ token: config.github.token }) : null,
     githubTokenSource: config.github.source,
     mailer: config.smtp ? createSmtpMailer(config.smtp) : unconfiguredMailer,
     smtpConfigured: config.smtp !== null,
@@ -38,6 +41,8 @@ function main(): void {
     (info) => logger.info(`package-watcher listening on http://${config.host}:${info.port}`),
   );
   instance.scheduler.start();
+  // 외부 목록의 동기화는 백그라운드다 — 서버 시작과 스캔을 막지 않는다.
+  instance.services.feed.startBackground();
 
   // 종료 신호는 SIGTERM/SIGINT 이고 SHUTDOWN_TIMEOUT_MS 만큼만 기다린다 — 근거: Spec 에 종료 처리 규칙이 없다(A-7 은 재시작 보정만 정한다).
   let shuttingDown = false;

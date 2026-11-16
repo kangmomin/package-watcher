@@ -43,7 +43,8 @@ import {
 } from "../ecosystems/index.ts";
 import { detectEcosystem, type ParsedLock, type ParsedManifest } from "../ecosystems/detect.ts";
 import type { Logger } from "../logger.ts";
-import { createEntryIndex, matchExact, matchRange, type EntryIndex } from "../matcher.ts";
+import { createCompositeIndex, feedRowIdOf, isFeedTempId, type FeedIndex } from "../feed/index.ts";
+import { createEntryIndex, matchExact, matchRange, type EntryIndex, type MatchableEntry } from "../matcher.ts";
 import type { FindingKey } from "../repositories/findings.ts";
 import type { Repositories } from "../repositories/index.ts";
 import type { RepoDone } from "../repositories/scanRepos.ts";
@@ -51,6 +52,7 @@ import type { ScanResult } from "../repositories/scans.ts";
 import { assignLockfiles, dirOf, readWorkspaceGlobs } from "../workspaces.ts";
 import { mapWithConcurrency, parseInput, printable, toIso } from "./common.ts";
 import { isEntryActive, todayKst } from "./entryActivity.ts";
+import type { FeedSource } from "./feedService.ts";
 import type { Notifier } from "./notifier.ts";
 import { createIndicatorRules, type IndicatorRules } from "./scanIndicators.ts";
 import { createPolicyRules, type PolicyManifest, type PolicyMatch, type PolicyRules } from "./scanPolicy.ts";
@@ -108,6 +110,20 @@ export interface ScanServiceDeps {
   notifier: Notifier;
   clock: Clock;
   logger: Logger;
+  /** 외부 목록(feed). 없으면 블랙리스트 항목만 대조한다 */
+  feed?: FeedSource;
+}
+
+/** 스캔이 시작될 때 정해지는 외부 목록의 대조 자료 */
+interface FeedContext {
+  index: FeedIndex;
+  /** 이미 블랙리스트에 있는 (종류, 이름, 범위). 같은 키의 외부 목록 항목은 대조하지 않는다 */
+  blocked: Set<string>;
+}
+
+/** 외부 목록의 항목으로 만드는 블랙리스트 항목의 사유 (최대 500자) */
+function feedReason(summary: string, externalId: string, url: string): string {
+  return `${summary} (${externalId}) 출처: ${url}`.trim().slice(0, 500);
 }
 
 interface Match extends FindingKey {
@@ -255,7 +271,7 @@ function parseLockfileOrThrow(file: LockfileFile, content: string): LockPackage[
 }
 
 export function createScanService(deps: ScanServiceDeps): ScanService {
-  const { repos, github, githubTokenSource, notifier, clock, logger } = deps;
+  const { repos, github, githubTokenSource, notifier, clock, logger, feed } = deps;
   let running: Promise<Scan> | null = null;
 
   // ---------------------------------------------------------------- 진행 기록
@@ -293,7 +309,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     org: string,
     client: GitHubClient,
     repo: RepoInfo,
-    entryIndex: EntryIndex<BlacklistEntry>,
+    entryIndex: EntryIndex<MatchableEntry>,
     activeEcosystems: ReadonlySet<string>,
     indicators: IndicatorRules,
     policy: PolicyRules,
@@ -429,7 +445,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     org: string,
     client: GitHubClient,
     repo: RepoInfo,
-    entryIndex: EntryIndex<BlacklistEntry>,
+    entryIndex: EntryIndex<MatchableEntry>,
     files: {
       packageJsons: TreeEntry[];
       lockfiles: (TreeEntry & LockfileFile)[];
@@ -562,7 +578,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     org: string,
     client: GitHubClient,
     repo: RepoInfo,
-    entryIndex: EntryIndex<BlacklistEntry>,
+    entryIndex: EntryIndex<MatchableEntry>,
     ecosystem: FileEcosystem,
     files: { manifests: TreeEntry[]; locks: TreeEntry[] },
     received?: Map<string, string>,
@@ -595,6 +611,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     org: string,
     client: GitHubClient,
     snapshot: BlacklistEntry[],
+    feedContext: FeedContext | null,
   ): Promise<Collected> {
     let listed: RepoInfo[];
     try {
@@ -606,10 +623,14 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     const unique = [...new Map(listed.map((repo) => [repo.name, repo])).values()];
     const targets = unique.filter((repo) => !repo.archived && !repo.fork);
 
-    const entryIndex = createEntryIndex(snapshot);
+    const entryIndex = createCompositeIndex(createEntryIndex(snapshot), feedContext?.index ?? null, feedContext?.blocked ?? new Set());
     const indicators = createIndicatorRules(snapshot);
     const policy = createPolicyRules(snapshot);
-    const activeEcosystems = new Set(snapshot.map((entry) => entry.ecosystem));
+    // 외부 목록에 항목이 있는 종류도 그 종류의 파일을 받는다.
+    const activeEcosystems = new Set<string>([
+      ...snapshot.map((entry) => entry.ecosystem),
+      ...(feedContext?.index.ecosystems ?? []),
+    ]);
 
     // 대상 목록을 받은 직후에 오래된 기록을 지우고 repo 마다 pending 행을 만든다.
     track("대상 repo 등록", () =>
@@ -737,6 +758,51 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     );
   }
 
+  /**
+   * 외부 목록(feed)과 일치한 항목(임시 id)을 블랙리스트 항목으로 만든다(`source = feed`). 종료 트랜잭션 안에서 부른다.
+   * 같은 키의 항목이 이미 있으면(그 사이에 만들어진 경우) 새로 만들지 않고, 그 항목이 활성일 때만 쓴다 — 꺼진 항목이 다시 살아나지 않게.
+   * 반환: 임시 id → 실제 id. 만들 수 없거나(행이 지워짐) 쓸 수 없는 항목은 들어 있지 않다. 쓰는 항목은 `entries` 에도 더한다.
+   */
+  function materializeFeedEntries(
+    outcomes: RepoOutcome[],
+    entries: Map<number, BlacklistEntry>,
+    now: string,
+    today: string,
+  ): Map<number, number> {
+    const mapping = new Map<number, number>();
+    const tempIds = new Set<number>();
+    for (const outcome of outcomes) {
+      if (!outcome.ok) continue;
+      for (const match of outcome.matches) if (isFeedTempId(match.blacklistEntryId)) tempIds.add(match.blacklistEntryId);
+    }
+    for (const tempId of tempIds) {
+      const row = repos.feed.get(feedRowIdOf(tempId));
+      if (!row) continue;
+      const existing = repos.blacklist.findByKey(row.ecosystem, row.name, row.versionRange, today);
+      const entry =
+        existing ??
+        repos.blacklist.insert(
+          {
+            ecosystem: row.ecosystem,
+            name: row.name,
+            versionRange: row.versionRange,
+            reason: feedReason(row.summary, row.externalId, row.url),
+            severity: row.severity,
+            enabled: true,
+            expiresAt: null,
+            source: "feed",
+            externalId: row.externalId,
+          },
+          now,
+          today,
+        );
+      if (!isEntryActive(entry, today)) continue;
+      entries.set(entry.id, entry);
+      mapping.set(tempId, entry.id);
+    }
+    return mapping;
+  }
+
   /** 동기 트랜잭션 1개: ① org 확인 ② 유효 항목 ③ 생성·resolve ④ 스캔 행 마감 */
   function finalize(
     scanId: number,
@@ -760,10 +826,15 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
 
       const now = toIso(clock.now());
       const entries = unchangedEntries(snapshot, today);
+      const feedIds = materializeFeedEntries(collected.outcomes, entries, now, today);
       const results = new Map<string, Match>();
       for (const outcome of collected.outcomes) {
         if (!outcome.ok) continue;
-        for (const match of [...outcome.matches, ...outcome.policyMatches]) {
+        for (const found of [...outcome.matches, ...outcome.policyMatches]) {
+          // 외부 목록의 일치는 방금 만들었거나 이미 있던 블랙리스트 항목의 id 로 바꾼다. 못 바꾼 것은 버린다.
+          const realId = isFeedTempId(found.blacklistEntryId) ? feedIds.get(found.blacklistEntryId) : found.blacklistEntryId;
+          if (realId === undefined) continue;
+          const match = realId === found.blacklistEntryId ? found : { ...found, blacklistEntryId: realId };
           if (!entries.has(match.blacklistEntryId)) continue;
           const key = findingKey(match);
           const existing = results.get(key);
@@ -871,11 +942,12 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     org: string,
     client: GitHubClient,
     snapshot: BlacklistEntry[],
+    feedContext: FeedContext | null,
   ): Promise<Scan> {
     let finished: Scan;
     let sendMail = false;
     try {
-      const collected = await collect(scan.id, org, client, snapshot);
+      const collected = await collect(scan.id, org, client, snapshot, feedContext);
       ({ scan: finished, sendMail } = finalize(scan.id, org, snapshot, collected));
     } catch (error) {
       logger.error(`스캔 #${scan.id} 중 예상하지 못한 오류`, error);
@@ -909,8 +981,11 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
 
     const snapshot = repos.blacklist.listActive(todayKst(clock));
     const scan = repos.scans.insertRunning(trigger, now);
+    // 외부 목록은 스캔이 시작될 때의 것으로 대조한다(동기화가 도중에 바꿔도 이 스캔은 같은 목록을 본다).
+    const feedIndex = feed?.getIndex() ?? null;
+    const feedContext = feedIndex ? { index: feedIndex, blocked: repos.blacklist.allKeys() } : null;
     // lock 은 메일 발송까지 끝난 뒤 finally 에서 푼다.
-    const done = execute(scan, org, github, snapshot).finally(() => {
+    const done = execute(scan, org, github, snapshot, feedContext).finally(() => {
       running = null;
     });
     running = done;

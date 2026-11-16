@@ -23,7 +23,10 @@ export function BlacklistPage() {
   const data = blacklist.data;
   const bulk = useBulkBlacklist();
   const hasFilter =
-    filter.ecosystem !== undefined || filter.status !== undefined || filter.q !== undefined;
+    filter.ecosystem !== undefined ||
+    filter.status !== undefined ||
+    filter.source !== undefined ||
+    filter.q !== undefined;
 
   // 닫을 때 editing 을 비우지 않는다: 닫히는 동안 제목이 "추가" 로 바뀌지 않게 한다.
   const [dialogOpen, setDialogOpen] = useState(false);

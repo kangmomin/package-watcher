@@ -9,7 +9,7 @@ import {
   type BlacklistEntry,
   type EntryStatus,
 } from "@pw/shared";
-import { PencilIcon, Trash2Icon } from "lucide-react";
+import { ExternalLinkIcon, PencilIcon, Trash2Icon } from "lucide-react";
 import { useId } from "react";
 import { DashText } from "@/components/DashText";
 import { RowHeaderCell } from "@/components/RowHeaderCell";
@@ -56,6 +56,36 @@ const ENTRY_STATUS_CLASSES: Record<EntryStatus, string> = {
   disabled: "bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200",
   expired: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200",
 };
+
+/** 외부 목록이 추가한 항목의 표시: "자동" 배지 + 권고 링크(있을 때) */
+function FeedOrigin({ externalId }: { externalId: string | null }) {
+  const description = externalId ? `외부 목록이 추가한 항목 (${externalId})` : "외부 목록이 추가한 항목";
+  return (
+    <>
+      <Badge
+        variant="secondary"
+        role="img"
+        aria-label={description}
+        title={description}
+        className="ml-2 align-middle font-sans text-[10px]"
+      >
+        자동
+      </Badge>
+      {externalId && (
+        <a
+          href={`https://github.com/advisories/${encodeURIComponent(externalId)}`}
+          target="_blank"
+          rel="noreferrer"
+          aria-label={`${externalId} 권고 (새 창)`}
+          className="ml-2 inline-flex items-center gap-0.5 align-middle font-sans text-[11px] font-normal underline underline-offset-2"
+        >
+          {externalId}
+          <ExternalLinkIcon className="size-3" aria-hidden="true" />
+        </a>
+      )}
+    </>
+  );
+}
 
 export function BlacklistTable({
   items,
@@ -128,7 +158,10 @@ export function BlacklistTable({
                   title={entry.name}
                 >
                   {isUserManagedEcosystem(entry.ecosystem) ? (
-                    entry.name
+                    <>
+                      <span>{entry.name}</span>
+                      {entry.source === "feed" && <FeedOrigin externalId={entry.externalId} />}
+                    </>
                   ) : (
                     // 내장 검사: 사람이 읽는 title 을 크게, id 를 작게 보인다.
                     <>

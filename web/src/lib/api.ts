@@ -6,6 +6,8 @@ import {
   blacklistEntrySchema,
   blacklistListSchema,
   bulkResultSchema,
+  feedEntriesPageSchema,
+  feedStatusSchema,
   findingSchema,
   findingsPageSchema,
   importResultSchema,
@@ -23,8 +25,11 @@ import {
   type BulkResult,
   type Ecosystem,
   type EcosystemCategory,
+  type EntrySource,
   type EntryStatus,
   type ErrorCode,
+  type FeedEntry,
+  type FeedStatus,
   type Finding,
   type FindingStatus,
   type FindingStatusInput,
@@ -67,7 +72,19 @@ export class ApiRequestError extends Error {
 export interface BlacklistFilter {
   ecosystem?: Ecosystem;
   status?: EntryStatus;
+  source?: EntrySource;
   q?: string;
+}
+
+/** 외부 목록 검색의 조건. 값이 없는 키는 요청에 넣지 않는다. */
+export interface FeedEntriesFilter {
+  q?: string;
+  ecosystem?: Ecosystem;
+}
+
+export interface FeedEntriesParams extends FeedEntriesFilter {
+  page: number;
+  limit: number;
 }
 
 export interface FindingsFilter {
@@ -157,8 +174,8 @@ function withQuery(path: string, params: Record<string, string | number | undefi
   return query === "" ? path : `${path}?${query}`;
 }
 
-function blacklistParams({ ecosystem, status, q }: BlacklistFilter) {
-  return { ecosystem, status, q };
+function blacklistParams({ ecosystem, status, source, q }: BlacklistFilter) {
+  return { ecosystem, status, source, q };
 }
 
 /** 내보내기 링크. 목록과 같은 필터를 붙인다(선택 상태는 쓰지 않는다). */
@@ -203,6 +220,10 @@ export const api = {
   listScanRepos: (scanId: number, { status, q, page, limit }: ScanReposParams): Promise<Page<ScanRepo>> =>
     request(scanReposPageSchema, "GET", withQuery(`/api/scans/${scanId}/repos`, { status, q, page, limit })),
   triggerScan: (): Promise<Scan> => request(scanSchema, "POST", "/api/scans"),
+  getFeedStatus: (): Promise<FeedStatus> => request(feedStatusSchema, "GET", "/api/feed"),
+  syncFeed: (): Promise<FeedStatus> => request(feedStatusSchema, "POST", "/api/feed/sync"),
+  listFeedEntries: ({ q, ecosystem, page, limit }: FeedEntriesParams): Promise<Page<FeedEntry>> =>
+    request(feedEntriesPageSchema, "GET", withQuery("/api/feed/entries", { q, ecosystem, page, limit })),
   getSettings: (): Promise<Settings> => request(settingsSchema, "GET", "/api/settings"),
   saveSettings: (input: SettingsInput): Promise<Settings> => request(settingsSchema, "PUT", "/api/settings", input),
   sendTestEmail: (): Promise<TestEmailResult> =>

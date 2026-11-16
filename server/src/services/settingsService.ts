@@ -36,6 +36,7 @@ export function createSettingsService(deps: SettingsServiceDeps): SettingsServic
       githubTokenSource,
       smtpConfigured,
       notifyMinSeverity: stored.notifyMinSeverity,
+      feedEnabled: stored.feedEnabled,
     };
   }
 
@@ -56,6 +57,9 @@ export function createSettingsService(deps: SettingsServiceDeps): SettingsServic
         // 생략하면 저장된 값을 유지한다(v1 클라이언트 호환).
         if (data.notifyMinSeverity !== undefined) {
           repos.settings.set("notify_min_severity", data.notifyMinSeverity);
+        }
+        if (data.feedEnabled !== undefined) {
+          repos.settings.set("feed_enabled", String(data.feedEnabled));
         }
         if (orgChanged) {
           repos.findings.resolveAllActive(toIso(now));

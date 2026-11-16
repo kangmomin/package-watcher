@@ -21,10 +21,10 @@ afterEach(async () => {
 });
 
 describe("MCP — policy", () => {
-  it("[SD-70] tool 은 13개 그대로이고 list_findings 에 category·excludeCategory, 종류 설명에 policy 가 있다", async () => {
+  it("[SD-70] tool 은 15개이고 list_findings 에 category·excludeCategory, 종류 설명에 policy 가 있다", async () => {
     const { tools } = await client.listTools();
 
-    expect(tools).toHaveLength(13);
+    expect(tools).toHaveLength(15);
     const list = tools.find((tool) => tool.name === "list_findings");
     const properties = (list?.inputSchema.properties ?? {}) as Record<string, { enum?: string[] }>;
     expect(properties.category?.enum).toEqual(["package", "ci", "indicator", "policy"]);

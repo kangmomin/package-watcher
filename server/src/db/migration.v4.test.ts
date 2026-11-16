@@ -89,14 +89,16 @@ describe("DB 마이그레이션 v4 (종류의 CHECK 제거)", () => {
 
     const { db, migratedFrom, backupPath } = open(path);
 
-    expect(userVersionOf(db)).toBe(4);
+    expect(userVersionOf(db)).toBe(5);
     expect(migratedFrom).toBe(3);
     expect(backupPath).toBe(`${path}.v3-backup`);
     expect(readdirSync(dirname(path)).filter((name) => name.includes("backup"))).toEqual([
       "package-watcher.db.v3-backup",
     ]);
-    expect(db.prepare("SELECT * FROM blacklist_entries ORDER BY id").all()).toEqual(entriesBefore);
-    expect(db.prepare("SELECT * FROM findings ORDER BY id").all()).toEqual(findingsBefore);
+    // v5 가 열(source, external_id, ref)을 더하므로 v4 의 열 값만 비교한다.
+    const subset = (rows: unknown[]) => rows.map((row) => expect.objectContaining(row as object));
+    expect(db.prepare("SELECT * FROM blacklist_entries ORDER BY id").all()).toEqual(subset(entriesBefore));
+    expect(db.prepare("SELECT * FROM findings ORDER BY id").all()).toEqual(subset(findingsBefore));
     expect(countRows(db, "findings")).toBe(3);
   });
 
@@ -151,7 +153,7 @@ describe("DB 마이그레이션 v4 (종류의 CHECK 제거)", () => {
 
     const { db, migratedFrom } = open(path);
 
-    expect(userVersionOf(db)).toBe(4);
+    expect(userVersionOf(db)).toBe(5);
     expect(migratedFrom).toBeNull();
     expect(() => insertEntry(db, "docker", "node", "20")).not.toThrow();
   });

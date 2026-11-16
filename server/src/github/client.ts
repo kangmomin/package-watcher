@@ -52,11 +52,11 @@ export interface OctokitClientOptions {
   baseUrl?: string;
 }
 
-const REQUEST_TIMEOUT_MS = 30_000;
-const MAX_RETRIES = 2;
-const SECONDARY_RETRY_AFTER_LIMIT_S = 60;
+export const REQUEST_TIMEOUT_MS = 30_000;
+export const MAX_RETRIES = 2;
+export const SECONDARY_RETRY_AFTER_LIMIT_S = 60;
 /** 5xx·네트워크 오류만 재시도한다. 409(빈 repo)를 포함한 4xx 는 모두 재시도하지 않는다. */
-const DO_NOT_RETRY = Array.from({ length: 100 }, (_, index) => 400 + index);
+export const DO_NOT_RETRY = Array.from({ length: 100 }, (_, index) => 400 + index);
 const SYMLINK_MODE = "120000";
 const MAX_BRANCH_PAGES = 100;
 const MAX_BRANCHES = MAX_BRANCH_PAGES * 100;
@@ -87,7 +87,7 @@ function isPrimaryRateLimit(error: RequestError): boolean {
 }
 
 /** octokit 오류를 스캔 기록용 문장으로 바꾼다. 토큰 등 요청 헤더는 넣지 않는다. */
-function translateError(error: unknown): Error {
+export function translateError(error: unknown): Error {
   if (error instanceof RateLimitedError) return error;
   if (error instanceof RequestError) {
     if (isPrimaryRateLimit(error)) return new RateLimitedError();
@@ -97,7 +97,7 @@ function translateError(error: unknown): Error {
   return new Error(`GitHub API 요청 실패: ${String(error)}`);
 }
 
-function withTimeout(base: typeof globalThis.fetch): typeof globalThis.fetch {
+export function withTimeout(base: typeof globalThis.fetch): typeof globalThis.fetch {
   return (input, init) => {
     const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
     const signal = init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout;

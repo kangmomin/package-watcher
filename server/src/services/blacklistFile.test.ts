@@ -20,6 +20,8 @@ function expectValidationError(fn: () => unknown): AppError {
 function entry(overrides: Partial<BlacklistEntry> = {}): BlacklistEntry {
   return {
     id: 1,
+    source: "manual",
+    externalId: null,
     ecosystem: "npm",
     name: "evil-pkg",
     versionRange: null,

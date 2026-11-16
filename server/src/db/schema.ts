@@ -1,6 +1,6 @@
 import type { Db } from "./index.ts";
 
-export const LATEST_VERSION = 4;
+export const LATEST_VERSION = 5;
 
 // 시각은 모두 ISO 8601 UTC 문자열(`Date#toISOString`)로 저장한다. 문자열 정렬 = 시간 순서.
 // v1 스키마다. 새 DB 도 이것을 먼저 만든 뒤 v2 단계를 실행한다(마이그레이션 SQL 이 한 벌이다).
@@ -129,7 +129,7 @@ ALTER TABLE scans ADD COLUMN repo_stats TEXT;
 `;
 
 /** v3: repo 별 진행 기록과 스캔의 집계(JSON) */
-function migrateToV3(db: Db): void {
+export function migrateToV3(db: Db): void {
   db.exec(V3_SCAN_REPOS);
 }
 
@@ -194,7 +194,7 @@ const sequenceOf = (db: Db, table: string): number =>
   db.prepare<[string], { seq: number }>("SELECT seq FROM sqlite_sequence WHERE name = ?").get(table)?.seq ?? 0;
 
 /** v4: 새 테이블로 옮기면 AUTOINCREMENT 순번이 새 최대 id 로 줄어드므로 두 테이블 모두 되돌린다(삭제된 id 의 재사용 방지). */
-function migrateToV4(db: Db): void {
+export function migrateToV4(db: Db): void {
   const tables = ["blacklist_entries", "findings"] as const;
   const previous = tables.map((table) => sequenceOf(db, table));
   db.exec(V4_REBUILD);
@@ -205,11 +205,52 @@ function migrateToV4(db: Db): void {
   });
 }
 
+// v5: 외부 목록(feed). 열 추가만으로 되는 변경은 ALTER, 부분 unique index 는 지우고 다시 만든다(순번·행은 그대로).
+// findings.ref(브랜치 스캔)와 repo_authors(작성자 감시)는 뒤 묶음이 쓴다 — DB 를 한 번만 올리려고 지금 넣는다.
+const V5_SQL = `
+CREATE TABLE feed_entries (
+  id            INTEGER PRIMARY KEY,
+  external_id   TEXT NOT NULL,
+  ecosystem     TEXT NOT NULL,
+  name          TEXT NOT NULL,
+  version_range TEXT NOT NULL DEFAULT '',
+  raw_range     TEXT NOT NULL,
+  severity      TEXT NOT NULL,
+  summary       TEXT NOT NULL,
+  url           TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  UNIQUE (external_id, ecosystem, name, version_range)
+);
+CREATE INDEX feed_entries_name ON feed_entries (ecosystem, name);
+CREATE INDEX feed_entries_updated ON feed_entries (updated_at DESC, id);
+
+ALTER TABLE blacklist_entries ADD COLUMN source TEXT NOT NULL DEFAULT 'manual';
+ALTER TABLE blacklist_entries ADD COLUMN external_id TEXT;
+
+ALTER TABLE findings ADD COLUMN ref TEXT NOT NULL DEFAULT '';
+DROP INDEX findings_active_key;
+CREATE UNIQUE INDEX findings_active_key
+  ON findings (repo, ref, file_path, package_name, version, blacklist_entry_id)
+  WHERE status IN ('open', 'ignored');
+
+CREATE TABLE repo_authors (
+  repo          TEXT NOT NULL,
+  author        TEXT NOT NULL,
+  first_seen_at TEXT NOT NULL,
+  PRIMARY KEY (repo, author)
+);
+`;
+
+function migrateToV5(db: Db): void {
+  db.exec(V5_SQL);
+}
+
 /** `version` 은 그 단계가 만드는 `user_version`. 순서대로 실행한다. */
 const STEPS: { version: number; run: (db: Db) => void }[] = [
   { version: 2, run: migrateToV2 },
   { version: 3, run: migrateToV3 },
   { version: 4, run: migrateToV4 },
+  { version: 5, run: migrateToV5 },
 ];
 
 /** 호출자가 연 트랜잭션 안에서 현재 버전보다 큰 단계를 순서대로 실행한다. 어느 단계든 실패하면 호출자가 롤백한다. */

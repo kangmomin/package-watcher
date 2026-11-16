@@ -6,6 +6,7 @@ import {
   type DependencyType,
   type Ecosystem,
   type EcosystemCategory,
+  type EntrySource,
   type EntryStatus,
   type ScanRepoStatus,
   type ScanTrigger,
@@ -69,6 +70,13 @@ export function entryStatusLabel(status: EntryStatus): string {
   return ENTRY_STATUS_LABELS[status];
 }
 
+const ENTRY_SOURCE_LABELS: Record<EntrySource, string> = { manual: "직접 등록", feed: "자동" };
+
+/** 항목의 출처 라벨: 직접 등록 / 자동(외부 목록이 추가) */
+export function entrySourceLabel(source: EntrySource): string {
+  return ENTRY_SOURCE_LABELS[source];
+}
+
 export function scanTriggerLabel(trigger: ScanTrigger): string {
   return SCAN_TRIGGER_LABELS[trigger];
 }
@@ -127,4 +135,9 @@ export const POLICY_FALLBACK_LABEL = "위험한 설정";
 /** 내장 검사의 표시 이름. 알 수 없는 id 는 그대로 보인다. */
 export function policyCheckTitle(id: string): string {
   return policyCheckOf(id)?.title ?? id;
+}
+
+/** 건수의 천 단위 구분 (`151,751`). 로케일과 무관하게 같은 모양이다. */
+export function formatCount(count: number): string {
+  return count.toLocaleString("en-US");
 }

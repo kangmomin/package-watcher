@@ -235,6 +235,7 @@ describe("설정 — 저장", () => {
       digestTime: "09:00",
       recipients: settingsDefault.recipients,
       notifyMinSeverity: "low",
+      feedEnabled: true,
     });
     // 응답 값(소문자로 정규화된 org)으로 reset 한다
     await waitFor(() => expect(orgInput()).toHaveValue("new-org"));

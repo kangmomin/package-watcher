@@ -5,6 +5,8 @@ import { createPolicyRules, isNonRegistrySpec, policyNeedsSourceKind } from "./s
 
 const entry = (id: number, name: string, enabled = true): BlacklistEntry => ({
   id,
+  source: "manual",
+  externalId: null,
   ecosystem: "policy",
   name,
   versionRange: null,

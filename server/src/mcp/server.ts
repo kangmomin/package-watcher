@@ -8,7 +8,10 @@ import {
   BULK_MAX_IDS,
   ECOSYSTEM_CATEGORIES,
   ECOSYSTEMS,
+  ENTRY_SOURCES,
   ENTRY_STATUSES,
+  FEED_ENTRIES_DEFAULT_LIMIT,
+  FEED_ENTRIES_MAX_LIMIT,
   IMPORT_MAX_BYTES,
   IMPORT_MAX_ROWS,
   POLICY_CHECK_IDS,
@@ -114,6 +117,11 @@ const EXPIRES_AT = field({
   type: ["string", "null"],
   description: "만료일 YYYY-MM-DD(KST, 오늘 이후). null 또는 빈 문자열 = 만료 없음",
 });
+const SOURCE = field({
+  type: "string",
+  enum: ENTRY_SOURCES,
+  description: "출처. manual = 사용자가 만든 항목, feed = 외부 목록(GitHub Advisory)이 일치해서 서버가 만든 항목. 생략하면 모두",
+});
 const BLACKLIST_QUERY = loose({
   ecosystem: field({ type: "string", enum: ECOSYSTEMS, description: "정확히 일치하는 종류만" }),
   enabled: field({ type: "boolean", description: "사용자가 정한 켜기 값으로 거른다" }),
@@ -122,6 +130,18 @@ const BLACKLIST_QUERY = loose({
     type: "string",
     enum: ENTRY_STATUSES,
     description: "active(켜짐 + 만료 안 됨) / disabled(꺼짐 + 만료 안 됨) / expired(만료, 꺼짐 여부와 무관)",
+  }),
+  source: SOURCE,
+});
+const FEED_QUERY = loose({
+  q: field({ type: "string", description: "패키지 이름 또는 권고 id(GHSA-…)의 부분 일치(대소문자 무시)" }),
+  ecosystem: field({ type: "string", enum: ECOSYSTEMS, description: "정확히 일치하는 종류만" }),
+  page: field({ type: "integer", minimum: 1, description: "기본 1" }),
+  limit: field({
+    type: "integer",
+    minimum: 1,
+    maximum: FEED_ENTRIES_MAX_LIMIT,
+    description: `기본 ${FEED_ENTRIES_DEFAULT_LIMIT}, 최대 ${FEED_ENTRIES_MAX_LIMIT}`,
   }),
 });
 const FILE_FORMAT = field({ type: "string", enum: BLACKLIST_FILE_FORMATS, description: "파일 형식" });
@@ -160,6 +180,7 @@ const BLACKLIST_EXPORT = loose(
     enabled: field({ type: "boolean", description: "사용자가 정한 켜기 값으로 거른다" }),
     q: field({ type: "string", description: "이름 부분 일치(대소문자 무시)" }),
     status: field({ type: "string", enum: ENTRY_STATUSES, description: "list_blacklist 의 status 와 같다" }),
+    source: SOURCE,
   },
   ["format"],
 );
@@ -206,9 +227,9 @@ function toId(value: unknown): number {
 }
 
 /**
- * tool 13개(`list_findings`, `set_finding_status`, `list_blacklist`, `add_blacklist_entry`,
+ * tool 15개(`list_findings`, `set_finding_status`, `list_blacklist`, `add_blacklist_entry`,
  * `update_blacklist_entry`, `remove_blacklist_entry`, `trigger_scan`, `list_scans`, `get_scan`, `get_settings`,
- * `bulk_update_blacklist`, `import_blacklist`, `export_blacklist`)를 등록한다.
+ * `bulk_update_blacklist`, `import_blacklist`, `export_blacklist`, `get_feed_status`, `search_feed`)를 등록한다.
  * 각 tool 은 대응 REST 와 같은 서비스 함수를 호출하고 결과 JSON 을 text content 로 반환한다.
  * 오류(검증 실패 포함)는 `isError: true` + `{code, message, details?}` JSON.
  * 주의: SDK 의 inputSchema 검증 실패는 JSON 이 아닌 문장으로 나가므로 검증은 서비스에서 한다.
@@ -246,7 +267,7 @@ export function createMcpServer(services: AppServices, logger: Logger = consoleL
   );
   register(
     "list_blacklist",
-    "블랙리스트 항목 목록을 조회한다 (GET /api/blacklist). ecosystem·enabled·q·status 로 거른다. " +
+    "블랙리스트 항목 목록을 조회한다 (GET /api/blacklist). ecosystem·enabled·q·status·source 로 거른다. " +
       "enabled=true 에는 만료된 항목도 포함된다(사용자가 켠 항목 전부). 결과: { items: BlacklistEntry[] }",
     BLACKLIST_QUERY,
     (args) => services.blacklist.list(args),
@@ -340,6 +361,21 @@ export function createMcpServer(services: AppServices, logger: Logger = consoleL
     "설정과 연결 상태를 조회한다 (GET /api/settings, 읽기 전용). 결과: Settings",
     NO_INPUT,
     () => services.settings.get(),
+  );
+
+  register(
+    "get_feed_status",
+    "외부 목록(feed, GitHub Advisory 의 악성 패키지 권고)의 상태를 조회한다 (GET /api/feed, 읽기 전용). " +
+      "항목 수, 종류별 수, 마지막 동기화, 동기화 진행 여부와 오류. 결과: FeedStatus",
+    NO_INPUT,
+    () => services.feed.getStatus(),
+  );
+  register(
+    "search_feed",
+    "외부 목록(feed)의 항목을 검색한다 (GET /api/feed/entries). 블랙리스트 목록에는 나오지 않는 항목이다 — 스캔에서 일치하면 그때 블랙리스트 항목(source=feed)이 생긴다. " +
+      "최근 갱신 순. 결과: Page<FeedEntry>",
+    FEED_QUERY,
+    (args) => services.feed.entries(args),
   );
 
   return server;

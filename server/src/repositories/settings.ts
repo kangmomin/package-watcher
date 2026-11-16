@@ -11,7 +11,16 @@ export type SettingKey =
   | "notify_min_severity"
   | "next_scan_at"
   | "last_digest_date"
-  | "listed_baseline";
+  | "listed_baseline"
+  | "feed_enabled"
+  // 외부 목록 동기화의 내부 상태(API 응답은 feed 서비스가 조합한다)
+  | "feed_full_sync_done"
+  | "feed_cursor"
+  | "feed_full_started_at"
+  | "feed_last_started_at"
+  | "feed_last_synced_at"
+  | "feed_skipped"
+  | "feed_last_error";
 
 /** SQL 만 담당. 값은 문자열로 저장한다. */
 export interface SettingsRepository {
