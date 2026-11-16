@@ -8,7 +8,7 @@ import type { Clock } from "../clock.ts";
 import { AppError } from "../errors.ts";
 import type { FeedClient } from "../feed/client.ts";
 import { createFeedIndex, type FeedIndex } from "../feed/index.ts";
-import { runFeedSync } from "../feed/sync.ts";
+import { runFeedSync, type FeedSyncResult } from "../feed/sync.ts";
 import type { Logger } from "../logger.ts";
 import type { Repositories } from "../repositories/index.ts";
 import { parseInput, readStoredSettings } from "./common.ts";
@@ -47,7 +47,28 @@ export interface FeedServiceDeps {
   client: FeedClient | null;
   clock: Clock;
   logger: Logger;
+  /** 쪽 단위 재시도의 대기(ms). 기본 2초, 5초, 15초. 테스트는 빈 배열 */
+  retryDelaysMs?: readonly number[];
+  /** 재시도 사이의 대기. 테스트가 바꾼다 */
+  sleep?: (ms: number) => Promise<void>;
+  /** 전체 동기화가 오류로 멈춘 뒤 자동으로 이어받기까지의 지연(ms). 기본 5분. null 이면 자동 이어받기를 하지 않는다 */
+  autoResumeDelayMs?: number | null;
+  /** rate limit 으로 멈춘 뒤의 지연(ms). 기본 1시간 */
+  rateLimitResumeDelayMs?: number;
+  /** 타이머. 테스트가 바꾼다. 기본은 unref 한 setTimeout */
+  setTimer?: (fn: () => void, ms: number) => { cancel(): void };
 }
+
+/** 자동 이어받기는 연속 이만큼까지 시도한다 (성공하면 초기화) */
+const MAX_AUTO_RESUMES = 3;
+const AUTO_RESUME_DELAY_MS = 5 * 60_000;
+const RATE_LIMIT_RESUME_DELAY_MS = 60 * 60_000;
+
+const defaultSetTimer = (fn: () => void, ms: number): { cancel(): void } => {
+  const timer = setTimeout(fn, ms);
+  timer.unref?.();
+  return { cancel: () => clearTimeout(timer) };
+};
 
 const TOKEN_MISSING_MESSAGE =
   "GitHub 토큰이 없어 외부 목록을 동기화할 수 없습니다. GITHUB_TOKEN 환경 변수를 설정하거나 gh auth login 을 실행한 뒤 서버를 다시 시작하십시오";
@@ -60,11 +81,40 @@ export function createFeedService(deps: FeedServiceDeps): FeedService {
   /** feed 의 행이 바뀔 때마다 올린다. index 캐시가 이 값으로 낡았는지 판단한다 */
   let revision = 0;
   let cached: { revision: number; enabled: boolean; index: FeedIndex | null } | null = null;
+  const setTimer = deps.setTimer ?? defaultSetTimer;
+  const autoResumeDelay = deps.autoResumeDelayMs === undefined ? AUTO_RESUME_DELAY_MS : deps.autoResumeDelayMs;
+  let resumeTimer: { cancel(): void } | null = null;
+  /** 연속으로 멈춘 횟수 (성공하면 0) */
+  let failures = 0;
 
   const isEnabled = (): boolean => readStoredSettings(repos.settings).feedEnabled;
 
+  function clearResumeTimer(): void {
+    resumeTimer?.cancel();
+    resumeTimer = null;
+  }
+
+  /** 전체 동기화가 오류로 멈추면 나중에 1번 자동으로 이어받는다. 이미 실행 중이거나 꺼졌으면 하지 않는다 */
+  function scheduleResume(result: FeedSyncResult): void {
+    if (result.status === "ok") {
+      failures = 0;
+      return;
+    }
+    if (result.status === "stopped" || !result.full || autoResumeDelay === null || stopping) return;
+    failures += 1;
+    if (failures > MAX_AUTO_RESUMES) return;
+    const delay = result.status === "rateLimited" ? (deps.rateLimitResumeDelayMs ?? RATE_LIMIT_RESUME_DELAY_MS) : autoResumeDelay;
+    clearResumeTimer();
+    resumeTimer = setTimer(() => {
+      resumeTimer = null;
+      if (running || stopping || !client || !isEnabled()) return;
+      launch();
+    }, delay);
+  }
+
   function launch(): Promise<void> {
     if (!client) throw new AppError("TOKEN_MISSING", TOKEN_MISSING_MESSAGE);
+    clearResumeTimer();
     syncedSoFar = 0;
     const done = runFeedSync({
       repos,
@@ -78,7 +128,10 @@ export function createFeedService(deps: FeedServiceDeps): FeedService {
         syncedSoFar = processed;
       },
       shouldStop: () => stopping || !isEnabled(),
+      retryDelaysMs: deps.retryDelaysMs,
+      sleep: deps.sleep,
     })
+      .then((result) => scheduleResume(result))
       .catch((error: unknown) => logger.error("외부 목록 동기화 중 예상하지 못한 오류", error))
       .finally(() => {
         running = null;
@@ -152,6 +205,7 @@ export function createFeedService(deps: FeedServiceDeps): FeedService {
     },
     async stop() {
       stopping = true;
+      clearResumeTimer();
       while (running) await running.catch(() => undefined);
     },
   };

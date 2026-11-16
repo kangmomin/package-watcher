@@ -60,6 +60,20 @@ function isGraphqlRateLimit(error: unknown): boolean {
   return typeof message === "string" && /graphql rate limit/i.test(message);
 }
 
+const MALFORMED = "GitHub 권고 응답의 형식이 올바르지 않습니다";
+
+/**
+ * 형식이 다른 응답의 오류 문장. `securityVulnerabilities` 가 없거나 null 이면 GitHub 의 일시적인 이상 응답일 수 있어 표시하고,
+ * 응답에 GraphQL `errors` 가 함께 있으면 첫 메시지를 200자까지 붙인다(토큰·헤더는 넣지 않는다).
+ */
+export function describeMalformed(data: unknown, connection: unknown): string {
+  if (connection !== null && connection !== undefined) return MALFORMED;
+  const errors = (data as { errors?: unknown } | null)?.errors;
+  const first = Array.isArray(errors) ? (errors[0] as { message?: unknown } | undefined)?.message : undefined;
+  const detail = typeof first === "string" && first !== "" ? `: ${first.slice(0, 200)}` : "";
+  return `${MALFORMED} (일시적일 수 있음)${detail}`;
+}
+
 /**
  * 권고 조회용 GraphQL 클라이언트. 같은 토큰·같은 재시도 규칙(`github/client.ts`)을 쓴다.
  * 토큰이 없으면 만들지 않는다(호출 쪽이 null 로 둔다).
@@ -90,9 +104,7 @@ export function createFeedClient(options: FeedClientOptions): FeedClient {
         | { nodes?: unknown; pageInfo?: { hasNextPage?: unknown; endCursor?: unknown } }
         | null
         | undefined;
-      if (!connection || !Array.isArray(connection.nodes)) {
-        throw new Error("GitHub 권고 응답의 형식이 올바르지 않습니다");
-      }
+      if (!connection || !Array.isArray(connection.nodes)) throw new Error(describeMalformed(data, connection));
       const next = connection.pageInfo?.endCursor;
       return {
         nodes: connection.nodes,

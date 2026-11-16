@@ -31,7 +31,7 @@ import { createScheduler, FIRST_SCAN_DELAY_MS, type Scheduler } from "./schedule
 import { createBlacklistService } from "./services/blacklistService.ts";
 import { addMs, canScan, toIso } from "./services/common.ts";
 import { todayKst } from "./services/entryActivity.ts";
-import { createFeedService } from "./services/feedService.ts";
+import { createFeedService, type FeedServiceDeps } from "./services/feedService.ts";
 import { createFindingService } from "./services/findingService.ts";
 import type { AppServices } from "./services/index.ts";
 import { createNotifier, type Mailer } from "./services/notifier.ts";
@@ -48,6 +48,8 @@ export interface AppDeps {
   feedClient?: FeedClient | null;
   /** 스캔 직전에 외부 목록의 동기화를 기다리는 최대 시간(ms). 기본 60초 (테스트용 조정) */
   feedWaitMs?: number;
+  /** 외부 목록 동기화의 재시도·자동 이어받기 설정(테스트용 조정) */
+  feedOptions?: Pick<FeedServiceDeps, "retryDelaysMs" | "sleep" | "autoResumeDelayMs" | "rateLimitResumeDelayMs" | "setTimer">;
   githubTokenSource: TokenSource;
   mailer: Mailer;
   /** `config.smtp !== null` (= `isSmtpConfigured`: SMTP_HOST && SMTP_FROM) */
@@ -175,7 +177,7 @@ export function createApp(deps: AppDeps): AppInstance {
 
   // ---- 서비스
   const notifier = createNotifier({ repos, mailer: deps.mailer, smtpConfigured, clock, logger });
-  const feed = createFeedService({ repos, client: deps.feedClient ?? null, clock, logger });
+  const feed = createFeedService({ repos, client: deps.feedClient ?? null, clock, logger, ...deps.feedOptions });
   const scans = createScanService({
     repos,
     github: deps.github,
