@@ -192,7 +192,7 @@ function ScanReposTable({ items, describedBy }: { items: ScanRepo[]; describedBy
                 </TableCell>
                 <TableCell className="text-right tabular-nums">
                   {count(item.fileCount)}
-                  {item.branchCount > 0 && (
+                  {item.branchCount > 0 && !NO_COUNT_STATUSES.includes(item.status) && (
                     <span className="ml-2 text-xs text-muted-foreground">{`브랜치 ${item.branchCount}개`}</span>
                   )}
                 </TableCell>

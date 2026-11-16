@@ -1,4 +1,3 @@
-import { BRANCH_SCAN_MAX_BRANCHES } from "@pw/shared";
 import { Octokit, RequestError } from "octokit";
 
 export interface RepoInfo {
@@ -39,10 +38,15 @@ export interface GitHubClient {
   /** 모든 브랜치 이름(모든 페이지, 최대 10,000개 — 넘으면 throw). 빈 repo(409)는 `[]`, 404 는 throw. */
   listBranches(org: string, repo: string): Promise<string[]>;
   /**
-   * 기본 브랜치를 뺀, `sinceIso` 이후에 커밋이 있는 브랜치를 최근 순으로 최대 `BRANCH_SCAN_MAX_BRANCHES` 개(GraphQL 1회).
-   * 최근 100개 브랜치만 본다. repo 가 없거나 비었으면 `[]`. `sha` 는 그 브랜치의 최신 커밋(tree 조회에 쓴다).
+   * 기본 브랜치를 뺀, `sinceIso` 이후에 커밋이 있는 브랜치 전체를 최근 순으로(GraphQL 1회, 최근 100개 브랜치 안에서).
+   * 몇 개를 평가할지는 호출한 쪽이 정한다. repo 가 없거나 비었으면 `[]`. `sha` 는 그 브랜치의 최신 커밋(tree 조회에 쓴다).
    */
   listRecentBranches(org: string, repo: string, sinceIso: string): Promise<RecentBranch[]>;
+  /**
+   * 최근 100개 이벤트(REST 1회) 중 `sinceIso` 이후의 브랜치 push·생성: 브랜치 이름 → 마지막 push 시각.
+   * 오래된 커밋을 새로 push 한 브랜치를 커밋 시각만으로는 놓치므로 함께 본다. 404 → 빈 Map.
+   */
+  listRecentPushes(org: string, repo: string, sinceIso: string): Promise<Map<string, string>>;
 }
 
 export interface RecentBranch {
@@ -113,7 +117,33 @@ export function pickRecentBranches(data: unknown, sinceIso: string): RecentBranc
     found.push({ name, committedAt, sha });
   }
   found.sort((a, b) => Date.parse(b.committedAt) - Date.parse(a.committedAt));
-  return found.slice(0, BRANCH_SCAN_MAX_BRANCHES);
+  return found;
+}
+
+const HEADS_PREFIX = "refs/heads/";
+
+/** repo 이벤트에서 `sinceIso` 이후의 브랜치 push·생성만 골라 브랜치마다 가장 최근 시각을 남긴다 */
+export function pickRecentPushes(events: unknown, sinceIso: string): Map<string, string> {
+  const since = Date.parse(sinceIso);
+  const pushes = new Map<string, string>();
+  if (!Array.isArray(events)) return pushes;
+  for (const event of events as ({ type?: unknown; created_at?: unknown; payload?: { ref?: unknown; ref_type?: unknown } } | null)[]) {
+    const ref = event?.payload?.ref;
+    const createdAt = event?.created_at;
+    if (typeof ref !== "string" || typeof createdAt !== "string") continue;
+    let name: string;
+    if (event?.type === "PushEvent") {
+      if (ref.startsWith(HEADS_PREFIX)) name = ref.slice(HEADS_PREFIX.length);
+      else if (ref.startsWith("refs/")) continue;
+      else name = ref;
+    } else if (event?.type === "CreateEvent" && event.payload?.ref_type === "branch") name = ref;
+    else continue;
+    const time = Date.parse(createdAt);
+    if (name === "" || Number.isNaN(time) || time < since) continue;
+    const previous = pushes.get(name);
+    if (previous === undefined || Date.parse(previous) < time) pushes.set(name, createdAt);
+  }
+  return pushes;
 }
 
 const SYMLINK_MODE = "120000";
@@ -274,6 +304,17 @@ export function createOctokitClient(options: OctokitClientOptions): GitHubClient
       }
       return pickRecentBranches(data, sinceIso);
     },
+
+    listRecentPushes: (org, repo, sinceIso) =>
+      call(async () => {
+        try {
+          const { data } = await octokit.rest.activity.listRepoEvents({ owner: org, repo, per_page: 100 });
+          return pickRecentPushes(data, sinceIso);
+        } catch (error) {
+          if (error instanceof RequestError && error.status === 404) return new Map<string, string>();
+          throw error;
+        }
+      }),
 
     getFile: (org, repo, sha) =>
       call(async () => {

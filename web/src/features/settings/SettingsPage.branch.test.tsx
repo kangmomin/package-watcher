@@ -83,16 +83,59 @@ describe("설정 — 브랜치 스캔 기간", () => {
     expect(server.count("PUT", SETTINGS)).toBe(0);
   });
 
-  it("[SF-74] 비우거나 소수는 오류이고 요청하지 않는다", async () => {
+  const RANGE_MESSAGE = "브랜치 스캔 기간은 0~30 사이의 정수입니다";
+
+  it("[SF-74] 빈 값은 오류 메시지를 보이고 요청하지 않는다", async () => {
     const { server, user } = setup();
     const input = await daysInput();
     await user.clear(input);
     await user.click(save());
-    await waitFor(() => expect(input).toHaveAttribute("aria-invalid", "true"));
+    await expectFieldError(input, RANGE_MESSAGE);
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    expect(server.count("PUT", SETTINGS)).toBe(0);
+  });
+
+  it("[SF-76] 소수(1.5)는 오류 메시지를 보이고 요청하지 않는다", async () => {
+    const { server, user } = setup();
+    const input = await daysInput();
+    await user.clear(input);
     await user.type(input, "1.5");
     await user.click(save());
-    await waitFor(() => expect(input).toHaveAttribute("aria-invalid", "true"));
+    await expectFieldError(input, RANGE_MESSAGE);
     expect(server.count("PUT", SETTINGS)).toBe(0);
+  });
+
+  it("[SF-77] 음수(-1)는 오류 메시지를 보이고 요청하지 않는다", async () => {
+    const { server, user } = setup();
+    const input = await daysInput();
+    await user.clear(input);
+    await user.type(input, "-1");
+    await user.click(save());
+    await expectFieldError(input, RANGE_MESSAGE);
+    expect(server.count("PUT", SETTINGS)).toBe(0);
+  });
+
+  it("[SF-78] 입력을 비운 채 다른 필드를 고쳐 저장해도 PUT 이 나가지 않는다", async () => {
+    const { server, user } = setup();
+    const input = await daysInput();
+    await user.clear(input);
+    const interval = screen.getByLabelText(/interval/);
+    await user.clear(interval);
+    await user.type(interval, "6");
+    await user.click(save());
+    await expectFieldError(input, RANGE_MESSAGE);
+    expect(server.count("PUT", SETTINGS)).toBe(0);
+  });
+
+  it("[SF-79] 저장 뒤 입력은 서버가 돌려준 값으로 보인다", async () => {
+    const { server, user } = setup();
+    server.on("PUT", SETTINGS, (request) => reply.json({ ...settingsDefault, branchScanDays: 9 })(request));
+    const input = await daysInput();
+    await user.clear(input);
+    await user.type(input, "14");
+    await user.click(save());
+    await findToast("설정을 저장했습니다");
+    await waitFor(() => expect(input).toHaveValue(9));
   });
 
   it("[SF-75] 서버가 branchScanDays 를 거부하면 그 필드에 오류를 표시한다", async () => {

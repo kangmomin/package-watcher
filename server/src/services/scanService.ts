@@ -55,6 +55,7 @@ import type { ScanResult } from "../repositories/scans.ts";
 import { assignLockfiles, dirOf, readWorkspaceGlobs } from "../workspaces.ts";
 import { mapWithConcurrency, parseInput, printable, readStoredSettings, toIso } from "./common.ts";
 import { isEntryActive, todayKst } from "./entryActivity.ts";
+import { createBlobCache, type BlobCache } from "./blobCache.ts";
 import type { FeedSource } from "./feedService.ts";
 import type { Notifier } from "./notifier.ts";
 import { createIndicatorRules, type IndicatorRules } from "./scanIndicators.ts";
@@ -164,10 +165,14 @@ interface TreeScan {
 interface RepoScan extends TreeScan {
   /** 이번 스캔이 tree 를 받아 끝까지 평가한 브랜치 */
   branches: Map<string, BranchEvaluation>;
-  /** 선정됐지만 평가하지 못한 브랜치(truncated·조회·해석 실패, 파일 수 초과) — 그 검출은 그대로 둔다 */
+  /** 평가한 브랜치 중 평가할 파일이 있었던 브랜치의 수 (`branch_count`) */
+  countedBranches: number;
+  /** 후보였지만 평가하지 못한 브랜치(20개 상한, truncated·조회·해석 실패, 파일 수 초과) — 그 검출은 그대로 둔다 */
   keptRefs: ReadonlySet<string>;
   /** 브랜치 목록을 받지 못했다 — 이 repo 의 모든 브랜치 검출을 그대로 둔다 */
   branchesUnknown: boolean;
+  /** 브랜치 단계에서 rate limit 을 만났다 — 기본 브랜치의 결과는 살리고 뒤의 repo 를 멈춘다 */
+  rateLimited: boolean;
 }
 
 /** 평가 규칙과 대조 자료 (repo 마다 같다) */
@@ -366,94 +371,147 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     };
   }
 
-  /** 검사할 프로젝트가 아니다: 선언·보조 파일도 흔적 검사도 없고 평가한 브랜치도 없다 */
+  /** 검사할 프로젝트가 아니다: 기본 브랜치에 선언·보조 파일도 흔적 검사도 없고, 브랜치가 낸 검출도 없다 */
   const isSkipped = (outcome: Extract<RepoOutcome, { ok: true }>): boolean =>
-    outcome.declaredCount === 0 && !outcome.traced && outcome.branchCount === 0;
+    outcome.declaredCount === 0 && !outcome.traced && outcome.matches.length === 0;
 
   // ---------------------------------------------------------------- repo 1개
 
-  /** 같은 blob sha 를 다시 받지 않는다 — repo 가 끝나면 버리는 메모리 캐시(브랜치끼리 같은 변경을 공유한다) */
-  function withBlobCache(client: GitHubClient): GitHubClient {
-    const cache = new Map<string, Promise<string>>();
-    return {
-      listOrgRepos: (org) => client.listOrgRepos(org),
-      getRepo: (org, repo) => client.getRepo(org, repo),
-      getTree: (org, repo, ref) => client.getTree(org, repo, ref),
-      listBranches: (org, repo) => client.listBranches(org, repo),
-      listRecentBranches: (org, repo, since) => client.listRecentBranches(org, repo, since),
-      getFile(org, repo, sha) {
-        const hit = cache.get(sha);
-        if (hit) return hit;
-        const pending = client.getFile(org, repo, sha);
-        cache.set(sha, pending);
-        pending.catch(() => cache.delete(sha));
-        return pending;
-      },
-    };
-  }
-
   /** repo 1개: 기본 브랜치의 전체 tree 를 평가하고, 최근 브랜치는 달라진 파일만 같은 함수로 다시 평가한다 */
   async function scanRepo(org: string, rawClient: GitHubClient, repo: RepoInfo, rules: ScanRules): Promise<RepoScan> {
-    const client = withBlobCache(rawClient);
+    const blobs = createBlobCache(rawClient);
+    const client = blobs.client;
     const tree = await client.getTree(org, repo.name, repo.defaultBranch);
     if (tree.truncated) {
       throw new Error("파일 트리가 너무 커서 GitHub 가 일부만 반환했습니다(truncated)");
     }
     const main = await scanTree(org, client, repo, tree.entries, DEFAULT_BRANCH_REF, rules);
-    const result: RepoScan = { ...main, branches: new Map(), keptRefs: new Set(), branchesUnknown: false };
-    await scanBranches(org, client, repo, tree.entries, rules, result);
+    const result: RepoScan = {
+      ...main,
+      branches: new Map(),
+      countedBranches: 0,
+      keptRefs: new Set(),
+      branchesUnknown: false,
+      rateLimited: false,
+    };
+    await scanBranches(org, blobs, repo, tree.entries, rules, result);
     return result;
   }
 
   /** 브랜치의 로그용 표시 — 신뢰할 수 없는 입력이라 제어 문자를 바꾸고 길이를 자른다 */
   const branchLabel = (name: string): string => printable(name).slice(0, BRANCH_LOG_MAX);
 
+  /** 의존성 파일(npm 의 package.json·lock·workspace 선언, 다른 종류의 선언·lock)인가 — 보조 파일(workflow 등)은 아니다 */
+  function isDependencyFile(path: string): boolean {
+    if (isInNodeModules(path)) return false;
+    const name = baseName(path);
+    if (name === "package.json" || name === "bun.lockb" || name === "pnpm-workspace.yaml") return true;
+    if (lockfileKindOf(name)) return true;
+    return !isExcludedPath(path) && classifyFile(path) !== null;
+  }
+
+  interface BranchCandidate {
+    name: string;
+    /** max(마지막 커밋 시각, 마지막 push 시각) */
+    time: number;
+    /** tree 를 받을 ref: 커밋 sha, 또는 (refs 의 상위 100개에 없으면) 브랜치 이름 */
+    ref: string;
+    byName: boolean;
+  }
+
   /**
-   * 최근 N일에 push 된 repo 의 최근 브랜치를 평가해서 `result` 에 더한다. 브랜치 1개의 실패는 repo 의 실패가 아니다(건너뛰고 warn).
-   * rate limit 만 그대로 던져서 스캔 전체에 전파한다. 평가하지 못한 브랜치는 `keptRefs` 에 둔다 — 그 검출은 resolve 하지 않는다.
+   * 최근 N일에 push 된 repo 의 후보 브랜치(커밋이 N일 안 또는 push 가 N일 안)를 최근 순으로 최대 20개 평가해서 `result` 에 더한다.
+   * 상한에서 밀려난 후보와 평가하지 못한 브랜치는 `keptRefs` 에 둔다 — 그 검출은 resolve 하지 않는다(후보에서 사라질 때만 resolve).
+   * 브랜치 1개의 실패는 repo 의 실패가 아니다(건너뛰고 warn). rate limit 은 기본 브랜치의 결과를 살린 채 `rateLimited` 로 알린다.
    */
   async function scanBranches(
     org: string,
-    client: GitHubClient,
+    blobs: BlobCache,
     repo: RepoInfo,
     defaultEntries: TreeEntry[],
     rules: ScanRules,
     result: RepoScan,
   ): Promise<void> {
+    const client = blobs.client;
     if (rules.branchScanDays <= 0 || repo.pushedAt === null) return;
     const pushedAt = Date.parse(repo.pushedAt);
     // N일 안에 push 가 없으면 N일 안의 커밋도 없다 — 브랜치를 조회하지 않는다.
     if (Number.isNaN(pushedAt) || pushedAt < rules.branchSince.getTime()) return;
     const where = `${org}/${repo.name}`;
+    const sinceIso = toIso(rules.branchSince);
+    const stopOnRateLimit = (): void => {
+      result.rateLimited = true;
+      result.branchesUnknown = true;
+    };
     let recent: RecentBranch[];
     try {
-      recent = await client.listRecentBranches(org, repo.name, toIso(rules.branchSince));
+      recent = await client.listRecentBranches(org, repo.name, sinceIso);
     } catch (error) {
-      if (error instanceof RateLimitedError) throw error;
+      if (error instanceof RateLimitedError) return stopOnRateLimit();
       logger.warn(`브랜치 목록을 가져오지 못했습니다: ${printable(where)}: ${printable(describeError(error))}`);
       result.branchesUnknown = true;
       return;
     }
-    const keptRefs = new Set<string>();
+    let pushes = new Map<string, string>();
+    try {
+      pushes = await client.listRecentPushes(org, repo.name, sinceIso);
+    } catch (error) {
+      if (error instanceof RateLimitedError) return stopOnRateLimit();
+      // push 로 선정될 브랜치를 알 수 없다 — 커밋 시각 기준의 후보만 평가하고, 평가하지 못한 브랜치의 검출은 그대로 둔다.
+      logger.warn(`최근 push 목록을 가져오지 못했습니다: ${printable(where)}: ${printable(describeError(error))}`);
+      result.branchesUnknown = true;
+    }
+
+    const found = new Map<string, BranchCandidate>();
+    for (const branch of recent) {
+      found.set(branch.name, { name: branch.name, time: Date.parse(branch.committedAt), ref: branch.sha, byName: false });
+    }
+    for (const [name, at] of pushes) {
+      const time = Date.parse(at);
+      if (Number.isNaN(time)) continue;
+      const existing = found.get(name);
+      if (existing) existing.time = Math.max(existing.time, time);
+      else found.set(name, { name, time, ref: name, byName: true });
+    }
+    // 기본 브랜치와 같은 ref 가 되지 않게 빈 이름과 기본 브랜치 이름은 건너뛴다.
+    const candidates = [...found.values()]
+      .filter((candidate) => candidate.name !== DEFAULT_BRANCH_REF && candidate.name !== repo.defaultBranch)
+      .sort((a, b) => b.time - a.time || (a.name < b.name ? -1 : 1));
+    const keptRefs = new Set<string>(candidates.slice(BRANCH_SCAN_MAX_BRANCHES).map((candidate) => candidate.name));
     result.keptRefs = keptRefs;
+
     const baseShas = new Map(defaultEntries.map((entry) => [entry.path, entry.sha]));
-    for (const branch of recent.slice(0, BRANCH_SCAN_MAX_BRANCHES)) {
-      // 기본 브랜치와 같은 ref 가 되지 않게 빈 이름과 기본 브랜치 이름은 건너뛴다.
-      if (branch.name === DEFAULT_BRANCH_REF || branch.name === repo.defaultBranch) continue;
+    for (const candidate of candidates.slice(0, BRANCH_SCAN_MAX_BRANCHES)) {
+      const fetchedBefore = blobs.fetched();
       try {
-        const branchTree = await client.getTree(org, repo.name, branch.sha);
+        const branchTree = await client.getTree(org, repo.name, candidate.ref);
         if (branchTree.truncated) throw new Error("파일 트리가 너무 커서 GitHub 가 일부만 반환했습니다(truncated)");
-        // 기본 브랜치에 없거나 blob 이 다른 파일만 본다 — 같은 파일은 이미 기본 브랜치 스캔이 평가했다.
+        // 기본 브랜치에 없거나 blob 이 다른 파일만 보고한다 — 같은 파일은 이미 기본 브랜치 스캔이 평가했다.
         const changed = branchTree.entries.filter((entry) => baseShas.get(entry.path) !== entry.sha);
-        const scanned = await scanTree(org, client, repo, changed, branch.name, rules);
-        result.branches.set(branch.name, { declaredCount: scanned.declaredCount, skippedPaths: scanned.skippedPaths });
-        result.fileCount += scanned.fileCount;
-        result.matches.push(...scanned.matches);
+        const changedPaths = new Set(changed.map((entry) => entry.path));
+        // 의존성 파일이 달라졌으면 lock 의 담당 관계를 맞추려고 브랜치 tree 의 모든 의존성 파일을 평가 입력에 넣는다.
+        // 기본 브랜치와 같은 파일은 blob 캐시에서 나오고, 보고는 달라진 경로의 검출만 한다.
+        const input = changed.some((entry) => isDependencyFile(entry.path))
+          ? branchTree.entries.filter((entry) => changedPaths.has(entry.path) || isDependencyFile(entry.path))
+          : changed;
+        const scanned = await scanTree(org, client, repo, input, candidate.name, rules, blobs.has);
+        result.branches.set(candidate.name, { declaredCount: scanned.declaredCount, skippedPaths: scanned.skippedPaths });
+        // 평가할 파일이 있었던 브랜치만 센다.
+        if (scanned.declaredCount > 0 || scanned.traced) result.countedBranches += 1;
+        result.fileCount += blobs.fetched() - fetchedBefore;
+        result.matches.push(...scanned.matches.filter((match) => changedPaths.has(match.filePath)));
       } catch (error) {
-        if (error instanceof RateLimitedError) throw error;
-        keptRefs.add(branch.name);
+        if (error instanceof RateLimitedError) {
+          // 남은 후보는 평가하지 못했다 — 그 검출은 그대로 둔다.
+          for (const rest of candidates) if (!result.branches.has(rest.name)) keptRefs.add(rest.name);
+          return stopOnRateLimit();
+        }
+        const message = describeError(error);
+        // 이름으로 조회한 브랜치가 지워졌으면(404) 후보에서 제외한다 — 그 검출은 resolve 된다.
+        const gone = candidate.byName && /\(404\)/.test(message);
+        if (!gone) keptRefs.add(candidate.name);
         logger.warn(
-          `브랜치를 평가하지 못해 건너뜁니다: ${printable(where)}@${branchLabel(branch.name)}: ${printable(describeError(error))}`,
+          `브랜치를 평가하지 못해 건너뜁니다: ${printable(where)}@${branchLabel(candidate.name)}: ${printable(message)}`,
         );
       }
     }
@@ -470,6 +528,8 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     entries: TreeEntry[],
     ref: string,
     rules: ScanRules,
+    /** 이미 받은 blob 인가 (브랜치의 상한 계산에서 뺀다) */
+    isCached: (sha: string) => boolean = () => false,
   ): Promise<TreeScan> {
     const { entryIndex, activeEcosystems, indicators, policy } = rules;
     const isBranch = ref !== DEFAULT_BRANCH_REF;
@@ -559,12 +619,16 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     );
     if (isBranch) {
       // 받기 전에 상한을 넘는지 본다 — 넘으면 일부만 받지 않고 이 브랜치를 평가하지 않는다.
-      const npmFiles = packageJsons.length > 0 || lockfiles.length > 0 ? packageJsons.length + lockfiles.length + yamlCandidates.length : 0;
+      const uncached = (list: TreeEntry[]): number => list.filter((entry) => !isCached(entry.sha)).length;
+      const npmFiles =
+        packageJsons.length > 0 || lockfiles.length > 0
+          ? uncached(packageJsons) + uncached(lockfiles) + uncached(yamlCandidates)
+          : 0;
       let otherCount = 0;
       for (const [ecosystem, files] of otherFiles) {
-        if (activeEcosystems.has(ecosystem)) otherCount += files.manifests.length + files.locks.length;
+        if (activeEcosystems.has(ecosystem)) otherCount += uncached(files.manifests) + uncached(files.locks);
       }
-      const toFetch = npmFiles + otherCount + wantedSources.length;
+      const toFetch = npmFiles + otherCount + uncached(wantedSources);
       if (toFetch > BRANCH_MAX_FETCH) {
         throw new Error(`달라진 파일 중 받을 파일이 ${toFetch}개로 상한(${BRANCH_MAX_FETCH}개)을 넘습니다`);
       }
@@ -840,7 +904,8 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       track("repo 시작", () => repos.scanRepos.markRunning(scanId, repo.name, toIso(clock.now())));
       try {
         const scanned = await scanRepo(org, client, repo, rules);
-        return { repo: repo.name, ok: true, ...scanned, branchCount: scanned.branches.size };
+        if (scanned.rateLimited) rateLimited = true;
+        return { repo: repo.name, ok: true, ...scanned, branchCount: scanned.countedBranches };
       } catch (error) {
         if (error instanceof RateLimitedError) rateLimited = true;
         return { repo: repo.name, ok: false, error: describeError(error) };

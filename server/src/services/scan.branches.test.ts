@@ -114,7 +114,7 @@ describe("브랜치 스캔 — 선정과 요청 수", () => {
     expect(t.github.callsOf("listRecentBranches")[0]?.arg).toBe("2026-11-09T00:00:00.000Z");
   });
 
-  it("[SF-14] 달라진 파일이 0개인 브랜치는 평가한 것으로 세고 파일 요청은 없다", async () => {
+  it("[SF-14] 달라진 파일이 0개인 브랜치는 평가한 것이지만 수에는 넣지 않고 파일 요청은 없다", async () => {
     setup();
     t.github.setHead("svc", "same", head(BASE));
 
@@ -123,7 +123,7 @@ describe("브랜치 스캔 — 선정과 요청 수", () => {
     expect(t.github.callsOf("getFile")).toHaveLength(2);
     expect(t.github.callsOf("getTree")).toHaveLength(2);
     const row = await repoRow(scan.id);
-    expect(row).toMatchObject({ branchCount: 1, fileCount: 2, status: "passed" });
+    expect(row).toMatchObject({ branchCount: 0, fileCount: 2, status: "passed" });
   });
 
   it("[SF-15] 같은 변경을 가진 두 브랜치는 검출이 각각 생기고 같은 blob 은 1번만 받는다", async () => {
@@ -150,7 +150,7 @@ describe("브랜치 스캔 — 선정과 요청 수", () => {
   it("[SF-17] 최대 20개만 평가한다 (최근 순)", async () => {
     setup();
     for (let i = 0; i < 22; i += 1) {
-      t.github.setHead("svc", `b${i}`, head({ ...BASE, [`f${i}.txt`]: "x" }, `2026-11-10T00:${String(i).padStart(2, "0")}:00.000Z`));
+      t.github.setHead("svc", `b${i}`, head({ ...BASE, "package.json": pkgJson({ name: `p${i}` }) }, `2026-11-10T00:${String(i).padStart(2, "0")}:00.000Z`));
     }
 
     const scan = await runScan(t);
@@ -318,7 +318,7 @@ describe("브랜치 스캔 — resolve", () => {
 
     expect(scan.status).toBe("success");
     expect(refsOf(await active())).toEqual(["feature/x|package-lock.json"]);
-    expect((await repoRow(scan.id)).branchCount).toBe(1);
+    expect((await repoRow(scan.id)).branchCount).toBe(0); // z.txt 만 바뀐 브랜치는 평가할 파일이 없다
   });
 
   it("[SF-37] 브랜치의 tree 조회 실패와 파일 해석 실패는 그 브랜치만 건너뛴다 (repo 는 성공)", async () => {
@@ -337,14 +337,13 @@ describe("브랜치 스캔 — resolve", () => {
     expect(t.logger.texts("warn").filter((text) => text.includes("브랜치")).length).toBeGreaterThanOrEqual(2);
   });
 
-  it("[SF-38] repo 가 실패하면 브랜치의 검출을 그대로 두고, rate limit 은 스캔 전체에 전파한다", async () => {
+  it("[SF-38] 브랜치 단계의 rate limit 은 평가하지 못한 브랜치의 검출을 그대로 둔다", async () => {
     await withBranch();
     t.github.failRecentBranches("svc", new RateLimitedError());
 
     const scan = await runScan(t);
 
-    expect(scan.status).toBe("partial");
-    expect(scan.failedRepos).toEqual([{ repo: "svc", error: "RATE_LIMITED" }]);
+    expect(scan.status).toBe("success");
     expect(refsOf(await active())).toEqual(["feature/x|package-lock.json"]);
   });
 

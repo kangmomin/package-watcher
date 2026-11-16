@@ -24,7 +24,8 @@ export type FakeMethod =
   | "getTree"
   | "getFile"
   | "listBranches"
-  | "listRecentBranches";
+  | "listRecentBranches"
+  | "listRecentPushes";
 
 /** 기본 브랜치 외의 브랜치 1개 */
 export interface FakeBranchInput {
@@ -74,6 +75,9 @@ interface RepoState {
   /** 기본 브랜치 외의 브랜치 (listRecentBranches·getTree 가 읽는다) */
   heads: Map<string, BranchState>;
   recentError: Error | null;
+  /** 브랜치 이름 → 마지막 push 시각 (listRecentPushes) */
+  pushes: Map<string, string>;
+  pushError: Error | null;
 }
 
 interface PendingGate {
@@ -127,6 +131,8 @@ export class FakeGitHubClient implements GitHubClient {
       pushedAt: input.pushedAt ?? null,
       heads: new Map(),
       recentError: null,
+      pushes: new Map(),
+      pushError: null,
     });
   }
 
@@ -191,6 +197,15 @@ export class FakeGitHubClient implements GitHubClient {
     this.mustGet(name).heads.delete(branch);
   }
 
+  /** 브랜치의 마지막 push 시각 (events API). 브랜치가 없어도 둘 수 있다 */
+  setPush(name: string, branch: string, pushedAt: string): void {
+    this.mustGet(name).pushes.set(branch, pushedAt);
+  }
+
+  failRecentPushes(name: string, error: Error): void {
+    this.mustGet(name).pushError = error;
+  }
+
   failRecentBranches(name: string, error: Error): void {
     this.mustGet(name).recentError = error;
   }
@@ -206,6 +221,7 @@ export class FakeGitHubClient implements GitHubClient {
   clearFailures(name: string): void {
     const state = this.mustGet(name);
     state.recentError = null;
+    state.pushError = null;
     for (const head of state.heads.values()) {
       head.truncated = false;
       head.treeError = null;
@@ -273,7 +289,7 @@ export class FakeGitHubClient implements GitHubClient {
     await this.enter("getTree", org, repo, ref);
     const state = this.repos.get(repo);
     if (!state) throw new Error(`GitHub API 오류 (404): ${repo}`);
-    const head = [...state.heads.values()].find((candidate) => candidate.sha === ref);
+    const head = [...state.heads.values()].find((candidate) => candidate.sha === ref || candidate.name === ref);
     if (head) {
       if (head.treeError) throw head.treeError;
       return {
@@ -281,6 +297,8 @@ export class FakeGitHubClient implements GitHubClient {
         truncated: head.truncated,
       };
     }
+    // 이름으로 부른 브랜치가 지워졌으면 404 (push 기록만 남은 브랜치)
+    if (ref !== state.defaultBranch && state.pushes.has(ref)) throw new Error(`GitHub API 오류 (404): ${ref}`);
     if (state.treeError) throw state.treeError;
     return {
       entries: [...state.files].map(([path, content]) => ({
@@ -328,8 +346,15 @@ export class FakeGitHubClient implements GitHubClient {
     return [...state.heads.values()]
       .filter((head) => Date.parse(head.committedAt) >= Date.parse(sinceIso))
       .sort((a, b) => Date.parse(b.committedAt) - Date.parse(a.committedAt))
-      .slice(0, 20)
       .map(({ name, committedAt, sha }) => ({ name, committedAt, sha }));
+  }
+
+  async listRecentPushes(org: string, repo: string, sinceIso: string): Promise<Map<string, string>> {
+    await this.enter("listRecentPushes", org, repo, sinceIso);
+    const state = this.repos.get(repo);
+    if (!state) return new Map();
+    if (state.pushError) throw state.pushError;
+    return new Map([...state.pushes].filter(([, at]) => Date.parse(at) >= Date.parse(sinceIso)));
   }
 
   private async enter(

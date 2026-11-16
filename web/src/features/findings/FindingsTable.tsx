@@ -130,7 +130,7 @@ function BranchBadge({ name }: { name: string }) {
     >
       <GitBranchIcon aria-hidden="true" className="size-3 shrink-0" />
       <span aria-hidden="true" className="truncate">
-        {name}
+        <bdi>{name}</bdi>
       </span>
       <span className="sr-only">{`브랜치 ${name}`}</span>
     </span>

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createFetchMock, type MockReply } from "../test/fetchMock.ts";
-import { createOctokitClient, pickRecentBranches, RateLimitedError, RECENT_BRANCHES_QUERY } from "./client.ts";
+import { createOctokitClient, pickRecentBranches, pickRecentPushes, RateLimitedError, RECENT_BRANCHES_QUERY } from "./client.ts";
 
 const SINCE = "2026-11-05T00:00:00.000Z";
 const node = (name: string, committedDate: string, oid = `oid-${name}`) => ({ name, target: { oid, committedDate } });
@@ -32,12 +32,12 @@ describe("pickRecentBranches", () => {
     expect(picked[0]).toEqual({ name: "b", committedAt: "2026-11-10T00:00:00Z", sha: "oid-b" });
   });
 
-  it("[SF-73] 최대 20개까지만 돌려주고 형식이 이상한 노드는 건너뛴다", () => {
+  it("[SF-73] 기간 안의 후보는 모두 돌려주고(상한은 호출한 쪽) 형식이 이상한 노드는 건너뛴다", () => {
     const many = Array.from({ length: 30 }, (_, i) => node(`b${i}`, `2026-11-10T00:${String(i).padStart(2, "0")}:00Z`));
 
     const picked = pickRecentBranches(data([null, { name: "x" }, { name: "y", target: {} }, ...many]), SINCE);
 
-    expect(picked).toHaveLength(20);
+    expect(picked).toHaveLength(30);
     expect(picked[0]?.name).toBe("b29");
   });
 
@@ -93,5 +93,40 @@ describe("listRecentBranches (fetch mock)", () => {
     const repos = await github.listOrgRepos("my-org");
 
     expect(repos.map((repo) => repo.pushedAt)).toEqual(["2026-11-10T00:00:00Z", null]);
+  });
+});
+
+describe("pickRecentPushes", () => {
+  it("[SF-113] PushEvent·CreateEvent(branch)만, 기간 안의 것만, 브랜치마다 가장 최근 시각을 남긴다", () => {
+    const picked = pickRecentPushes(
+      [
+        { type: "PushEvent", created_at: "2026-11-10T00:00:00Z", payload: { ref: "refs/heads/a" } },
+        { type: "PushEvent", created_at: "2026-11-11T00:00:00Z", payload: { ref: "refs/heads/a" } },
+        { type: "CreateEvent", created_at: "2026-11-09T00:00:00Z", payload: { ref: "b", ref_type: "branch" } },
+        { type: "CreateEvent", created_at: "2026-11-09T00:00:00Z", payload: { ref: "v1", ref_type: "tag" } },
+        { type: "PushEvent", created_at: "2026-11-09T00:00:00Z", payload: { ref: "refs/tags/v1" } },
+        { type: "PushEvent", created_at: "2026-11-01T00:00:00Z", payload: { ref: "refs/heads/old" } },
+        { type: "WatchEvent", created_at: "2026-11-10T00:00:00Z", payload: {} },
+        null,
+      ],
+      SINCE,
+    );
+
+    expect([...picked]).toEqual([["a", "2026-11-11T00:00:00Z"], ["b", "2026-11-09T00:00:00Z"]]);
+    expect(pickRecentPushes("x", SINCE).size).toBe(0);
+  });
+
+  it("[SF-114] listRecentPushes 는 events API 1회, 404 는 빈 Map", async () => {
+    const mock = createFetchMock(({ url }) =>
+      url.pathname === "/repos/my-org/svc/events"
+        ? { status: 200, body: [{ type: "PushEvent", created_at: "2026-11-10T00:00:00Z", payload: { ref: "refs/heads/a" } }] }
+        : { status: 404, body: { message: "Not Found" } },
+    );
+    const github = createOctokitClient({ token: "test-token", fetch: mock.fetch });
+
+    expect([...(await github.listRecentPushes("my-org", "svc", SINCE))]).toEqual([["a", "2026-11-10T00:00:00Z"]]);
+    expect(mock.calls).toHaveLength(1);
+    expect(mock.calls[0]?.url.searchParams.get("per_page")).toBe("100");
+    expect((await github.listRecentPushes("my-org", "none", SINCE)).size).toBe(0);
   });
 });
