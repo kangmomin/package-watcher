@@ -21,7 +21,8 @@ export function useSettings(): UseQueryResult<Settings, ApiRequestError> {
   });
 }
 
-const SAVE_KEYS = [queryKeys.settings(), queryKeys.summary(), queryKeys.findingsAll()];
+// feedEnabled 가 바뀌면 feed 상태의 enabled 도 바뀐다.
+const SAVE_KEYS = [queryKeys.settings(), queryKeys.summary(), queryKeys.findingsAll(), queryKeys.feedStatus()];
 
 /** toast·필드 오류·폼 reset 은 화면이 한다(오류 코드별로 필드 오류와 toast 를 나눠야 한다). */
 export function useSaveSettings(): UseMutationResult<Settings, ApiRequestError, SettingsInput> {

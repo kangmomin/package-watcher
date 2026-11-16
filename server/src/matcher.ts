@@ -65,13 +65,23 @@ export function matchName(pattern: string, name: string): boolean {
   return p === pattern.length;
 }
 
+/** 대조에 쓰는 항목의 최소 모양. 블랙리스트 항목과 외부 목록(feed)의 항목이 같이 쓴다. */
+export interface MatchableEntry {
+  id: number;
+  name: string;
+  ecosystem: string;
+  versionRange: string | null;
+  /** 항목의 출처. 외부 목록(feed)이 만든 항목은 'feed' (임시 항목은 id 가 음수) */
+  source?: string;
+}
+
 export interface EntryIndex<E extends { name: string; ecosystem: string }> {
   /** 그 종류에서 이 패키지 이름과 일치하는 항목 전부 */
   match(ecosystem: string, name: string): E[];
 }
 
 /** 종류의 이름 규칙(pypi = PEP 503, nuget = 소문자)으로 정규화한다. 모르는 종류는 그대로 둔다. */
-function normalizeFor(ecosystem: string, name: string): string {
+export function normalizeFor(ecosystem: string, name: string): string {
   const rule = (ECOSYSTEM_RULES as Record<string, (typeof ECOSYSTEM_RULES)[Ecosystem] | undefined>)[ecosystem];
   return rule ? rule.normalizeName(name) : name;
 }

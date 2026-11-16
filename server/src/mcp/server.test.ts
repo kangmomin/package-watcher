@@ -52,12 +52,18 @@ afterEach(async () => {
 });
 
 describe("/mcp (Streamable HTTP, stateless)", () => {
-  it("[AC-13][CT-11] tools/list 는 계약의 tool 13개(기존 10개 + 일괄 관리 3개) 이름을 정확히 반환한다", async () => {
+  it("[AC-13][CT-11] tools/list 는 계약의 tool 15개(기존 10개 + 일괄 관리 3개 + 외부 목록 2개) 이름을 정확히 반환한다", async () => {
     const client = await connect();
 
     const { tools } = await client.listTools();
 
-    const bulkTools = ["bulk_update_blacklist", "import_blacklist", "export_blacklist"];
+    const bulkTools = [
+      "bulk_update_blacklist",
+      "import_blacklist",
+      "export_blacklist",
+      "get_feed_status",
+      "search_feed",
+    ];
     expect(tools.map((tool) => tool.name).sort()).toEqual([...TOOL_NAMES, ...bulkTools].sort());
   });
 

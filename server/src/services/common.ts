@@ -61,6 +61,7 @@ export interface StoredSettings {
   digestTime: string;
   recipients: string[];
   notifyMinSeverity: Severity;
+  feedEnabled: boolean;
 }
 
 /** 저장된 설정. 값이 없거나 깨졌으면 기본값을 쓴다. */
@@ -69,6 +70,8 @@ export function readStoredSettings(settings: SettingsRepository): StoredSettings
   const digestTime = digestTimeSchema.safeParse(settings.get("digest_time"));
   const minSeverity = severitySchema.safeParse(settings.get("notify_min_severity"));
   return {
+    // 기본 켬. 저장된 값이 "false" 일 때만 끈다.
+    feedEnabled: settings.get("feed_enabled") !== "false",
     notifyMinSeverity: minSeverity.success ? minSeverity.data : DEFAULT_NOTIFY_MIN_SEVERITY,
     org: settings.get("org"),
     scanIntervalHours: interval.success ? interval.data : DEFAULT_SCAN_INTERVAL_HOURS,

@@ -4,12 +4,15 @@ import type { Logger } from "./logger.ts";
 import type { Repositories } from "./repositories/index.ts";
 import { addMs, canScan, HOUR_MS, readStoredSettings, toIso, toKst } from "./services/common.ts";
 import { todayKst } from "./services/entryActivity.ts";
+import type { FeedService } from "./services/feedService.ts";
 import type { Notifier } from "./services/notifier.ts";
 import type { ScanService } from "./services/scanService.ts";
 
 export const TICK_INTERVAL_MS = 30_000;
 /** `next_scan_at` 이 없을 때 첫 자동 스캔까지의 지연 (A-7) */
 export const FIRST_SCAN_DELAY_MS = 60_000;
+/** 스캔 직전에 외부 목록의 동기화를 기다리는 최대 시간. 넘으면 기다리지 않고 스캔한다 */
+export const FEED_WAIT_MS = 60_000;
 
 export interface Scheduler {
   /** TICK_INTERVAL_MS 마다 tick() */
@@ -29,6 +32,10 @@ export interface Scheduler {
 export interface SchedulerDeps {
   repos: Repositories;
   scans: ScanService;
+  /** 없으면 외부 목록을 동기화하지 않고 바로 스캔한다 */
+  feed?: Pick<FeedService, "syncBeforeScan">;
+  /** 기본 FEED_WAIT_MS */
+  feedWaitMs?: number;
   notifier: Notifier;
   clock: Clock;
   githubTokenSource: TokenSource;
@@ -47,11 +54,12 @@ export function nextOnGrid(next: Date, now: Date, intervalMs: number): Date {
 }
 
 export function createScheduler(deps: SchedulerDeps): Scheduler {
-  const { repos, scans, notifier, clock, githubTokenSource, logger } = deps;
+  const { repos, scans, feed, notifier, clock, githubTokenSource, logger } = deps;
+  const feedWaitMs = deps.feedWaitMs ?? FEED_WAIT_MS;
   let timer: ReturnType<typeof setInterval> | null = null;
   let ticking = false;
 
-  function runAutoScan(now: Date): void {
+  async function runAutoScan(now: Date): Promise<void> {
     const settings = readStoredSettings(repos.settings);
     if (!canScan(settings.org, githubTokenSource)) return;
 
@@ -69,6 +77,11 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     if (scans.isRunning()) {
       logger.info("예정된 자동 스캔 시각이지만 스캔이 실행 중이라 이번 회차를 건너뜁니다");
       return;
+    }
+    // 외부 목록의 증분 동기화를 기다린 뒤 스캔한다(최대 feedWaitMs). 수동 스캔은 기다리지 않는다.
+    if (feed) {
+      await feed.syncBeforeScan(feedWaitMs);
+      if (scans.isRunning()) return;
     }
     scans.start("scheduled");
   }
@@ -95,7 +108,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         logger.error("비활성 항목 검출 정리 중 오류", error);
       }
       try {
-        runAutoScan(now);
+        await runAutoScan(now);
       } catch (error) {
         logger.error("자동 스캔 판정 중 오류", error);
       }

@@ -1,10 +1,10 @@
-import { ECOSYSTEM_RULES, type BlacklistEntry, type DependencyType } from "@pw/shared";
+import { ECOSYSTEM_RULES, type DependencyType } from "@pw/shared";
 import { detectEcosystem } from "../ecosystems/detect.ts";
 import type { DeclaredDependency } from "../ecosystems/types.ts";
 import type { GitHubClient, RepoInfo, TreeEntry } from "../github/client.ts";
 import { errorMessage } from "../lockfiles/common.ts";
 import type { Logger } from "../logger.ts";
-import { matchExact, type EntryIndex } from "../matcher.ts";
+import { matchExact, type EntryIndex, type MatchableEntry } from "../matcher.ts";
 import {
   extractSource,
   sourceKindOf,
@@ -94,7 +94,7 @@ function detectCommands(
   repo: string,
   path: string,
   commands: CommandPackage[],
-  entryIndex: EntryIndex<BlacklistEntry>,
+  entryIndex: EntryIndex<MatchableEntry>,
 ): SourceMatch[] {
   const matches: SourceMatch[] = [];
   const seen = new Set<string>();
@@ -143,7 +143,7 @@ function detectActions(
   repo: string,
   path: string,
   actions: ActionRef[],
-  entryIndex: EntryIndex<BlacklistEntry>,
+  entryIndex: EntryIndex<MatchableEntry>,
 ): SourceMatch[] {
   const deps: DeclaredDependency[] = actions.map((action) => ({
     name: action.name,
@@ -166,7 +166,7 @@ function detectImages(
   repo: string,
   path: string,
   images: ImageRef[],
-  entryIndex: EntryIndex<BlacklistEntry>,
+  entryIndex: EntryIndex<MatchableEntry>,
 ): SourceMatch[] {
   const satisfies = ECOSYSTEM_RULES.docker.satisfies;
   const seen = new Set<string>();
@@ -204,7 +204,7 @@ export async function scanSources(
   org: string,
   client: GitHubClient,
   repo: RepoInfo,
-  entryIndex: EntryIndex<BlacklistEntry>,
+  entryIndex: EntryIndex<MatchableEntry>,
   files: SourceFile[],
   logger: Logger,
   activeEcosystems?: ReadonlySet<string>,

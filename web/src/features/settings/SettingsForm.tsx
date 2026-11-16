@@ -24,6 +24,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { useBlacklist } from "@/features/blacklist/hooks";
+import { FeedSection } from "@/features/settings/FeedSection";
 import { ConnectionStatus } from "@/features/settings/ConnectionStatus";
 import { useSaveSettings, useTestEmail } from "@/features/settings/hooks";
 import { RecipientsInput } from "@/features/settings/RecipientsInput";
@@ -40,7 +41,7 @@ export interface SettingsFormProps {
 }
 
 /** 폼 값 = 저장 스키마의 입력 모양(검증 전). 스키마에 필드가 생기면 toFormValues 가 타입 오류로 알려 준다. */
-type FormValues = z.input<typeof settingsInputSchema> & { notifyMinSeverity: Severity };
+type FormValues = z.input<typeof settingsInputSchema> & { notifyMinSeverity: Severity; feedEnabled: boolean };
 
 interface FormRowProps {
   label: string;
@@ -49,7 +50,7 @@ interface FormRowProps {
   children: ReactNode;
 }
 
-const FORM_FIELDS = ["org", "scanIntervalHours", "digestTime", "recipients", "notifyMinSeverity"] as const;
+const FORM_FIELDS = ["org", "scanIntervalHours", "digestTime", "recipients", "notifyMinSeverity", "feedEnabled"] as const;
 
 /** 수신자 입력란에 [추가] 하지 않은 주소가 남은 채 저장하려 할 때의 recipients 필드 오류 */
 const PENDING_RECIPIENT_ERROR = "pendingRecipient";
@@ -62,6 +63,7 @@ function toFormValues(settings: Settings): FormValues {
     digestTime: settings.digestTime,
     recipients: [...settings.recipients],
     notifyMinSeverity: settings.notifyMinSeverity,
+    feedEnabled: settings.feedEnabled,
   };
 }
 
@@ -246,6 +248,13 @@ export function SettingsForm({ settings, isFetchedAfterMount = true }: SettingsF
           <FieldError id={errorIdOf("recipients")} errors={[errors.recipients]} />
         </FormRow>
       </div>
+
+      <Separator />
+      <Controller
+        control={form.control}
+        name="feedEnabled"
+        render={({ field }) => <FeedSection enabled={field.value} onEnabledChange={field.onChange} isFormDirty={isDirty} />}
+      />
 
       <Separator />
       <ConnectionStatus githubTokenSource={settings.githubTokenSource} smtpConfigured={settings.smtpConfigured} />

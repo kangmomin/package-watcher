@@ -1,0 +1,255 @@
+import type { Severity } from "@pw/shared";
+import { z } from "zod";
+import type { Clock } from "../clock.ts";
+import { RateLimitedError } from "../github/client.ts";
+import { errorMessage } from "../lockfiles/common.ts";
+import type { Logger } from "../logger.ts";
+import type { FeedWrite } from "../repositories/feed.ts";
+import type { Repositories } from "../repositories/index.ts";
+import { HOUR_MS, printable, toIso } from "../services/common.ts";
+import type { FeedClient } from "./client.ts";
+import { convertAdvisory } from "./ranges.ts";
+
+const SUMMARY_MAX = 300;
+const URL_MAX = 500;
+/** 증분 동기화가 "마지막 동기화의 시작 시각"보다 이만큼 더 거슬러 올라간다(그 사이의 갱신을 놓치지 않으려고) */
+const OVERLAP_MS = HOUR_MS;
+/** 마지막 전체 동기화가 끝난 지 이만큼 지나면 다음 동기화는 전체로 한다(철회·범위 변경을 증분이 놓칠 수 있다) */
+export const FULL_RESYNC_MS = 7 * 24 * HOUR_MS;
+
+const SEVERITY_OF: Record<string, Severity> = {
+  CRITICAL: "critical",
+  HIGH: "high",
+  MODERATE: "medium",
+  LOW: "low",
+};
+
+const isDate = (value: string): boolean => !Number.isNaN(Date.parse(value));
+
+// 외부 응답은 믿지 않는다: 노드마다 검증하고, 맞지 않는 노드만 건너뛴다.
+const nodeSchema = z.object({
+  updatedAt: z.string().refine(isDate),
+  vulnerableVersionRange: z.string(),
+  package: z.object({ ecosystem: z.string(), name: z.string() }),
+  advisory: z.object({
+    ghsaId: z.string().regex(/^GHSA-[A-Za-z0-9-]{1,60}$/),
+    summary: z.string().nullish(),
+    severity: z.string(),
+    permalink: z.string().nullish(),
+    withdrawnAt: z.string().nullish(),
+  }),
+});
+
+export interface FeedSyncDeps {
+  repos: Repositories;
+  client: FeedClient;
+  clock: Clock;
+  logger: Logger;
+  /** feed 의 행이 바뀌었다 — 스캔의 index 캐시를 다시 만든다 */
+  onChange(): void;
+  /** 지금까지 처리한 노드의 수 */
+  onProgress(processed: number): void;
+  /** true 이면 현재 페이지를 마친 뒤 멈춘다(서버 종료, feed 끄기). 이어받기 위치는 저장돼 있다. */
+  shouldStop(): boolean;
+}
+
+const yieldToEventLoop = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+function describeError(error: unknown): string {
+  if (error instanceof RateLimitedError) return "GitHub API 호출 한도를 소진했습니다. 다음 동기화에서 이어서 받습니다";
+  return errorMessage(error) || "알 수 없는 오류";
+}
+
+function urlOf(permalink: string | null | undefined, ghsaId: string): string {
+  const fallback = `https://github.com/advisories/${ghsaId}`;
+  if (!permalink || !/^https:\/\//i.test(permalink) || permalink.length > URL_MAX) return fallback;
+  return printable(permalink);
+}
+
+interface PageOutcome {
+  skipped: number;
+  changed: number;
+  /** 증분 동기화가 멈출 기준에 도달했는가 */
+  reachedOld: boolean;
+}
+
+/**
+ * 페이지 1개를 반영한다. 호출 쪽이 연 트랜잭션 안에서 부른다. 더하기·갱신과 철회의 삭제만 하고 범위를 정리(prune)하지 않는다 —
+ * 같은 권고의 범위가 여러 페이지·여러 실행에 나뉘어 와도 잃지 않는다. 옛 범위는 전체 동기화의 sweep 이 지운다.
+ */
+function processPage(rawNodes: unknown[], repos: Repositories, seenRun: string | null, threshold: number): PageOutcome {
+  let skipped = 0;
+  let reachedOld = false;
+  const withdrawn = new Set<string>();
+  const entries: FeedWrite[] = [];
+
+  for (const raw of rawNodes) {
+    const parsed = nodeSchema.safeParse(raw);
+    if (!parsed.success) {
+      skipped += 1;
+      continue;
+    }
+    const node = parsed.data;
+    // UPDATED_AT DESC 라서 기준보다 오래된 노드부터는 이미 반영한 것이다.
+    if (Date.parse(node.updatedAt) < threshold) {
+      reachedOld = true;
+      break;
+    }
+    const { ghsaId } = node.advisory;
+    if (node.advisory.withdrawnAt) {
+      withdrawn.add(ghsaId);
+      continue;
+    }
+    const severity = SEVERITY_OF[node.advisory.severity];
+    const converted = severity
+      ? convertAdvisory(node.package.ecosystem, node.package.name, node.vulnerableVersionRange)
+      : null;
+    if (!severity || !converted) {
+      skipped += 1;
+      continue;
+    }
+    entries.push({
+      externalId: ghsaId,
+      ecosystem: converted.ecosystem,
+      name: converted.name,
+      versionRange: converted.versionRange,
+      rawRange: node.vulnerableVersionRange.slice(0, URL_MAX),
+      severity,
+      summary: printable((node.advisory.summary ?? "").trim()).slice(0, SUMMARY_MAX),
+      url: urlOf(node.advisory.permalink, ghsaId),
+      updatedAt: new Date(node.updatedAt).toISOString(),
+    });
+  }
+
+  let changed = repos.feed.upsert(
+    entries.filter((entry) => !withdrawn.has(entry.externalId)),
+    seenRun,
+  );
+  for (const externalId of withdrawn) changed += repos.feed.deleteByExternalId(externalId);
+  return { skipped, changed, reachedOld };
+}
+
+/**
+ * 전체 동기화의 마무리. 호출 쪽의 트랜잭션 안에서 부른다. 반환: 바뀐 행의 수(sweep 과 꺼진 항목).
+ * feed 에서 사라진 권고의 `source=feed` 항목은 끄고 그 검출은 resolved 로 한다(항목과 검출의 기록은 지우지 않는다).
+ */
+function finishFull(repos: Repositories, runId: string, skipped: number, startedAt: string, now: string): number {
+  const settings = repos.settings;
+  let changed = repos.feed.sweep(runId);
+  if (repos.feed.count() > 0) {
+    const disabled = repos.blacklist.disableWithdrawnFeedEntries(now);
+    for (const id of disabled) repos.findings.resolveByBlacklistEntry(id, now);
+    changed += disabled.length;
+  }
+  settings.set("feed_full_sync_done", "true");
+  settings.set("feed_cursor", null);
+  settings.set("feed_skipped", String(skipped));
+  settings.set("feed_last_started_at", settings.get("feed_full_started_at") ?? startedAt);
+  settings.set("feed_full_started_at", null);
+  settings.set("feed_run_id", null);
+  settings.set("feed_last_full_at", now);
+  settings.set("feed_last_synced_at", now);
+  settings.set("feed_last_error", null);
+  return changed;
+}
+
+/**
+ * 동기화 1회. 아래 중 하나이면 전체, 아니면 마지막 동기화 이후 바뀐 것만(증분) 받는다.
+ * - 첫 전체 동기화가 아직 끝나지 않았다(중단된 것은 저장된 cursor 에서 이어받는다)
+ * - 마지막 전체 동기화가 끝난 지 7일이 지났다
+ * 전체 동기화는 받은 행에 실행 id 를 남기고, 끝나면 이번 실행이 보지 못한 행을 지운다(sweep). 그 전까지 기존 행은 대조에 쓰인다.
+ * 절대 throw 하지 않는다 — 실패는 `feed_last_error` 에 저장하고 호출 쪽(백그라운드)은 그대로 둔다.
+ */
+export async function runFeedSync(deps: FeedSyncDeps): Promise<void> {
+  const { repos, client, clock, logger } = deps;
+  const settings = repos.settings;
+
+  try {
+    const startedAt = toIso(clock.now());
+    const fullDone = settings.get("feed_full_sync_done") === "true";
+    let cursor: string | null = settings.get("feed_cursor");
+    const lastFullAt = Date.parse(settings.get("feed_last_full_at") ?? "");
+    const stale = fullDone && !Number.isNaN(lastFullAt) && clock.now().getTime() - lastFullAt >= FULL_RESYNC_MS;
+    const full = !fullDone || cursor !== null || stale;
+
+    let runId = "";
+    let skipped = 0;
+    let threshold = Number.NEGATIVE_INFINITY;
+    if (full) {
+      const saved = settings.get("feed_run_id");
+      if (cursor !== null && saved) {
+        runId = saved;
+        skipped = Number(settings.get("feed_skipped")) || 0;
+      } else {
+        // 새 전체 동기화. 여러 번에 나눠 받아도 같은 실행 id 와 시작 시각을 쓴다.
+        cursor = null;
+        runId = startedAt;
+        settings.set("feed_run_id", runId);
+        settings.set("feed_full_started_at", startedAt);
+      }
+    } else {
+      const last = Date.parse(settings.get("feed_last_started_at") ?? "");
+      // 시작 시각이 없으면(깨진 설정) 증분이 아니라 많이 받는다.
+      threshold = Number.isNaN(last) ? Number.NEGATIVE_INFINITY : last - OVERLAP_MS;
+    }
+    let resumed = cursor !== null;
+    let processed = 0;
+
+    for (;;) {
+      let page;
+      try {
+        page = await client.fetchPage(cursor);
+      } catch (error) {
+        // 이어받던 cursor 를 거부하면(오류) 처음부터 다시 받는다. 같은 실행 id 라서 이미 받은 행은 그대로 유효하다.
+        if (!resumed || error instanceof RateLimitedError) throw error;
+        logger.warn("저장된 cursor 로 이어받지 못해 처음부터 다시 받습니다", error);
+        resumed = false;
+        cursor = null;
+        skipped = 0;
+        settings.set("feed_cursor", null);
+        settings.set("feed_skipped", "0");
+        continue;
+      }
+      resumed = false;
+      const nextCursor = page.nextCursor;
+      let finished = 0;
+      const outcome = repos.transaction(() => {
+        const result = processPage(page.nodes, repos, full ? runId : null, threshold);
+        if (full) {
+          settings.set("feed_cursor", nextCursor);
+          settings.set("feed_skipped", String(skipped + result.skipped));
+          // 마지막 페이지와 마무리(sweep, fullSyncDone, cursor 삭제)는 한 트랜잭션이다 — 사이에 멈춰도 처음부터 다시 받지 않는다.
+          if (nextCursor === null) finished = finishFull(repos, runId, skipped + result.skipped, startedAt, toIso(clock.now()));
+        }
+        return result;
+      });
+      skipped += outcome.skipped;
+      processed += page.nodes.length;
+      if (outcome.changed > 0 || finished > 0) deps.onChange();
+      deps.onProgress(processed);
+
+      cursor = nextCursor;
+      if (cursor === null) {
+        if (full) return;
+        break;
+      }
+      if (!full && outcome.reachedOld) break;
+      if (deps.shouldStop()) return;
+      await yieldToEventLoop();
+    }
+
+    // 증분 동기화의 마무리
+    repos.transaction(() => {
+      settings.set("feed_last_started_at", startedAt);
+      settings.set("feed_last_synced_at", toIso(clock.now()));
+      settings.set("feed_last_error", null);
+    });
+  } catch (error) {
+    logger.error("외부 목록(feed) 동기화에 실패했습니다", error);
+    try {
+      settings.set("feed_last_error", describeError(error));
+    } catch (saveError) {
+      logger.error("외부 목록 동기화의 오류를 저장하지 못했습니다", saveError);
+    }
+  }
+}

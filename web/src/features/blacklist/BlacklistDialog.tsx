@@ -281,6 +281,9 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
             : "종류·이름·버전 범위가 같은 항목은 하나만 둘 수 있습니다."}
         </DialogDescription>
       </DialogHeader>
+      {entry?.source === "feed" && (
+        <p className="text-sm text-muted-foreground">외부 목록이 추가한 항목입니다. 끄면 다시 추가되지 않습니다.</p>
+      )}
       <p className="text-sm text-muted-foreground">* 표시는 필수 항목입니다</p>
       <FieldGroup className="gap-4">
         <Field data-invalid={errors.ecosystem ? true : undefined}>

@@ -1,5 +1,6 @@
-import type { BlacklistEntry, BlacklistQuery, Ecosystem, Severity } from "@pw/shared";
+import type { BlacklistEntry, BlacklistQuery, Ecosystem, EntrySource, Severity } from "@pw/shared";
 import type { Db } from "../db/index.ts";
+import { comparableRange } from "../feed/comparable.ts";
 import { ACTIVE_ENTRY_SQL, EXPIRED_ENTRY_SQL, isExpired } from "../services/entryActivity.ts";
 
 /** 저장할 값. 검증·기본값 적용·병합이 끝난 상태라서 모든 필드가 있다. */
@@ -11,6 +12,9 @@ export interface BlacklistWrite {
   severity: Severity;
   enabled: boolean;
   expiresAt: string | null;
+  /** insert 에만 쓴다(출처는 바꿀 수 없다). 생략하면 사용자가 만든 항목(manual) */
+  source?: EntrySource;
+  externalId?: string | null;
 }
 
 /**
@@ -30,6 +34,23 @@ export interface BlacklistRepository {
     versionRange: string | null,
     today: string,
   ): BlacklistEntry | null;
+  /** 같은 종류·이름에서 범위의 뜻이 같은 항목(꺼짐·만료 포함). 정확한 키가 아니라 `comparableRange` 로 비교한다 */
+  findSameMeaning(
+    ecosystem: Ecosystem,
+    name: string,
+    versionRange: string | null,
+    today: string,
+  ): BlacklistEntry | null;
+  /**
+   * 외부 목록(feed)에서 사라진 권고의 `source=feed` 항목을 끄고 사유 끝에 표식을 붙인다(항목당 1번 — 표식이 있으면 건너뛴다).
+   * 바뀐 항목의 id 를 반환한다. 지우지는 않는다.
+   */
+  disableWithdrawnFeedEntries(now: string): number[];
+  /**
+   * 모든 항목(꺼짐·만료 포함)의 키. 외부 목록의 항목이 이미 있는 항목과 겹치는지 보는 데 쓴다.
+   * 키 모양은 `keyOf` 다.
+   */
+  allKeys(): Set<string>;
   insert(input: BlacklistWrite, now: string, today: string): BlacklistEntry;
   update(id: number, input: BlacklistWrite, now: string, today: string): BlacklistEntry;
   remove(id: number): boolean;
@@ -46,18 +67,26 @@ interface BlacklistRow {
   expires_at: string | null;
   created_at: string;
   updated_at: string;
+  source: EntrySource;
+  external_id: string | null;
 }
 
 const COLUMNS =
-  "id, ecosystem, name, version_range, reason, severity, enabled, expires_at, created_at, updated_at";
+  "id, ecosystem, name, version_range, reason, severity, enabled, expires_at, created_at, updated_at, source, external_id";
 const ORDER = "ORDER BY name ASC, id ASC";
 
 // "모든 버전"은 DB 에 '' 로 저장한다(unique 제약이 null 끼리 중복을 잡게 하려고). API 에서는 null 이다.
+/** 권고가 철회돼서 자동으로 끈 항목의 사유 끝에 붙는 표식. 이 표식이 있으면 다시 끄지 않는다 */
+export const WITHDRAWN_MARK = " (권고가 철회됨)";
+const fromDbRangeText = (range: string): string | null => (range === "" ? null : range);
+
 const toDbRange = (versionRange: string | null): string => versionRange ?? "";
 
 function toEntry(row: BlacklistRow, today: string): BlacklistEntry {
   return {
     id: row.id,
+    source: row.source,
+    externalId: row.external_id,
     ecosystem: row.ecosystem,
     name: row.name,
     versionRange: row.version_range === "" ? null : row.version_range,
@@ -71,6 +100,10 @@ function toEntry(row: BlacklistRow, today: string): BlacklistEntry {
   };
 }
 
+/** (종류, 이름, 범위) 의 키. 같은 뜻의 범위(공백·`*` 와 null 등)는 같은 키다(`comparableRange`). */
+export const keyOf = (ecosystem: string, name: string, versionRange: string | null): string =>
+  `${ecosystem}\u0000${name}\u0000${comparableRange(ecosystem, versionRange)}`;
+
 export function createBlacklistRepository(db: Db): BlacklistRepository {
   const activeStmt = db.prepare<{ todayKst: string }, BlacklistRow>(
     `SELECT ${COLUMNS} FROM blacklist_entries WHERE ${ACTIVE_ENTRY_SQL} ${ORDER}`,
@@ -83,14 +116,28 @@ export function createBlacklistRepository(db: Db): BlacklistRepository {
   );
   const insertStmt = db.prepare<unknown[], BlacklistRow>(
     `INSERT INTO blacklist_entries
-       (ecosystem, name, version_range, reason, severity, enabled, expires_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING ${COLUMNS}`,
+       (ecosystem, name, version_range, reason, severity, enabled, expires_at, created_at, updated_at, source, external_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING ${COLUMNS}`,
   );
   const updateStmt = db.prepare<unknown[], BlacklistRow>(
     `UPDATE blacklist_entries
      SET ecosystem = ?, name = ?, version_range = ?, reason = ?, severity = ?, enabled = ?, expires_at = ?,
          updated_at = ?
      WHERE id = ? RETURNING ${COLUMNS}`,
+  );
+  const allKeysStmt = db.prepare<[], { ecosystem: string; name: string; version_range: string }>(
+    "SELECT ecosystem, name, version_range FROM blacklist_entries",
+  );
+  const byNameStmt = db.prepare<[string, string], BlacklistRow>(
+    `SELECT ${COLUMNS} FROM blacklist_entries WHERE ecosystem = ? AND name = ?`,
+  );
+  const withdrawnStmt = db.prepare<[], { id: number; reason: string }>(
+    `SELECT id, reason FROM blacklist_entries
+     WHERE source = 'feed' AND external_id IS NOT NULL
+       AND external_id NOT IN (SELECT external_id FROM feed_entries)`,
+  );
+  const markWithdrawnStmt = db.prepare<[string, string, number]>(
+    "UPDATE blacklist_entries SET enabled = 0, reason = ?, updated_at = ? WHERE id = ?",
   );
   const removeStmt = db.prepare<[number]>("DELETE FROM blacklist_entries WHERE id = ?");
 
@@ -106,6 +153,10 @@ export function createBlacklistRepository(db: Db): BlacklistRepository {
       if (filter.enabled !== undefined) {
         where.push("enabled = ?");
         params.push(filter.enabled ? 1 : 0);
+      }
+      if (filter.source !== undefined) {
+        where.push("source = ?");
+        params.push(filter.source);
       }
       // 부분 일치는 instr 로 한다(LIKE 의 %, _ 이스케이프가 필요 없다).
       if (filter.q !== undefined) {
@@ -133,6 +184,28 @@ export function createBlacklistRepository(db: Db): BlacklistRepository {
       const row = findByKeyStmt.get(ecosystem, name, toDbRange(versionRange));
       return row ? toEntry(row, today) : null;
     },
+    findSameMeaning(ecosystem, name, versionRange, today) {
+      const wanted = comparableRange(ecosystem, versionRange);
+      const row = byNameStmt
+        .all(ecosystem, name)
+        .find((candidate) => comparableRange(ecosystem, fromDbRangeText(candidate.version_range)) === wanted);
+      return row ? toEntry(row, today) : null;
+    },
+    disableWithdrawnFeedEntries(now) {
+      const changed: number[] = [];
+      for (const row of withdrawnStmt.all()) {
+        if (row.reason.endsWith(WITHDRAWN_MARK)) continue;
+        const reason = `${row.reason.slice(0, 500 - WITHDRAWN_MARK.length)}${WITHDRAWN_MARK}`;
+        markWithdrawnStmt.run(reason, now, row.id);
+        changed.push(row.id);
+      }
+      return changed;
+    },
+    allKeys() {
+      const keys = new Set<string>();
+      for (const row of allKeysStmt.iterate()) keys.add(keyOf(row.ecosystem, row.name, row.version_range));
+      return keys;
+    },
     insert(input, now, today) {
       const row = insertStmt.get(
         input.ecosystem,
@@ -144,6 +217,8 @@ export function createBlacklistRepository(db: Db): BlacklistRepository {
         input.expiresAt,
         now,
         now,
+        input.source ?? "manual",
+        input.externalId ?? null,
       );
       if (!row) throw new Error("blacklist insert 결과가 없습니다");
       return toEntry(row, today);

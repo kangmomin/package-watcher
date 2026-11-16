@@ -1,6 +1,6 @@
-// 블랙리스트 필터 줄: 종류 select, 상태 select, 이름 검색.
+// 블랙리스트 필터 줄: 종류 select, 상태 select, 출처 select, 이름 검색.
 // "전체" = 그 필터 파라미터 생략. 이름 입력 = trim + 300ms debounce, 비면 생략.
-import { ENTRY_STATUSES, SUPPORTED_ECOSYSTEMS, type EntryStatus } from "@pw/shared";
+import { ENTRY_SOURCES, ENTRY_STATUSES, SUPPORTED_ECOSYSTEMS, type EntrySource, type EntryStatus } from "@pw/shared";
 import { useEffect, useId, useState } from "react";
 import { EcosystemSelectItems } from "@/components/EcosystemSelectItems";
 import { Input } from "@/components/ui/input";
@@ -13,7 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { BlacklistFilter } from "@/lib/api";
-import { entryStatusLabel } from "@/lib/format";
+import { entrySourceLabel, entryStatusLabel } from "@/lib/format";
 
 export interface BlacklistFiltersProps {
   filter: BlacklistFilter;
@@ -80,6 +80,30 @@ export function BlacklistFilters({ filter, onFilterChange }: BlacklistFiltersPro
               </SelectItem>
             ))}
             <SelectItem value={ALL_OPTION}>전체</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor={`${id}-source`}>출처</Label>
+        <Select
+          value={filter.source ?? ALL_OPTION}
+          onValueChange={(next) =>
+            onFilterChange({
+              ...filter,
+              source: ENTRY_SOURCES.find((option: EntrySource) => option === next),
+            })
+          }
+        >
+          <SelectTrigger id={`${id}-source`} className="w-32">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL_OPTION}>전체</SelectItem>
+            {ENTRY_SOURCES.map((option) => (
+              <SelectItem key={option} value={option}>
+                {entrySourceLabel(option)}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
       </div>

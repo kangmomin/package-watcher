@@ -180,6 +180,22 @@ Docker 로 실행할 때는 `.env` 에 `PORT`, `HOST`, `DATA_DIR`, `WEB_DIST_DIR
 - **숫자에서 제외:** `GET /api/summary` 의 `openCount`·`ignoredCount` 는 policy 를 세지 않고 `policyOpenCount` 가 열린 policy 검출을 센다. 스캔의 repo 상태(`통과`/`이슈`)와 `openFindingCount`·`newFindingCount`(스캔과 repo 모두)도 policy 를 세지 않는다(policy 검출만 있는 repo 는 `통과`). **`category`·`excludeCategory` 가 없는 기본 목록(`GET /api/findings`, MCP `list_findings`)에는 위험한 설정이 섞인다. 검출만 보려면 `excludeCategory=policy`(MCP 는 `excludeCategory: "policy"`)를 준다.** `GET /api/findings` 는 `category`(그 분류만), `excludeCategory`(그 분류 제외)로 거른다(`ecosystem` 과 함께 쓸 수 있다).
 - **요청 수가 늘어난다:** 활성 검사가 필요로 하는 보조 파일을 항상 받는다 — `unpinned-action`·`workflow-no-permissions`: workflow·`action.yml`, `curl-pipe-shell`: 거기에 Dockerfile, `unpinned-exec`: 거기에 MCP 설정, `unpinned-image`: workflow·`action.yml`·Dockerfile·compose. `package.json` 은 이미 받으므로 `missing-lockfile`·`non-registry-dependency` 와, tree 만 보는 `committed-node-modules`·`suspicious-filename` 은 요청이 늘지 않는다. 활성 검사가 하나도 없으면 요청 수는 이전과 같다. 활성 검사가 있으면 의존성 파일이 없는 repo 도 파일이 있으면 `건너뜀`이 아니라 검사 대상이다(tree 검사).
 
+## 외부 목록 (feed)
+
+GitHub Advisory Database 의 **악성 패키지(malware) 권고만** 자동으로 가져와서 스캔의 대조에 쓴다. 일반 CVE(취약점)는 가져오지 않는다 — 그건 Dependabot 의 영역이다. 권고는 공개 데이터라서 스캔과 같은 GitHub 토큰으로 읽는다(토큰이 없으면 동기화하지 않는다).
+
+- **블랙리스트 목록에는 나오지 않는다.** 15만 건이 넘어서 별도의 테이블(`feed_entries`)에 두고, 설정 화면의 외부 목록 구역(또는 `GET /api/feed/entries`, MCP `search_feed`)에서 검색한다. 스캔에서 **일치한 것만** 블랙리스트 항목이 된다.
+- **일치하면 항목이 생긴다.** feed 의 항목이 repo 의 파일과 일치하면 그 자리에서 블랙리스트 항목을 만든다(`source=feed`, `externalId=GHSA-…`, 사유 = `요약 (GHSA-…) 출처: 링크`, 심각도는 GitHub 의 값 — 대부분 `critical`). 그 뒤의 검출·메일·resolve·통계는 직접 등록한 항목과 같다. 다음 스캔부터는 그 항목이 일반 항목으로 대조된다.
+- **끄는 방법:** ① 설정의 `feedEnabled`(화면의 외부 목록 켬·끔, `PUT /api/settings`)를 끄면 동기화하지 않고 스캔의 대조에도 쓰지 않는다(저장된 항목은 지우지 않는다. 다시 켜면 이어서 쓴다). ② 일치해서 생긴 항목만 끄거나 지우려면 블랙리스트에서 그 항목을 끈다. **같은 (종류, 이름, 범위)의 항목이 블랙리스트에 이미 있으면(꺼져 있어도, 만료돼도) feed 의 같은 항목은 대조에 쓰지 않는다.** 그래서 끈 항목이 다시 살아나지 않는다. 지우면 다음에 일치할 때 다시 생긴다.
+- **언제 동기화하는가:** 서버가 시작된 뒤 백그라운드로 1회(feed 가 켜져 있고 토큰이 있을 때), 그리고 **자동 스캔 직전**에 마지막 동기화 이후 바뀐 것만(증분) 받는다. 스캔은 그 동기화를 최대 60초 기다린 뒤 시작하고, 넘으면 기다리지 않는다. 수동 스캔은 기다리지 않는다. `POST /api/feed/sync`(화면의 [지금 동기화])로 바로 실행할 수도 있다. 동기화는 스캔과 서버 시작을 막지 않으며, 실패해도 마지막 오류(`lastError`)만 남기고 다음 동기화가 이어서 받는다. 철회된 권고(`withdrawnAt`)는 항목을 지운다.
+- **첫 동기화의 요청 수와 시간:** malware 권고가 약 15만 건이라서 100건씩 약 **1,500회**의 GraphQL 요청이다. 약 15분이 걸리고 백그라운드로 돈다(GitHub 의 시간당 한도 5,000회 중 1,500회). 페이지마다 저장하므로 중단돼도(서버 재시작, 오류, rate limit) 다음 동기화가 마지막 위치부터 이어받는다. 첫 동기화가 끝나기 전에도 받은 만큼은 스캔에 쓴다(`fullSyncDone=false`).
+- **지원하는 종류:** npm, PyPI(`pypi`), NuGet, Rust(`cargo`), Go, Maven, pub, GitHub Actions(`actions`). GitHub 의 범위 표기(`>= 1.0, < 2.0`)를 종류별 문법으로 바꿔서 쓰고 `>= 0` 은 모든 버전이다. **건너뛰는 것:** RubyGems·Composer 등 지원하지 않는 종류, 종류의 규칙으로 읽을 수 없는 범위·이름, `actions` 의 비교식(정확한 버전 `= x` 만 쓴다). 건너뛴 수는 `GET /api/feed` 의 `skippedCount`(마지막 전체 동기화 기준)다.
+- **전체 동기화는 7일마다 다시 한다.** 증분은 철회·범위 변경을 놓칠 수 있어서, 마지막 전체 동기화가 끝난 지 7일이 지나면 다음 동기화는 전체로 받는다. 전체 동기화는 이번에 보지 못한 행을 끝난 뒤에 지우고(그동안 기존 행은 계속 대조에 쓴다), 권고가 없어진 `source=feed` 항목은 **끄고** 사유 끝에 ` (권고가 철회됨)` 을 붙인다(지우지 않는다. 사용자가 다시 켜면 그 항목은 다시 끄지 않는다).
+- `skippedCount` 는 마지막 **전체** 동기화의 값이다(증분은 바꾸지 않는다).
+- feed 가 켜지면 지원하는 모든 종류의 선언·lock 파일을 받는다 — 스캔의 GitHub 요청이 늘어난다.
+- **스캔에 미치는 영향:** feed 에 항목이 있는 종류의 파일은 블랙리스트에 그 종류의 항목이 없어도 받는다(npm·pypi 등 — GitHub 요청 수가 늘 수 있다). 대조용 index 는 feed 의 내용이 바뀐 경우에만 다시 만든다(15만 건에서 약 0.2초, 메모리 수십 MB).
+- 항목은 `GET /api/blacklist?source=feed|manual` 로 거른다. 내보내기·가져오기의 파일 형식은 그대로이고(출처 열 없음), 내보낸 feed 항목을 다시 가져오면 같은 키의 기존 항목과 합쳐지며 출처는 유지된다.
+
 ## 일괄 작업, 가져오기, 내보내기
 
 목록 필터: `GET /api/blacklist` 는 `ecosystem`, `enabled`, `q` 외에 `status`(`active` 켜짐·만료 전 / `disabled` 꺼짐·만료 전 / `expired` 만료, 꺼짐 여부와 무관)로 거른다. 만료가 끔보다 우선한다.
@@ -241,10 +257,10 @@ pypi,foo-bar,">=1.0,<2.0",medium,"쉼표, ""큰따옴표""",false,
 
 ## 업그레이드와 백업
 
-새 버전을 처음 띄울 때 기존 DB 는 **자동으로 마이그레이션**된다(항목·검출·설정과 `id` 는 그대로, DB 버전은 4). v1 DB 의 새 필드는 `npm`/`medium`/켬/만료 없음이고, 예전 스캔은 repo 별 기록 없이 남는다. v3 에서 v4 로 올라갈 때는 새 종류(`actions`, `docker`)를 위해 항목·검출 테이블을 다시 만든다(행·`id`·순번은 그대로). 마이그레이션 직전에 같은 폴더에 백업 파일을 만든다:
+새 버전을 처음 띄울 때 기존 DB 는 **자동으로 마이그레이션**된다(항목·검출·설정과 `id` 는 그대로, DB 버전은 5). v1 DB 의 새 필드는 `npm`/`medium`/켬/만료 없음이고, 예전 스캔은 repo 별 기록 없이 남는다. v3 에서 v4 로 올라갈 때는 새 종류(`actions`, `docker`)를 위해 항목·검출 테이블을 다시 만든다(행·`id`·순번은 그대로). v4 에서 v5 로 올라갈 때는 외부 목록(feed)의 테이블, 항목의 `source`·`external_id` 열(기존 항목은 `manual`), 검출의 `ref` 열(기존 검출은 빈 값)과 이후 기능이 쓸 테이블을 더한다(행·`id`·순번은 그대로). 마이그레이션 직전에 같은 폴더에 백업 파일을 만든다:
 
 - `package-watcher.db.v{n}-backup` — Docker 에서는 volume 의 `/data/package-watcher.db.v{n}-backup`. 파일 이름의 `v{n}` 은 마이그레이션 직전 DB 의 버전이다(v1 이미지의 DB 는 `v0`, 이전 버전 이미지의 DB 는 `v2`·`v3`). 같은 이름이 이미 있으면 새 내용으로 덮어쓴다.
-- 마이그레이션을 했다는 로그 한 줄(`DB 를 v3 에서 v4 로 마이그레이션했습니다. 백업: …`)이 남는다.
+- 마이그레이션을 했다는 로그 한 줄(`DB 를 v4 에서 v5 로 마이그레이션했습니다. 백업: …`)이 남는다.
 
 **시작 거부:** 백업이나 마이그레이션이 실패하거나, DB 가 이 서버보다 새로운 버전이면 서버가 시작하지 않는다(DB 는 바꾸지 않는다). Docker 에서는 컨테이너가 종료와 재시작을 반복하는 것으로 보인다. `docker compose logs` 로 원인을 확인한다. 백업 파일이 있는 디렉터리에 쓸 수 없는 경우가 대표적이다.
 
@@ -286,19 +302,21 @@ HTTP 전송을 직접 지원하지 않는 클라이언트(예: Claude Desktop)�
 |------|------|
 | `list_findings` | 검출 목록 (`status`, `repo`, `package`, `ecosystem`, `category`, `excludeCategory`, `severity`, `page`, `limit`). `category`/`excludeCategory` 는 `package`·`ci`·`indicator`·`policy`. `severity` 는 정확히 일치하는 값만 거른다 |
 | `set_finding_status` | 검출을 `ignored` 또는 `open` 으로 변경 (`id`, `status`) |
-| `list_blacklist` | 블랙리스트 목록 (`ecosystem?`, `enabled?`, `q?`, `status?`). `enabled=true` 는 사용자가 켠 항목이라서 만료된 항목도 포함된다. 만료 여부는 각 항목의 `isExpired` 로 본다 |
+| `list_blacklist` | 블랙리스트 목록 (`ecosystem?`, `enabled?`, `q?`, `status?`, `source?`). `source` 는 `manual`(직접 등록)·`feed`(외부 목록이 일치해서 생긴 항목). `enabled=true` 는 사용자가 켠 항목이라서 만료된 항목도 포함된다. 만료 여부는 각 항목의 `isExpired` 로 본다 |
 | `add_blacklist_entry` | 블랙리스트 항목 추가 (`name`, `versionRange?`, `reason`, `ecosystem?`, `severity?`, `enabled?`, `expiresAt?`). `severity` 기본값은 `medium`, 즉시 메일 기준은 `get_settings` 의 `notifyMinSeverity` |
 | `update_blacklist_entry` | 블랙리스트 항목 수정 (`id`, `name`, `versionRange`, `reason`, `ecosystem?`, `severity?`, `enabled?`, `expiresAt?`). `name`·`versionRange`·`reason` 은 전체 교체, 나머지 필드는 생략하면 유지. `expiresAt: null` 은 만료 해제 |
 | `remove_blacklist_entry` | 블랙리스트 항목 삭제 (`id`). 그 항목의 검출은 `resolved` 가 된다 |
 | `bulk_update_blacklist` | 항목 여러 개를 한 번에 켜기·끄기·삭제 (`action`: `enable`/`disable`/`delete`, `ids`). 없는 id 가 있으면 아무것도 바꾸지 않고 `NOT_FOUND` |
 | `import_blacklist` | 파일 형식으로 가져오기 (`items` 배열 또는 `format` + `content` 중 하나, `dryRun?`). `dryRun` 을 생략하면 미리 보기이고 적용하려면 `false`. 행 오류는 결과의 `errors` 로 돌려준다 |
-| `export_blacklist` | 파일 형식으로 내보내기 (`format`, `ecosystem?`, `enabled?`, `q?`, `status?`). 결과는 JSON 으로 감싸지 않은 파일 내용 문자열이다 |
+| `export_blacklist` | 파일 형식으로 내보내기 (`format`, `ecosystem?`, `enabled?`, `q?`, `status?`, `source?`). 결과는 JSON 으로 감싸지 않은 파일 내용 문자열이다 |
 | `trigger_scan` | 수동 스캔 시작 |
 | `list_scans` | 스캔 이력 (`page`, `limit`) |
 | `get_scan` | 스캔 1건 + 실패한 repo 목록 + repo 별 집계 `repoStats` (`id`). `list_scans` 의 결과에도 `repoStats` 가 들어간다 |
 | `get_settings` | 설정과 연결 상태 조회(읽기 전용) |
+| `get_feed_status` | 외부 목록(feed)의 상태: 항목 수, 종류별 수, 건너뛴 수, 마지막 동기화, 진행 여부, 마지막 오류(읽기 전용) |
+| `search_feed` | 외부 목록의 항목 검색 (`q?` 이름 또는 `GHSA-…` 부분 일치, `ecosystem?`, `page?`, `limit?`). 최근 갱신 순 |
 
-tool 은 모두 13개다. 결과는 JSON 문자열(text content)이고(`export_blacklist` 만 파일 내용 그대로), 오류는 `isError: true` 와 `{ code, message, details? }` JSON 이다.
+tool 은 모두 15개다. 결과는 JSON 문자열(text content)이고(`export_blacklist` 만 파일 내용 그대로), 오류는 `isError: true` 와 `{ code, message, details? }` JSON 이다.
 
 ## 알려진 한계
 
@@ -306,7 +324,7 @@ tool 은 모두 13개다. 결과는 JSON 문자열(text content)이고(`export_b
 - `bun.lockb`(바이너리)는 읽지 않는다. `bun.lock` 이 없으면 lockfile 이 없는 것으로 보고 `package.json` 의 range 로만 검사하며 경고 로그를 남긴다.
 - lockfile 이 없는 `package.json` 은 range 겹침으로 검사한다. `latest` 같은 dist-tag, `workspace:`, git URL 처럼 semver range 가 아닌 spec 은 "모든 버전" 항목에만 검출된다.
 - **여러 종류(go, pypi, nuget, cargo, pub, maven)의 한계:**
-  - 블랙리스트에 활성 항목이 있는 종류의 파일만 읽는다. 항목이 없는 종류의 파일은 받지 않으므로, 그 종류의 파일만 있는 repo 는 `통과`다. 항목을 새 종류로 처음 등록하면 다음 스캔부터 그 종류의 파일을 받아서 GitHub 요청 수가 늘어난다.
+  - 블랙리스트에 활성 항목이 있는 종류(또는 외부 목록(feed)에 항목이 있는 종류)의 파일만 읽는다. 항목이 없는 종류의 파일은 받지 않으므로, 그 종류의 파일만 있는 repo 는 `통과`다. 항목을 새 종류로 처음 등록하면 다음 스캔부터 그 종류의 파일을 받아서 GitHub 요청 수가 늘어난다.
   - 읽는 파일은 위 표의 것뿐이다. `*.fsproj`·`*.vbproj`, `setup.py`·`Pipfile`, `requirements/` 폴더 안의 다른 이름의 파일은 읽지 않는다. `pom.xml` 은 `<dependencies>` 만 읽고(`dependencyManagement`·플러그인 제외) `${prop}` 은 같은 파일의 `<properties>` 와 `project.version` 으로 푼다. 풀 수 없거나 버전이 없으면 범위 없는 선언으로 본다. `go.sum` 은 Go 의 lock 이다(간접 모듈 포함). `go.mod` 의 `replace`·`exclude` 도 읽지 않는다(`require` 의 버전을 그대로 쓴다).
   - 선언 파일의 고정 버전(`go.mod` 의 버전, `requirements` 의 `==`, `*.csproj` 의 `Version="1.2.3"`, Gradle 의 `"g:n:1.2.3"`, 카탈로그의 문자열 버전, `pubspec.yaml` 의 연산자 없는 버전)은 정확한 버전으로 비교한다. 그 외(`>=`, `^`, `~=`, Cargo 의 `"1.2"`, 구간)는 범위 spec 이라서 **버전 범위가 없는 항목에만** 검출되고, 검출의 버전은 spec 문자열이다. lock 이 있으면 lock 의 정확한 버전으로 비교한다.
   - Gradle 은 `build.gradle(.kts)` 안의 따옴표로 감싼 `"group:name:version"` 문자열만 읽는다. 변수(`$version`)가 든 것, 버전이 없는 것(BOM 이 관리), 변수로 조립하는 선언은 그 선언만 건너뛴다(repo 는 실패하지 않는다). 버전 카탈로그의 `version.ref` 가 가리키는 곳이 없으면 그 라이브러리도 건너뛴다. 빈 `requirements.txt`·`build.gradle` 은 의존성이 없는 정상 파일로 본다.

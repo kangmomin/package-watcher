@@ -24,6 +24,7 @@ import { expect } from "vitest";
 import { createApp, type AppInstance } from "../app.ts";
 import type { InitialSettingsEnv, TokenSource } from "../config.ts";
 import { FakeClock } from "./clock.ts";
+import type { FakeFeedClient } from "./feed.ts";
 import { FakeGitHubClient } from "./github.ts";
 import { FakeLogger } from "./logger.ts";
 import { FakeMailer } from "./mailer.ts";
@@ -52,6 +53,10 @@ export interface TestAppOptions {
   /** 재시작 테스트: 앞선 앱의 dbPath 를 넘긴다 */
   dbPath?: string;
   initialSettings?: InitialSettingsEnv;
+  /** 외부 목록(feed)의 가짜 클라이언트. 없으면 동기화하지 않고 feed 항목이 0건이라 스캔에 영향이 없다 */
+  feedClient?: FakeFeedClient;
+  /** 스캔 직전에 feed 동기화를 기다리는 최대 시간(ms) */
+  feedWaitMs?: number;
   /** 내장 검사(policy) 항목 9개를 만든다. 기본 false (기존 테스트의 항목 수·스캔 결과가 바뀌지 않게) */
   seedPolicy?: boolean;
 }
@@ -62,6 +67,7 @@ export interface TestApp {
   readonly github: FakeGitHubClient;
   readonly mailer: FakeMailer;
   readonly logger: FakeLogger;
+  readonly feedClient: FakeFeedClient | null;
   readonly dbPath: string;
   /** body 가 문자열이면 그대로(깨진 JSON 검증용), 그 외는 JSON 으로 보낸다 */
   request(method: HttpMethod, path: string, body?: unknown): Promise<TestResponse>;
@@ -91,6 +97,8 @@ export function createTestApp(options: TestAppOptions = {}): TestApp {
   const instance = createApp({
     dbPath,
     github: tokenSource === "none" ? null : github,
+    feedWaitMs: options.feedWaitMs,
+    feedClient: tokenSource === "none" ? null : (options.feedClient ?? null),
     githubTokenSource: tokenSource,
     mailer,
     smtpConfigured: options.smtpConfigured ?? true,
@@ -111,6 +119,7 @@ export function createTestApp(options: TestAppOptions = {}): TestApp {
     github,
     mailer,
     logger,
+    feedClient: options.feedClient ?? null,
     dbPath,
     request: (method, path, body) =>
       raw(
@@ -129,6 +138,7 @@ export function createTestApp(options: TestAppOptions = {}): TestApp {
       closed = true;
       openApps.delete(testApp);
       github.releaseAll();
+      options.feedClient?.releaseAll();
       await instance.close();
     },
   };

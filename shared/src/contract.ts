@@ -34,6 +34,7 @@ export const ERROR_CODES = [
   "NO_RECIPIENTS",
   "SMTP_NOT_CONFIGURED",
   "SMTP_FAILED",
+  "FEED_SYNC_RUNNING",
   "INTERNAL_ERROR",
 ] as const;
 
@@ -195,6 +196,7 @@ export const ERROR_HTTP_STATUS: Record<ErrorCode, number> = {
   NO_RECIPIENTS: 400,
   SMTP_NOT_CONFIGURED: 400,
   SMTP_FAILED: 502,
+  FEED_SYNC_RUNNING: 409,
   INTERNAL_ERROR: 500,
 };
 
@@ -254,8 +256,19 @@ export const findingSchema = z.object({
 });
 export type Finding = z.infer<typeof findingSchema>;
 
+/**
+ * 항목의 출처. `feed` = 외부 목록(GitHub Advisory 의 malware 항목)이 스캔에서 일치했을 때 서버가 만든 항목.
+ * 사용자가 만든 항목과 같은 방법으로 끄고, 고치고, 지울 수 있다.
+ */
+export const ENTRY_SOURCES = ["manual", "feed"] as const;
+export const entrySourceSchema = z.enum(ENTRY_SOURCES);
+export type EntrySource = z.infer<typeof entrySourceSchema>;
+
 export const blacklistEntrySchema = z.object({
   id: idSchema,
+  source: entrySourceSchema,
+  /** 외부 목록의 id (`GHSA-…`). 사용자가 만든 항목은 null. */
+  externalId: z.string().min(1).nullable(),
   ecosystem: ecosystemSchema,
   name: z.string().min(1),
   versionRange: z.string().min(1).nullable(),
@@ -350,8 +363,53 @@ export const settingsSchema = z.object({
   smtpConfigured: z.boolean(),
   /** 즉시 메일의 최소 심각도. 이보다 낮은 검출은 일일 요약에만 들어간다. */
   notifyMinSeverity: severitySchema,
+  /** 외부 목록(feed)을 동기화하고 스캔의 대조에 쓰는가. */
+  feedEnabled: z.boolean(),
 });
 export type Settings = z.infer<typeof settingsSchema>;
+
+// ---------------------------------------------------------------- 외부 목록 (feed)
+
+export const FEED_ENTRIES_DEFAULT_LIMIT = 50;
+export const FEED_ENTRIES_MAX_LIMIT = 200;
+
+/** 외부 목록의 항목 1개 = 권고 1건의 (패키지, 범위) 1개. 블랙리스트 목록에는 나오지 않는다. */
+export const feedEntrySchema = z.object({
+  /** `GHSA-xxxx-xxxx-xxxx` */
+  externalId: z.string().min(1),
+  ecosystem: ecosystemSchema,
+  name: z.string().min(1),
+  /** 이 도구의 종류별 문법으로 바꾼 범위. null = 모든 버전. */
+  versionRange: z.string().min(1).nullable(),
+  /** 출처의 원문 (예: `= 1.5.1`, `>= 0`). */
+  rawRange: z.string(),
+  severity: severitySchema,
+  summary: z.string(),
+  url: z.string().min(1),
+  updatedAt: isoDateSchema,
+});
+export type FeedEntry = z.infer<typeof feedEntrySchema>;
+
+export const feedStatusSchema = z.object({
+  enabled: z.boolean(),
+  /** 저장된 항목의 수 (대조에 쓰는 것). */
+  entryCount: countSchema,
+  /** 종류별 수. 0건인 종류는 생략할 수 있다. */
+  byEcosystem: z.record(z.string(), countSchema),
+  /** 범위를 바꿀 수 없거나 지원하지 않는 종류라서 건너뛴 항목의 수 (마지막 전체 동기화 기준). */
+  skippedCount: countSchema,
+  /** 마지막으로 성공한 동기화의 시각. 한 번도 없으면 null. */
+  lastSyncedAt: isoDateSchema.nullable(),
+  /** 첫 전체 동기화가 끝났는가. false 이면 목록이 아직 일부다. */
+  fullSyncDone: z.boolean(),
+  syncing: z.boolean(),
+  /** 진행 중인 동기화가 지금까지 받은 항목의 수. 진행 중이 아니면 0. */
+  syncedSoFar: countSchema,
+  /** 마지막 동기화의 오류. 성공했으면 null. */
+  lastError: z.string().nullable(),
+});
+export type FeedStatus = z.infer<typeof feedStatusSchema>;
+
 
 export const pageSchema = <T extends z.ZodType>(item: T) =>
   z.object({
@@ -369,6 +427,7 @@ export interface Page<T> {
 export const findingsPageSchema = pageSchema(findingSchema);
 export const scansPageSchema = pageSchema(scanSchema);
 export const scanReposPageSchema = pageSchema(scanRepoSchema);
+export const feedEntriesPageSchema = pageSchema(feedEntrySchema);
 
 export const testEmailResultSchema = z.object({ ok: z.literal(true) });
 export type TestEmailResult = z.infer<typeof testEmailResultSchema>;
@@ -559,6 +618,8 @@ export const settingsInputSchema = z.object({
   recipients: recipientsSchema,
   /** 생략하면 저장된 값을 유지한다. */
   notifyMinSeverity: severityInputSchema.optional(),
+  /** 생략하면 저장된 값을 유지한다. */
+  feedEnabled: z.boolean({ error: "feedEnabled 는 true 또는 false 입니다" }).optional(),
 });
 export type SettingsInput = z.infer<typeof settingsInputSchema>;
 
@@ -611,8 +672,19 @@ export const blacklistQuerySchema = z.object({
   q: textFilter,
   /** 화면의 상태(켬·끔·만료)와 같은 뜻이다. 만료가 끔보다 우선한다. */
   status: z.enum(ENTRY_STATUSES).optional(),
+  /** 출처. `feed` = 외부 목록이 만든 항목만. */
+  source: entrySourceSchema.optional(),
 });
 export type BlacklistQuery = z.infer<typeof blacklistQuerySchema>;
+
+export const feedEntriesQuerySchema = z.object({
+  ecosystem: ecosystemSchema.optional(),
+  /** 이름 또는 id(`GHSA-…`)의 대소문자 무시 부분 일치. */
+  q: textFilter,
+  page: pageParam.default(1),
+  limit: limitParam(FEED_ENTRIES_MAX_LIMIT).default(FEED_ENTRIES_DEFAULT_LIMIT),
+});
+export type FeedEntriesQuery = z.infer<typeof feedEntriesQuerySchema>;
 
 // ---------------------------------------------------------------- 일괄 관리 (bulk, import, export)
 

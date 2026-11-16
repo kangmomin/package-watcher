@@ -15,6 +15,7 @@ import type { InitialSettingsEnv, TokenSource } from "./config.ts";
 import { openDatabase, type Db } from "./db/index.ts";
 import { LATEST_VERSION } from "./db/schema.ts";
 import { AppError } from "./errors.ts";
+import type { FeedClient } from "./feed/client.ts";
 import type { GitHubClient } from "./github/client.ts";
 import { consoleLogger, type Logger } from "./logger.ts";
 import { createMcpRoutes } from "./mcp/server.ts";
@@ -22,6 +23,7 @@ import { createRepositories, type Repositories } from "./repositories/index.ts";
 import type { SettingKey } from "./repositories/settings.ts";
 import { createBlacklistRoutes } from "./routes/blacklist.ts";
 import { toErrorResponse } from "./routes/errors.ts";
+import { createFeedRoutes } from "./routes/feed.ts";
 import { createFindingRoutes } from "./routes/findings.ts";
 import { createScanRoutes } from "./routes/scans.ts";
 import { createSettingsRoutes } from "./routes/settings.ts";
@@ -29,6 +31,7 @@ import { createScheduler, FIRST_SCAN_DELAY_MS, type Scheduler } from "./schedule
 import { createBlacklistService } from "./services/blacklistService.ts";
 import { addMs, canScan, toIso } from "./services/common.ts";
 import { todayKst } from "./services/entryActivity.ts";
+import { createFeedService } from "./services/feedService.ts";
 import { createFindingService } from "./services/findingService.ts";
 import type { AppServices } from "./services/index.ts";
 import { createNotifier, type Mailer } from "./services/notifier.ts";
@@ -41,6 +44,10 @@ export interface AppDeps {
   dbPath: string;
   /** `githubTokenSource === "none"` 이면 null */
   github: GitHubClient | null;
+  /** 외부 목록(feed) 조회용. 토큰이 없거나 주지 않으면 동기화하지 않는다(기본 null) */
+  feedClient?: FeedClient | null;
+  /** 스캔 직전에 외부 목록의 동기화를 기다리는 최대 시간(ms). 기본 60초 (테스트용 조정) */
+  feedWaitMs?: number;
   githubTokenSource: TokenSource;
   mailer: Mailer;
   /** `config.smtp !== null` (= `isSmtpConfigured`: SMTP_HOST && SMTP_FROM) */
@@ -168,22 +175,25 @@ export function createApp(deps: AppDeps): AppInstance {
 
   // ---- 서비스
   const notifier = createNotifier({ repos, mailer: deps.mailer, smtpConfigured, clock, logger });
+  const feed = createFeedService({ repos, client: deps.feedClient ?? null, clock, logger });
   const scans = createScanService({
     repos,
     github: deps.github,
+    feed,
     githubTokenSource,
     notifier,
     clock,
     logger,
   });
   const services: AppServices = {
+    feed,
     findings: createFindingService({ repos, githubTokenSource }),
     blacklist: createBlacklistService({ repos, clock }),
     scans,
-    settings: createSettingsService({ repos, clock, githubTokenSource, smtpConfigured }),
+    settings: createSettingsService({ repos, clock, githubTokenSource, smtpConfigured, onFeedEnabled: () => feed.startBackground() }),
     notifier,
   };
-  const scheduler = createScheduler({ repos, scans, notifier, clock, githubTokenSource, logger });
+  const scheduler = createScheduler({ repos, scans, feed, feedWaitMs: deps.feedWaitMs, notifier, clock, githubTokenSource, logger });
 
   // ---- HTTP
   const app = new Hono();
@@ -195,6 +205,7 @@ export function createApp(deps: AppDeps): AppInstance {
   });
 
   app.route("/api", createFindingRoutes(services));
+  app.route("/api", createFeedRoutes(services));
   app.route("/api", createBlacklistRoutes(services));
   app.route("/api", createScanRoutes(services));
   app.route("/api", createSettingsRoutes(services));
@@ -219,6 +230,7 @@ export function createApp(deps: AppDeps): AppInstance {
     close() {
       closing ??= (async () => {
         scheduler.stop();
+        await feed.stop();
         await scans.waitForIdle();
         db.close();
       })();
