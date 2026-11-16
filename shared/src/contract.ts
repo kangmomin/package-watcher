@@ -37,8 +37,17 @@ export const ERROR_CODES = [
   "INTERNAL_ERROR",
 ] as const;
 
-/** 값 7개를 지금 정의한다. DB 의 CHECK 와 같은 목록이다. */
-export const ECOSYSTEMS = ["npm", "go", "pypi", "nuget", "cargo", "pub", "maven"] as const;
+/** 패키지 registry 의 종류. 이름과 버전 범위는 그 registry 의 문법을 쓴다. */
+export const PACKAGE_ECOSYSTEMS = ["npm", "go", "pypi", "nuget", "cargo", "pub", "maven"] as const;
+/** CI 가 실행하는 것: GitHub Action 과 Docker 이미지. 버전은 정확한 값(tag, commit SHA, digest)의 목록이다. */
+export const CI_ECOSYSTEMS = ["actions", "docker"] as const;
+/**
+ * 블랙리스트 항목의 종류 전체. 필드 이름은 `ecosystem` 이지만 패키지가 아닌 종류도 들어간다 (화면에는 "종류").
+ * DB 는 v4 부터 이 목록을 CHECK 하지 않는다 — 검증은 이 스키마가 한다.
+ */
+export const ECOSYSTEMS = [...PACKAGE_ECOSYSTEMS, ...CI_ECOSYSTEMS] as const;
+export const ECOSYSTEM_CATEGORIES = ["package", "ci"] as const;
+export type EcosystemCategory = (typeof ECOSYSTEM_CATEGORIES)[number];
 /** 입력으로 받는 종류. 검사기가 있는 종류만 넣는다 (지금은 전부). */
 // 길이가 고정된 tuple 타입으로 내보내지 않는다 — 쓰는 쪽의 `length === 1` 같은 비교가 타입 오류가 된다.
 export const SUPPORTED_ECOSYSTEMS: readonly [Ecosystem, ...Ecosystem[]] = ECOSYSTEMS;
@@ -49,6 +58,20 @@ export const ecosystemSchema = z.enum(ECOSYSTEMS);
 export const severitySchema = z.enum(SEVERITIES);
 export type Ecosystem = z.infer<typeof ecosystemSchema>;
 export type Severity = z.infer<typeof severitySchema>;
+export type PackageEcosystem = (typeof PACKAGE_ECOSYSTEMS)[number];
+export type CiEcosystem = (typeof CI_ECOSYSTEMS)[number];
+export const ECOSYSTEM_CATEGORY: Record<Ecosystem, EcosystemCategory> = {
+  npm: "package",
+  go: "package",
+  pypi: "package",
+  nuget: "package",
+  cargo: "package",
+  pub: "package",
+  maven: "package",
+  actions: "ci",
+  docker: "ci",
+};
+export const categoryOf = (ecosystem: Ecosystem): EcosystemCategory => ECOSYSTEM_CATEGORY[ecosystem];
 export const SEVERITY_RANK: Record<Severity, number> = { critical: 4, high: 3, medium: 2, low: 1 };
 
 export const findingStatusSchema = z.enum(FINDING_STATUSES);

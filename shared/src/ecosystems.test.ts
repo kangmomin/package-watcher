@@ -13,7 +13,7 @@ function cases(table: Partial<Record<Ecosystem, string[]>>): [Ecosystem, string]
 }
 
 describe("[ME-01] 이름 규칙", () => {
-  it("7개 종류 모두 규칙과 예시가 있고, 예시는 자기 규칙을 통과한다", () => {
+  it("모든 종류에 규칙과 예시가 있고, 예시는 자기 규칙을 통과한다", () => {
     expect(Object.keys(ECOSYSTEM_RULES).sort()).toEqual([...ECOSYSTEMS].sort());
     for (const ecosystem of ECOSYSTEMS) {
       const { nameExample, rangeExample, validateName, validateRange } = rule(ecosystem);
@@ -116,6 +116,8 @@ const RANGE_EXAMPLE_FIRST: Record<Ecosystem, string> = {
   cargo: "<1.2.0",
   pub: ">=1.0.0 <2.0.0",
   maven: "[1.0,2.0)",
+  actions: "v0.34.0, v0.34.1",
+  docker: "v1.107.0, latest",
 };
 
 describe("[v2-AC-11] 이름 정규화", () => {
@@ -596,5 +598,73 @@ describe("[ME-04] exactVersionOf", () => {
       ["${libs.versions.foo}", null],
       ["", null],
     ]);
+  });
+});
+
+describe("[SB-01] actions·docker: 정확한 값의 목록", () => {
+  const SHA = "57a97c7e7821a5776cebc9bb87c984fa69cba8f1";
+  const DIGEST = `sha256:${"ab12".repeat(16)}`;
+
+  it("이름: actions 는 owner/repo, 소문자로 저장한다", () => {
+    expect(rule("actions").validateName("aquasecurity/trivy-action")).toBeNull();
+    expect(rule("actions").validateName("Actions-Cool/issues-helper")).toBeNull();
+    expect(rule("actions").normalizeName("Actions-Cool/Issues-Helper")).toBe("actions-cool/issues-helper");
+    expect(rule("actions").validateName("trivy-action")).toEqual(expect.any(String));
+    expect(rule("actions").validateName("a/b/c")).toEqual(expect.any(String));
+    expect(rule("actions").validateName("actions-cool/*")).toBeNull();
+  });
+
+  it("이름: docker 는 저장소 이름, Docker Hub 의 기본 접두를 뗀다", () => {
+    for (const name of ["node", "ghcr.io/berriai/litellm", "localhost:5000/team/app", "library/node"]) {
+      expect(rule("docker").validateName(name), name).toBeNull();
+    }
+    expect(rule("docker").normalizeName("docker.io/library/Node")).toBe("node");
+    expect(rule("docker").normalizeName("index.docker.io/bitnami/redis")).toBe("bitnami/redis");
+    expect(rule("docker").normalizeName("ghcr.io/BerriAI/litellm")).toBe("ghcr.io/berriai/litellm");
+    // tag 를 이름에 적는 실수를 막는다.
+    expect(rule("docker").validateName("node:18")).toEqual(expect.any(String));
+    expect(rule("docker").validateName("ghcr.io/berriai/litellm:v1.107.0")).toEqual(expect.any(String));
+  });
+
+  it.each(["actions", "docker"] as const)("%s 범위: 쉼표로 나눈 값, 빈 조각·공백·51개는 거부", (ecosystem) => {
+    const { validateRange } = rule(ecosystem);
+    expect(validateRange("v1")).toBeNull();
+    expect(validateRange("v1, v2,v3")).toBeNull();
+    expect(validateRange("v1,,v2")).toEqual(expect.any(String));
+    expect(validateRange("v1 v2")).toEqual(expect.any(String));
+    expect(validateRange(">=1.0.0")).toEqual(expect.any(String));
+    expect(validateRange(Array.from({ length: 51 }, (_, i) => `v${i}`).join(","))).toEqual(expect.any(String));
+  });
+
+  it("actions 일치: 같은 tag, 전체 SHA, 7자 이상의 SHA 앞부분", () => {
+    const { satisfies } = rule("actions");
+    expect(satisfies("v0.34.0", "v0.34.0, v0.34.1")).toBe(true);
+    expect(satisfies("v0.34.2", "v0.34.0, v0.34.1")).toBe(false);
+    expect(satisfies("V0.34.0", "v0.34.0")).toBe(false);
+    expect(satisfies(SHA, SHA)).toBe(true);
+    expect(satisfies(SHA, "57a97c7")).toBe(true);
+    expect(satisfies(SHA.toUpperCase(), "57a97c7e")).toBe(true);
+    expect(satisfies(SHA, "57a97c")).toBe(false);
+    // 버전이 tag 이면 16진수처럼 보여도 앞부분 비교를 하지 않는다.
+    expect(satisfies("abcdef1234", "abcdef1")).toBe(false);
+    expect(satisfies("", "v1")).toBe(false);
+    expect(satisfies("v1", "not a list")).toBe(false);
+  });
+
+  it("docker 일치: 같은 tag, 전체 digest, 12자 이상의 digest 앞부분", () => {
+    const { satisfies } = rule("docker");
+    expect(satisfies("v1.107.0", "v1.107.0, latest")).toBe(true);
+    expect(satisfies("latest", "v1.107.0, latest")).toBe(true);
+    expect(satisfies("v1.107.1", "v1.107.0, latest")).toBe(false);
+    expect(satisfies(DIGEST, DIGEST)).toBe(true);
+    expect(satisfies(DIGEST, "sha256:ab12ab12ab12")).toBe(true);
+    expect(satisfies(DIGEST, "sha256:ab12ab1")).toBe(false);
+    expect(satisfies(DIGEST, "ab12ab12ab12")).toBe(false);
+  });
+
+  it("선언의 버전은 그대로 정확한 버전이다", () => {
+    expect(rule("actions").exactVersionOf("v4")).toBe("v4");
+    expect(rule("docker").exactVersionOf(" 18-alpine ")).toBe("18-alpine");
+    expect(rule("docker").exactVersionOf("")).toBeNull();
   });
 });
