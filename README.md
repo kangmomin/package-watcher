@@ -110,18 +110,23 @@ Docker 로 실행할 때는 `.env` 에 `PORT`, `HOST`, `DATA_DIR`, `WEB_DIST_DIR
 | 종류 | 읽는 파일 | 이름 비교 | `versionRange` 문법 (예) |
 |------|-----------|-----------|--------------------------|
 | `npm` | `package.json`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock` | 대소문자 구분 | semver range: `<4.17.21`, `>=1.0.0 <2.0.0` |
-| `go` | `go.mod` | 모듈 경로(`github.com/a/b`), 대소문자 구분 | `v` 접두 비교식: `<v0.4.30`, `>=v1.0.0 <v2.0.0`, `=v1.2.3` |
+| `go` | `go.mod`, `go.sum` | 모듈 경로(`github.com/a/b`), 대소문자 구분 | `v` 접두 비교식: `<v0.4.30`, `>=v1.0.0 <v2.0.0`, `=v1.2.3` |
 | `pypi` | `pyproject.toml`(PEP 621, PEP 735, poetry), `requirements*.txt`, `uv.lock`, `poetry.lock` | PEP 503 정규화(소문자, `-`·`_`·`.` 의 연속 → `-`). 저장할 때도 정규화한다(`Foo_Bar` → `foo-bar`) | PEP 440: `<1.0,>=0.5`, `==1.2.3` |
 | `nuget` | `*.csproj`, `packages.config`, `Directory.Packages.props`, `packages.lock.json` | 대소문자 무시. 소문자로 저장한다 | 구간 표기: `[1.0,2.0)`, `(,1.5]`. 정확한 버전은 `[1.2.3]`(괄호 없는 `1.2.3` 은 "이상"이라는 뜻이라 거부한다) |
 | `cargo` | `Cargo.toml`, `Cargo.lock` | 대소문자 구분 | Cargo 요구식: `<1.2.0`, `>=1, <2`, `=1.2.3` (연산자 없는 `1.2` 는 `^1.2`) |
 | `pub` | `pubspec.yaml`, `pubspec.lock` | 대소문자 구분 | pub 제약: `>=1.0.0 <2.0.0`, `^1.2.3` |
-| `maven` | `gradle/libs.versions.toml`, `build.gradle`, `build.gradle.kts` | `group:name`, 대소문자 구분 | 구간 표기: `[1.0,2.0)`, `(,1.5]`, `[1.2.3]` |
+| `maven` | `pom.xml`, `gradle/libs.versions.toml`, `build.gradle`, `build.gradle.kts` | `group:name`, 대소문자 구분 | 구간 표기: `[1.0,2.0)`, `(,1.5]`, `[1.2.3]` |
 
 `*` 패턴은 종류의 이름 규칙으로 정규화한 이름 전체와 비교한다(pypi·nuget 은 대소문자 무시).
 
 **스캔이 파일을 읽는 방법:**
-- 위 표의 선언 파일이 1개라도 있는 repo 는 검사 대상이다. 모든 종류의 선언 파일이 0개인 repo 만 `건너뜀`이다.
+- 위 표의 선언 파일이나 아래 보조 파일이 1개라도 있는 repo 는 검사 대상이다. 둘 다 0개인 repo 만 `건너뜀`이다.
 - **블랙리스트에 활성 항목(켜짐, 만료 전)이 있는 종류의 파일만 받는다.** 예를 들어 `npm` 항목만 있으면 `go.mod` 의 내용은 받지 않고, 그 파일만 있는 repo 는 `통과`다. 화면의 "읽은 파일 수"는 실제로 받은 파일 수다.
+- **보조 파일**은 명령으로 실행·설치하는 패키지를 찾는다. `npm` 또는 `pypi` 의 활성 항목이 있을 때만 받는다(없으면 받지 않고 읽은 파일 수에도 세지 않는다).
+  - `.github/workflows/*.yml|yaml` 의 `run`, `Dockerfile*`·`*.Dockerfile`·`Containerfile` 의 `RUN`(JSON 배열·heredoc 포함), MCP 설정(`.mcp.json`, `mcp.json`, `.cursor/mcp.json`, `.vscode/mcp.json`)의 `command`+`args`.
+  - `npx`·`pnpm dlx`·`yarn dlx`·`bunx`·`npm i <pkg>` 등은 `npm`, `uvx`·`pipx`·`pip install <pkg>` 등은 `pypi` 로 비교한다. 검출은 항상 `direct` 이고 `filePath` 는 보조 파일이다.
+  - 정확한 버전(`pkg@1.2.3`, `pkg==1.2.3`)은 범위와 비교한다. **버전 없는 실행(`pkg`, `pkg@latest`, 범위)은 버전 범위가 없는 항목에만 일치한다.** 어느 버전을 받을지 알 수 없기 때문이다.
+  - 파일 형식이 깨져 해석하지 못하면 그 파일만 건너뛰고(로그에 경고) repo 는 실패하지 않는다. 파일 조회 실패는 repo 실패다.
 - lock 파일이 있으면 lock 의 정확한 버전으로 비교한다. lock 이 담당하는 선언 파일은 같은 폴더와, 같은 종류의 lock 이 없는 하위 폴더의 선언 파일이다(하위 폴더에 같은 종류의 lock 이 있으면 그 lock 이 담당한다). lock 의 패키지는 담당 선언 파일에 이름이 있으면 `direct`, 없으면 `transitive` 다(`packages.lock.json` 과 `pubspec.lock` 은 lock 이 알려 주는 값을 쓴다). `go.mod` 에서 `// indirect` 가 붙은 줄은 `transitive` 다.
 - lock 이 없거나 lock 에 없는 선언은 선언 파일의 버전으로 비교한다.
 
@@ -261,7 +266,7 @@ tool 은 모두 13개다. 결과는 JSON 문자열(text content)이고(`export_b
 - lockfile 이 없는 `package.json` 은 range 겹침으로 검사한다. `latest` 같은 dist-tag, `workspace:`, git URL 처럼 semver range 가 아닌 spec 은 "모든 버전" 항목에만 검출된다.
 - **여러 종류(go, pypi, nuget, cargo, pub, maven)의 한계:**
   - 블랙리스트에 활성 항목이 있는 종류의 파일만 읽는다. 항목이 없는 종류의 파일은 받지 않으므로, 그 종류의 파일만 있는 repo 는 `통과`다. 항목을 새 종류로 처음 등록하면 다음 스캔부터 그 종류의 파일을 받아서 GitHub 요청 수가 늘어난다.
-  - 읽는 파일은 위 표의 것뿐이다. `*.fsproj`·`*.vbproj`, Maven 의 `pom.xml`, `setup.py`·`Pipfile`, `requirements/` 폴더 안의 다른 이름의 파일, `go.sum` 은 읽지 않는다. `go.mod` 의 `replace`·`exclude` 도 읽지 않는다(`require` 의 버전을 그대로 쓴다).
+  - 읽는 파일은 위 표의 것뿐이다. `*.fsproj`·`*.vbproj`, `setup.py`·`Pipfile`, `requirements/` 폴더 안의 다른 이름의 파일은 읽지 않는다. `pom.xml` 은 `<dependencies>` 만 읽고(`dependencyManagement`·플러그인 제외) `${prop}` 은 같은 파일의 `<properties>` 와 `project.version` 으로 푼다. 풀 수 없거나 버전이 없으면 범위 없는 선언으로 본다. `go.sum` 은 Go 의 lock 이다(간접 모듈 포함). `go.mod` 의 `replace`·`exclude` 도 읽지 않는다(`require` 의 버전을 그대로 쓴다).
   - 선언 파일의 고정 버전(`go.mod` 의 버전, `requirements` 의 `==`, `*.csproj` 의 `Version="1.2.3"`, Gradle 의 `"g:n:1.2.3"`, 카탈로그의 문자열 버전, `pubspec.yaml` 의 연산자 없는 버전)은 정확한 버전으로 비교한다. 그 외(`>=`, `^`, `~=`, Cargo 의 `"1.2"`, 구간)는 범위 spec 이라서 **버전 범위가 없는 항목에만** 검출되고, 검출의 버전은 spec 문자열이다. lock 이 있으면 lock 의 정확한 버전으로 비교한다.
   - Gradle 은 `build.gradle(.kts)` 안의 따옴표로 감싼 `"group:name:version"` 문자열만 읽는다. 변수(`$version`)가 든 것, 버전이 없는 것(BOM 이 관리), 변수로 조립하는 선언은 그 선언만 건너뛴다(repo 는 실패하지 않는다). 버전 카탈로그의 `version.ref` 가 가리키는 곳이 없으면 그 라이브러리도 건너뛴다. 빈 `requirements.txt`·`build.gradle` 은 의존성이 없는 정상 파일로 본다.
   - `*.csproj` 의 `Version="$(Prop)"` 처럼 MSBuild 속성이나 `2.*` 같은 부동 버전은 범위 spec 으로 취급한다. 버전이 없는 `PackageReference`(중앙 관리)는 버전 없이 이름만 비교하고, 버전은 `Directory.Packages.props` 의 `PackageVersion` 이 낸다.

@@ -1,4 +1,4 @@
-import { asString, asTable, baseName, readText, readToml, scalarText } from "./common.ts";
+import { asString, asTable, baseName, fail, readText, readToml, readXml, scalarText } from "./common.ts";
 import type { DeclaredDependency, EcosystemSupport } from "./types.ts";
 
 const direct = (name: string, spec: string): DeclaredDependency => ({ name, spec, dependencyType: "direct" });
@@ -93,16 +93,63 @@ export function parseGradle(content: string, file = "build.gradle"): DeclaredDep
   return deps;
 }
 
+const asList = (value: unknown): unknown[] => (Array.isArray(value) ? value : value === undefined ? [] : [value]);
+
+/** `${prop}` 을 properties 와 project.version 으로 푼다. 풀 수 없으면 null */
+function resolveVersion(version: string, properties: Map<string, string>): string | null {
+  let text = version;
+  for (let round = 0; round < 5 && text.includes("${"); round += 1) {
+    text = text.replace(/\$\{([^}]*)\}/g, (whole, key: string) => properties.get(key.trim()) ?? whole);
+  }
+  return text.includes("${") ? null : text;
+}
+
+/**
+ * pom.xml 의 `<project><dependencies>`. dependencyManagement 와 build/plugins 는 읽지 않는다(실제 의존성이 아니다).
+ * 버전이 없거나 풀 수 없는 속성이면 spec "" (범위 없는 선언).
+ */
+export function parsePomXml(content: string, file = "pom.xml"): DeclaredDependency[] {
+  const doc = readXml(content, file);
+  const project = asTable(doc.project);
+  if (!("project" in doc)) fail(file, "project 요소가 없습니다");
+  if (!project) return [];
+
+  const properties = new Map<string, string>();
+  for (const [key, value] of Object.entries(asTable(project.properties) ?? {})) {
+    const text = scalarText(value);
+    if (text !== null) properties.set(key, text.trim());
+  }
+  const ownVersion = scalarText(project.version) ?? scalarText(asTable(project.parent)?.version);
+  if (ownVersion !== null) {
+    properties.set("project.version", ownVersion.trim());
+    properties.set("pom.version", ownVersion.trim());
+  }
+
+  const deps: DeclaredDependency[] = [];
+  for (const item of asList(asTable(project.dependencies)?.dependency)) {
+    const dep = asTable(item);
+    const group = dep ? scalarText(dep.groupId)?.trim() : undefined;
+    const artifact = dep ? scalarText(dep.artifactId)?.trim() : undefined;
+    if (!dep || !group || !artifact) continue;
+    const version = scalarText(dep.version)?.trim() ?? "";
+    deps.push(direct(`${group}:${artifact}`, version === "" ? "" : (resolveVersion(version, properties) ?? "")));
+  }
+  return deps;
+}
+
 export const mavenSupport: EcosystemSupport = {
   ecosystem: "maven",
   roleOf(path) {
     const name = baseName(path);
-    if (name === "build.gradle" || name === "build.gradle.kts") return "manifest";
+    if (name === "build.gradle" || name === "build.gradle.kts" || name === "pom.xml") return "manifest";
     return path === "gradle/libs.versions.toml" || path.endsWith("/gradle/libs.versions.toml")
       ? "manifest"
       : null;
   },
-  parseManifest: (path, content) =>
-    baseName(path) === "libs.versions.toml" ? parseVersionCatalog(content, path) : parseGradle(content, path),
+  parseManifest(path, content) {
+    const name = baseName(path);
+    if (name === "pom.xml") return parsePomXml(content, path);
+    return name === "libs.versions.toml" ? parseVersionCatalog(content, path) : parseGradle(content, path);
+  },
   parseLock: () => [],
 };

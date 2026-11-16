@@ -47,9 +47,10 @@ import type { Repositories } from "../repositories/index.ts";
 import type { RepoDone } from "../repositories/scanRepos.ts";
 import type { ScanResult } from "../repositories/scans.ts";
 import { assignLockfiles, dirOf, readWorkspaceGlobs } from "../workspaces.ts";
-import { parseInput, toIso } from "./common.ts";
+import { mapWithConcurrency, parseInput, toIso } from "./common.ts";
 import { isEntryActive, todayKst } from "./entryActivity.ts";
 import type { Notifier } from "./notifier.ts";
+import { needsSources, scanSources, sourceFileOf, type SourceFile } from "./scanSources.ts";
 
 const NPM: Ecosystem = "npm";
 /** repo 동시 처리 수 */
@@ -174,31 +175,6 @@ function htmlUrlOf(org: string, repo: string, filePath: string): string {
   return `https://github.com/${encodeURIComponent(org)}/${encodeURIComponent(repo)}/blob/HEAD/${path}`;
 }
 
-/** 순서를 유지하며 최대 `limit` 개씩 실행한다. 하나라도 실패하면 새 작업을 시작하지 않고 그 오류로 reject. */
-async function mapWithConcurrency<T, R>(
-  items: T[],
-  limit: number,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let next = 0;
-  let failed = false;
-  const worker = async (): Promise<void> => {
-    while (!failed && next < items.length) {
-      const index = next;
-      next += 1;
-      try {
-        results[index] = await fn(items[index] as T);
-      } catch (error) {
-        failed = true;
-        throw error;
-      }
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return results;
-}
-
 function parseManifest(path: string, content: string): Manifest {
   const text = normalizeText(content);
   let data: unknown;
@@ -291,6 +267,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     const packageJsons: TreeEntry[] = [];
     const lockfiles: (TreeEntry & LockfileFile)[] = [];
     const bunLockbs: TreeEntry[] = [];
+    const sourceFiles: SourceFile[] = [];
     const yamlCandidates: TreeEntry[] = [];
     const otherFiles = new Map<FileEcosystem, { manifests: TreeEntry[]; locks: TreeEntry[] }>();
     let otherManifestCount = 0;
@@ -307,7 +284,11 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
           continue;
         }
         const other = isExcludedPath(entry.path) ? null : classifyFile(entry.path);
-        if (!other) continue;
+        if (!other) {
+          const source = sourceFileOf(entry);
+          if (source) sourceFiles.push(source);
+          continue;
+        }
         const files = otherFiles.get(other.ecosystem) ?? { manifests: [], locks: [] };
         if (other.role === "manifest") {
           files.manifests.push(entry);
@@ -316,8 +297,8 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
         otherFiles.set(other.ecosystem, files);
       }
     }
-    // 모든 종류의 선언 파일이 0개면 검사할 프로젝트가 아니다(실패 아님). 읽지 않는 종류의 파일도 센다.
-    const declaredCount = packageJsons.length + otherManifestCount;
+    // 선언 파일과 보조 파일이 모두 0개면 검사할 프로젝트가 아니다(실패 아님). 읽지 않는 종류의 파일도 센다.
+    const declaredCount = packageJsons.length + otherManifestCount + sourceFiles.length;
     if (declaredCount === 0) return { declaredCount: 0, fileCount: 0, matches: [] };
 
     const npm = await scanNpm(org, client, repo, entryIndex, { packageJsons, lockfiles, bunLockbs, yamlCandidates });
@@ -327,6 +308,11 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     for (const [ecosystem, files] of otherFiles) {
       if (!activeEcosystems.has(ecosystem)) continue;
       const result = await scanEcosystem(org, client, repo, entryIndex, ecosystem, files);
+      matches.push(...result.matches);
+      fileCount += result.fileCount;
+    }
+    if (sourceFiles.length > 0 && needsSources(activeEcosystems)) {
+      const result = await scanSources(org, client, repo, entryIndex, sourceFiles, logger);
       matches.push(...result.matches);
       fileCount += result.fileCount;
     }
