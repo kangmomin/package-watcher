@@ -356,6 +356,7 @@ export const scanRepos: ScanRepo[] = [
 // ---------------------------------------------------------------- Summary
 
 export const summaryDefault: Summary = {
+  policyOpenCount: 0,
   openCount: 12,
   ignoredCount: 3,
   lastScan: scanSuccess,
@@ -363,6 +364,7 @@ export const summaryDefault: Summary = {
 };
 
 export const summaryEmpty: Summary = {
+  policyOpenCount: 0,
   openCount: 0,
   ignoredCount: 0,
   lastScan: null,
