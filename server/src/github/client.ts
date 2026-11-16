@@ -34,7 +34,9 @@ export interface GitHubClient {
    */
   getTree(org: string, repo: string, ref: string): Promise<RepoTree>;
   /** blob API(`git/blobs/{sha}`)로 읽어 UTF-8 문자열로 반환한다. contents API 는 1MB 초과 파일을 읽지 못한다. */
-  getFile(org: string, repo: string, sha: string): Promise<string>;
+  getFile(org: string, repo: string, sha: string, options?: GetFileOptions): Promise<string>;
+  /** 이 클라이언트가 지금까지 보낸 HTTP 요청 수(REST·GraphQL). 스캔 전후의 차이로 스캔의 요청 수를 잰다. 세지 않는 구현은 생략한다 */
+  requestCounts?(): RequestCounts;
   /** 모든 브랜치 이름(모든 페이지, 최대 10,000개 — 넘으면 throw). 빈 repo(409)는 `[]`, 404 는 throw. */
   listBranches(org: string, repo: string): Promise<string[]>;
   /**
@@ -44,7 +46,8 @@ export interface GitHubClient {
   listRecentBranches(org: string, repo: string, sinceIso: string): Promise<RecentBranch[]>;
   /**
    * 최근 100개 이벤트(REST 1회) 중 `sinceIso` 이후의 브랜치 push·생성: 브랜치 이름 → 마지막 push 시각.
-   * 오래된 커밋을 새로 push 한 브랜치를 커밋 시각만으로는 놓치므로 함께 본다. 404 → 빈 Map.
+   * 마지막 push 보다 뒤에 삭제된 브랜치는 넣지 않는다. 오래된 커밋을 새로 push 한 브랜치를 커밋 시각만으로는 놓치므로 함께 본다.
+   * 404 를 포함한 모든 오류는 throw 한다(빈 결과로 처리하면 이름으로만 후보이던 브랜치의 검출이 resolve 된다).
    */
   listRecentPushes(org: string, repo: string, sinceIso: string): Promise<Map<string, string>>;
   /**
@@ -143,6 +146,16 @@ export function pickPulls(data: unknown): PullInfo[] {
   return found;
 }
 
+export interface GetFileOptions {
+  /** 토큰이 들어 있을 수 있는 파일 — 디스크 캐시에 읽지도 쓰지도 않는다 */
+  noCache?: boolean;
+}
+
+export interface RequestCounts {
+  rest: number;
+  graphql: number;
+}
+
 export interface RecentBranch {
   name: string;
   committedAt: string;
@@ -216,28 +229,47 @@ export function pickRecentBranches(data: unknown, sinceIso: string): RecentBranc
 
 const HEADS_PREFIX = "refs/heads/";
 
-/** repo 이벤트에서 `sinceIso` 이후의 브랜치 push·생성만 골라 브랜치마다 가장 최근 시각을 남긴다 */
+/**
+ * repo 이벤트에서 `sinceIso` 이후의 브랜치 push·생성을 골라 브랜치마다 가장 최근 시각을 남기고,
+ * 그보다 뒤에 삭제(DeleteEvent)된 브랜치는 뺀다. 이벤트는 최신이 앞이다(시각이 같으면 앞이 더 새롭다).
+ */
 export function pickRecentPushes(events: unknown, sinceIso: string): Map<string, string> {
   const since = Date.parse(sinceIso);
-  const pushes = new Map<string, string>();
-  if (!Array.isArray(events)) return pushes;
-  for (const event of events as ({ type?: unknown; created_at?: unknown; payload?: { ref?: unknown; ref_type?: unknown } } | null)[]) {
+  const pushed = new Map<string, string>();
+  if (!Array.isArray(events)) return pushed;
+  const lastPush = new Map<string, { time: number; index: number; at: string }>();
+  const lastDelete = new Map<string, { time: number; index: number }>();
+  const newer = (a: { time: number; index: number }, b: { time: number; index: number }): boolean =>
+    a.time > b.time || (a.time === b.time && a.index < b.index);
+  (events as ({ type?: unknown; created_at?: unknown; payload?: { ref?: unknown; ref_type?: unknown } } | null)[]).forEach((event, index) => {
     const ref = event?.payload?.ref;
     const createdAt = event?.created_at;
-    if (typeof ref !== "string" || typeof createdAt !== "string") continue;
+    if (typeof ref !== "string" || typeof createdAt !== "string") return;
+    const time = Date.parse(createdAt);
+    if (Number.isNaN(time) || time < since) return;
+    if (event?.type === "DeleteEvent") {
+      if (event.payload?.ref_type !== "branch" || ref === "") return;
+      const previous = lastDelete.get(ref);
+      if (!previous || newer({ time, index }, previous)) lastDelete.set(ref, { time, index });
+      return;
+    }
     let name: string;
     if (event?.type === "PushEvent") {
       if (ref.startsWith(HEADS_PREFIX)) name = ref.slice(HEADS_PREFIX.length);
-      else if (ref.startsWith("refs/")) continue;
+      else if (ref.startsWith("refs/")) return;
       else name = ref;
     } else if (event?.type === "CreateEvent" && event.payload?.ref_type === "branch") name = ref;
-    else continue;
-    const time = Date.parse(createdAt);
-    if (name === "" || Number.isNaN(time) || time < since) continue;
-    const previous = pushes.get(name);
-    if (previous === undefined || Date.parse(previous) < time) pushes.set(name, createdAt);
+    else return;
+    if (name === "") return;
+    const previous = lastPush.get(name);
+    if (!previous || newer({ time, index }, previous)) lastPush.set(name, { time, index, at: createdAt });
+  });
+  for (const [name, push] of lastPush) {
+    const removed = lastDelete.get(name);
+    if (removed && newer(removed, push)) continue;
+    pushed.set(name, push.at);
   }
-  return pushes;
+  return pushed;
 }
 
 const SYMLINK_MODE = "120000";
@@ -310,6 +342,13 @@ export function createOctokitClient(options: OctokitClientOptions): GitHubClient
     log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
   });
 
+  // 스캔 1회의 요청 수를 재려고 HTTP 요청을 센다(GraphQL 은 `/graphql`)
+  const counts: RequestCounts = { rest: 0, graphql: 0 };
+  octokit.hook.before("request", (requestOptions) => {
+    if (requestOptions.url === "/graphql") counts.graphql += 1;
+    else counts.rest += 1;
+  });
+
   async function call<T>(fn: () => Promise<T>): Promise<T> {
     try {
       return await fn();
@@ -319,6 +358,7 @@ export function createOctokitClient(options: OctokitClientOptions): GitHubClient
   }
 
   return {
+    requestCounts: () => ({ ...counts }),
     listOrgRepos: (org) =>
       call(async () => {
         const repos = await octokit.paginate(octokit.rest.repos.listForOrg, {
@@ -401,13 +441,8 @@ export function createOctokitClient(options: OctokitClientOptions): GitHubClient
 
     listRecentPushes: (org, repo, sinceIso) =>
       call(async () => {
-        try {
-          const { data } = await octokit.rest.activity.listRepoEvents({ owner: org, repo, per_page: 100 });
-          return pickRecentPushes(data, sinceIso);
-        } catch (error) {
-          if (error instanceof RequestError && error.status === 404) return new Map<string, string>();
-          throw error;
-        }
+        const { data } = await octokit.rest.activity.listRepoEvents({ owner: org, repo, per_page: 100 });
+        return pickRecentPushes(data, sinceIso);
       }),
 
     listRecentCommits: (org, repo, branch, sinceIso, pages = 1) =>

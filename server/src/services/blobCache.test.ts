@@ -28,3 +28,38 @@ describe("blob 캐시", () => {
     expect(cache.fetched()).toBe(4);
   });
 });
+
+describe("blob 캐시 — 디스크 쓰기", () => {
+  it("[SH-59] 디스크 쓰기는 기다리지 않고 반환하며 flush 가 끝나기를 기다린다, 쓰기 오류는 삼킨다", async () => {
+    const github = new FakeGitHubClient();
+    github.setRepos([{ name: "r", files: { a: "x", b: "y" } }]);
+    const [a, b] = [await shaOf(github, "a"), await shaOf(github, "b")];
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const written: string[] = [];
+    const disk = {
+      has: () => false,
+      read: async () => null,
+      write: async (sha: string) => {
+        if (sha === b) throw new Error("disk full");
+        await gate;
+        written.push(sha);
+      },
+      hits: () => 0,
+      writeFailures: () => 0,
+      prune: async () => undefined,
+    };
+    const cache = createBlobCache(github, undefined, disk);
+
+    await cache.client.getFile("o", "r", a);
+    await cache.client.getFile("o", "r", b);
+    expect(written).toEqual([]);
+    const flushed = cache.flush();
+    release();
+    await flushed;
+
+    expect(written).toEqual([a]);
+  });
+});

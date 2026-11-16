@@ -193,3 +193,60 @@ describe("브랜치 스캔 — 리뷰 반영", () => {
     expect((await repoRow(scan.id)).branchCount).toBe(0);
   });
 });
+
+describe("브랜치 스캔 — events 의 삭제와 요청 기록", () => {
+  it("[SH-41] 마지막 push 보다 뒤에 삭제된 브랜치는 이름으로 tree 를 조회하지 않는다 (검출은 resolve)", async () => {
+    setup();
+    t.github.setHead("svc", "merged", head({ ...BASE, "package-lock.json": EVIL_LOCK }));
+    await runScan(t);
+    t.github.removeHead("svc", "merged");
+    t.github.setPush("svc", "merged", "2026-11-11T12:00:00.000Z");
+    t.github.setDeletedEvent("svc", "merged");
+    const before = t.github.callsOf("getTree").length;
+
+    await runScan(t);
+
+    expect(t.github.callsOf("getTree").length - before).toBe(1); // 기본 브랜치만
+    expect(await active()).toEqual([]);
+  });
+
+  it("[SH-42] events 가 삭제를 놓쳐 404 가 나도 로그 없이 후보에서 뺀다 (다른 오류는 warn)", async () => {
+    setup();
+    t.github.setPush("svc", "ghost", "2026-11-11T12:00:00.000Z");
+    t.github.setHead("svc", "bad", head({ ...BASE, "a.txt": "1" }));
+    t.github.failHeadTree("svc", "bad", new Error("GitHub API 오류 (500): x"));
+
+    await runScan(t);
+
+    const warns = t.logger.texts("warn").filter((text) => text.includes("브랜치를 평가하지 못해"));
+    expect(warns.some((text) => text.includes("ghost"))).toBe(false);
+    expect(warns.some((text) => text.includes("bad"))).toBe(true);
+  });
+
+  it("[SH-43] 스캔이 끝나면 요청 수·캐시 적중·시간을 로그 1줄로 남긴다", async () => {
+    setup();
+    t.github.setHead("svc", "a", head({ ...BASE, "package-lock.json": EVIL_LOCK }));
+
+    const scan = await runScan(t);
+
+    const lines = t.logger.texts("info").filter((text) => text.startsWith(`스캔 #${scan.id}: GitHub 요청`));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/REST \d+회, GraphQL 1회, blob 캐시 적중 0회, \d+초$/);
+  });
+});
+
+describe("브랜치 스캔 — events 의 404", () => {
+  it("[SH-58] push 목록이 404 여도 이름으로만 후보이던 브랜치의 검출은 resolve 되지 않는다", async () => {
+    setup();
+    t.github.setHead("svc", "forced", head({ ...BASE, "package-lock.json": EVIL_LOCK }, OLD));
+    t.github.setPush("svc", "forced", "2026-11-11T12:00:00.000Z");
+    await runScan(t);
+    expect(refsOf(await active())).toEqual(["forced|package-lock.json"]);
+    t.github.failRecentPushes("svc", new Error("GitHub API 오류 (404): Not Found"));
+
+    const scan = await runScan(t);
+
+    expect(scan.status).toBe("success");
+    expect(refsOf(await active())).toEqual(["forced|package-lock.json"]);
+  });
+});

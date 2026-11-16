@@ -60,6 +60,7 @@ import { assignLockfiles, dirOf, readWorkspaceGlobs } from "../workspaces.ts";
 import { mapWithConcurrency, parseInput, printable, readStoredSettings, toIso } from "./common.ts";
 import { isEntryActive, todayKst } from "./entryActivity.ts";
 import { createBlobCache, type BlobCache } from "./blobCache.ts";
+import type { DiskBlobCache } from "./diskBlobCache.ts";
 import type { FeedSource } from "./feedService.ts";
 import type { Notifier } from "./notifier.ts";
 import { createIndicatorRules, type IndicatorRules } from "./scanIndicators.ts";
@@ -71,7 +72,7 @@ import {
   type PolicyMatch,
   type PolicyRules,
 } from "./scanPolicy.ts";
-import { needsSourceKind, scanSources, sourceFileOf, type SourceFile } from "./scanSources.ts";
+import { isDiskCacheableKind, needsSourceKind, scanSources, sourceFileOf, type SourceFile } from "./scanSources.ts";
 import type { SourceFacts } from "../sources/index.ts";
 
 const NPM: Ecosystem = "npm";
@@ -136,6 +137,8 @@ export interface ScanServiceDeps {
   logger: Logger;
   /** 외부 목록(feed). 없으면 블랙리스트 항목만 대조한다 */
   feed?: FeedSource;
+  /** blob 의 디스크 캐시. 없으면(기본) 메모리 캐시만 쓴다 */
+  diskCache?: DiskBlobCache | null;
 }
 
 /** 스캔이 시작될 때 정해지는 외부 목록의 대조 자료 */
@@ -443,6 +446,7 @@ function parseLockfileOrThrow(file: LockfileFile, content: string): LockPackage[
 
 export function createScanService(deps: ScanServiceDeps): ScanService {
   const { repos, github, githubTokenSource, notifier, clock, logger, feed } = deps;
+  const diskCache = deps.diskCache ?? null;
   let running: Promise<Scan> | null = null;
 
   // ---------------------------------------------------------------- 진행 기록
@@ -483,7 +487,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
 
   /** repo 1개: 기본 브랜치의 전체 tree 를 평가하고, 최근 브랜치는 달라진 파일만 같은 함수로 다시 평가한다 */
   async function scanRepo(org: string, rawClient: GitHubClient, repo: RepoInfo, rules: ScanRules): Promise<RepoScan> {
-    const blobs = createBlobCache(rawClient);
+    const blobs = createBlobCache(rawClient, undefined, diskCache);
     const client = blobs.client;
     const tree = await client.getTree(org, repo.name, repo.defaultBranch);
     if (tree.truncated) {
@@ -501,6 +505,8 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     };
     await scanBranches(org, blobs, repo, tree.entries, rules, result);
     await scanHistory(org, client, repo, tree.entries, rules, result);
+    // 디스크 쓰기는 파일마다 기다리지 않았다 — repo 가 끝나면 모아서 기다린다(다음 스캔이 읽기 전에 끝난다).
+    await blobs.flush();
     return result;
   }
 
@@ -728,6 +734,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     for (const branch of recent) {
       found.set(branch.name, { name: branch.name, time: Date.parse(branch.committedAt), ref: branch.sha, byName: false });
     }
+    // 마지막 push 보다 뒤에 삭제된 브랜치는 `pushed` 에 없다 — 이름으로 조회하지 않는다(404 요청의 낭비).
     for (const [name, at] of pushes) {
       const time = Date.parse(at);
       if (Number.isNaN(time)) continue;
@@ -769,9 +776,9 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
           return stopOnRateLimit();
         }
         const message = describeError(error);
-        // 이름으로 조회한 브랜치가 지워졌으면(404) 후보에서 제외한다 — 그 검출은 resolve 된다.
-        const gone = candidate.byName && /\(404\)/.test(message);
-        if (!gone) keptRefs.add(candidate.name);
+        // events 가 삭제를 놓쳐서 이름으로 조회한 브랜치가 지워졌으면(404) 조용히 후보에서 제외한다 — 그 검출은 resolve 된다.
+        if (candidate.byName && /\(404\)/.test(message)) continue;
+        keptRefs.add(candidate.name);
         logger.warn(
           `브랜치를 평가하지 못해 건너뜁니다: ${printable(where)}@${branchLabel(candidate.name)}: ${printable(message)}`,
         );
@@ -791,7 +798,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     ref: string,
     rules: ScanRules,
     /** 이미 받은 blob 인가 (브랜치의 상한 계산에서 뺀다) */
-    isCached: (sha: string) => boolean = () => false,
+    isCached: (sha: string, diskEligible?: boolean) => boolean = () => false,
   ): Promise<TreeScan> {
     const { entryIndex, activeEcosystems, indicators, policy } = rules;
     const isBranch = ref !== DEFAULT_BRANCH_REF;
@@ -890,16 +897,24 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     );
     if (isBranch) {
       // 받기 전에 상한을 넘는지 본다 — 넘으면 일부만 받지 않고 이 브랜치를 평가하지 않는다.
-      const uncached = (list: TreeEntry[]): number => list.filter((entry) => !isCached(entry.sha)).length;
+      // 디스크에 두지 않는 파일(workflow·action 이 아닌 보조 파일, pypi 선언 파일)은 디스크에 있어도 받을 파일로 센다.
+      const uncached = (list: TreeEntry[], diskEligible = true): number =>
+        list.filter((entry) => !isCached(entry.sha, diskEligible)).length;
       const npmFiles =
         packageJsons.length > 0 || lockfiles.length > 0
           ? uncached(packageJsons) + uncached(lockfiles) + uncached(yamlCandidates)
           : 0;
       let otherCount = 0;
       for (const [ecosystem, files] of otherFiles) {
-        if (activeEcosystems.has(ecosystem)) otherCount += uncached(files.manifests) + uncached(files.locks);
+        if (activeEcosystems.has(ecosystem)) {
+          otherCount += uncached(files.manifests, ecosystem !== "pypi") + uncached(files.locks);
+        }
       }
-      const toFetch = npmFiles + otherCount + uncached(wantedSources);
+      const toFetch =
+        npmFiles +
+        otherCount +
+        uncached(wantedSources.filter((file) => isDiskCacheableKind(file.kind))) +
+        uncached(wantedSources.filter((file) => !isDiskCacheableKind(file.kind)), false);
       if (toFetch > BRANCH_MAX_FETCH) {
         throw new Error(`달라진 파일 중 받을 파일이 ${toFetch}개로 상한(${BRANCH_MAX_FETCH}개)을 넘습니다`);
       }
@@ -1131,7 +1146,9 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     const toFetch = [...files.manifests, ...files.locks];
     const contents = new Map<string, string>();
     await mapWithConcurrency(toFetch, FILE_CONCURRENCY, async (entry) => {
-      contents.set(entry.path, await client.getFile(org, repo.name, entry.sha));
+      // pip 의 requirements 에는 `--extra-index-url https://user:token@…` 가 있을 수 있어 디스크 캐시에 남기지 않는다.
+      const noCache = ecosystem === "pypi" && files.manifests.includes(entry);
+      contents.set(entry.path, await client.getFile(org, repo.name, entry.sha, { noCache }));
     });
     if (received) for (const [path, content] of contents) received.set(path, content);
     const manifests: ParsedManifest[] = files.manifests.map((entry) => ({
@@ -1555,6 +1572,12 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
   ): Promise<Scan> {
     let finished: Scan;
     let sendMail = false;
+    const startedAt = clock.now().getTime();
+    const countsBefore = client.requestCounts?.() ?? null;
+    const hitsBefore = diskCache?.hits() ?? 0;
+    const failuresBefore = diskCache?.writeFailures() ?? 0;
+    // 오래된 캐시 정리는 스캔을 막지 않는다(실패는 캐시 안에서 warn).
+    void diskCache?.prune();
     try {
       const collected = await collect(scan.id, org, client, snapshot, feedContext);
       ({ scan: finished, sendMail } = finalize(scan.id, org, snapshot, collected, feedContext?.index ?? null));
@@ -1562,6 +1585,16 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       logger.error(`스캔 #${scan.id} 중 예상하지 못한 오류`, error);
       finished = failUnexpected(scan, error);
     }
+    // 요청 수의 기록(로그만): 한도(시간당 5,000회)를 얼마나 쓰는지 가늠하게 한다.
+    const countsAfter = client.requestCounts?.() ?? null;
+    const writeFailures = (diskCache?.writeFailures() ?? 0) - failuresBefore;
+    const seconds = Math.round((clock.now().getTime() - startedAt) / 1000);
+    logger.info(
+      `스캔 #${scan.id}: GitHub 요청 REST ${(countsAfter?.rest ?? 0) - (countsBefore?.rest ?? 0)}회, ` +
+        `GraphQL ${(countsAfter?.graphql ?? 0) - (countsBefore?.graphql ?? 0)}회, ` +
+        `blob 캐시 적중 ${(diskCache?.hits() ?? 0) - hitsBefore}회` +
+        `${writeFailures > 0 ? `, 캐시 쓰기 실패 ${writeFailures}회` : ""}, ${seconds}초`,
+    );
     // 메일은 트랜잭션이 끝난 뒤에 보낸다. SMTP 실패는 스캔 status 를 바꾸지 않는다.
     if (sendMail) {
       try {

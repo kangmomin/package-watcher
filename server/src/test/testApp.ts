@@ -21,7 +21,7 @@ import {
   type Summary,
 } from "@pw/shared";
 import { expect } from "vitest";
-import { createApp, type AppInstance } from "../app.ts";
+import { createApp, type AppDeps, type AppInstance } from "../app.ts";
 import type { InitialSettingsEnv, TokenSource } from "../config.ts";
 import { FakeClock } from "./clock.ts";
 import type { FakeFeedClient } from "./feed.ts";
@@ -57,6 +57,10 @@ export interface TestAppOptions {
   feedClient?: FakeFeedClient;
   /** 스캔 직전에 feed 동기화를 기다리는 최대 시간(ms) */
   feedWaitMs?: number;
+  /** 기본은 재시도와 자동 이어받기를 끈다(`retryDelaysMs: []`, `autoResumeDelayMs: null`) */
+  feedOptions?: AppDeps["feedOptions"];
+  /** blob 의 디스크 캐시 폴더. 기본 없음(기존 테스트의 요청 수 단언이 유지된다) */
+  blobCacheDir?: string;
   /** 내장 검사(policy) 항목 9개를 만든다. 기본 false (기존 테스트의 항목 수·스캔 결과가 바뀌지 않게) */
   seedPolicy?: boolean;
 }
@@ -98,8 +102,11 @@ export function createTestApp(options: TestAppOptions = {}): TestApp {
     dbPath,
     github: tokenSource === "none" ? null : github,
     feedWaitMs: options.feedWaitMs,
+    feedOptions: options.feedOptions ?? { retryDelaysMs: [], autoResumeDelayMs: null },
     feedClient: tokenSource === "none" ? null : (options.feedClient ?? null),
     githubTokenSource: tokenSource,
+    blobCacheDir: options.blobCacheDir ?? null,
+    blobCacheVerify: false, // 가짜 GitHub 의 sha 는 git blob sha 가 아니다
     mailer,
     smtpConfigured: options.smtpConfigured ?? true,
     clock,

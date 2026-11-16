@@ -84,6 +84,8 @@ interface RepoState {
   /** 브랜치 이름 → 마지막 push 시각 (listRecentPushes) */
   pushes: Map<string, string>;
   pushError: Error | null;
+  /** events 의 DeleteEvent 로 알려진 브랜치 (마지막 push 보다 뒤) */
+  deletedBranches: Set<string>;
   commits: CommitInfo[];
   commitsError: Error | null;
   workflowCommits: WorkflowCommit[];
@@ -145,6 +147,7 @@ export class FakeGitHubClient implements GitHubClient {
       recentError: null,
       pushes: new Map(),
       pushError: null,
+      deletedBranches: new Set(),
       commits: [],
       commitsError: null,
       workflowCommits: [],
@@ -244,6 +247,17 @@ export class FakeGitHubClient implements GitHubClient {
   /** 브랜치의 마지막 push 시각 (events API). 브랜치가 없어도 둘 수 있다 */
   setPush(name: string, branch: string, pushedAt: string): void {
     this.mustGet(name).pushes.set(branch, pushedAt);
+  }
+
+  /** events 에 DeleteEvent 가 있는 브랜치 (그 브랜치의 push 시각보다 뒤) */
+  setDeletedEvent(name: string, branch: string): void {
+    this.mustGet(name).deletedBranches.add(branch);
+  }
+
+  /** 지금까지 받은 호출로 센 요청 수: GraphQL 은 listRecentBranches, 나머지는 REST */
+  requestCounts(): { rest: number; graphql: number } {
+    const graphql = this.calls.filter((call) => call.method === "listRecentBranches").length;
+    return { rest: this.calls.length - graphql, graphql };
   }
 
   failRecentPushes(name: string, error: Error): void {
@@ -396,9 +410,11 @@ export class FakeGitHubClient implements GitHubClient {
   async listRecentPushes(org: string, repo: string, sinceIso: string): Promise<Map<string, string>> {
     await this.enter("listRecentPushes", org, repo, sinceIso);
     const state = this.repos.get(repo);
-    if (!state) return new Map();
+    if (!state) throw new Error(`GitHub API 오류 (404): ${repo}`);
     if (state.pushError) throw state.pushError;
-    return new Map([...state.pushes].filter(([, at]) => Date.parse(at) >= Date.parse(sinceIso)));
+    const pushed = new Map([...state.pushes].filter(([, at]) => Date.parse(at) >= Date.parse(sinceIso)));
+    for (const name of state.deletedBranches) pushed.delete(name);
+    return pushed;
   }
 
   async listRecentCommits(

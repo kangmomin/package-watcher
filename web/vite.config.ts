@@ -26,5 +26,7 @@ export default defineConfig({
     setupFiles: ["./src/test/setup.ts"],
     include: ["src/**/*.test.{ts,tsx}"],
     css: false,
+    // 옵션이 20개가 넘는 select 를 jsdom 에서 여닫는 테스트는 부하가 있을 때 5초를 넘는다.
+    testTimeout: 20_000,
   },
 });
