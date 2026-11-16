@@ -22,6 +22,8 @@ function main(): void {
     // 외부 목록(권고)은 공개 데이터라서 스캔과 같은 토큰을 쓴다. 토큰이 없으면 동기화하지 않는다.
     feedClient: config.github.token ? createFeedClient({ token: config.github.token }) : null,
     githubTokenSource: config.github.source,
+    // blob 내용은 sha 가 같으면 바뀌지 않아서 디스크에 두고 다음 스캔이 다시 받지 않는다. BLOB_CACHE=off 로 끈다.
+    blobCacheDir: config.blobCacheDir,
     mailer: config.smtp ? createSmtpMailer(config.smtp) : unconfiguredMailer,
     smtpConfigured: config.smtp !== null,
     clock: systemClock,

@@ -126,7 +126,7 @@ describe("쪽 단위의 재시도", () => {
     expect(failed.lastError).toMatch(/한도/);
   });
 
-  it("[SH-14] 이어받기의 첫 요청은 재시도 3번 뒤에도 실패했을 때만 cursor 를 버린다", async () => {
+  it("[SH-14] 이어받기의 첫 요청이 재시도 안에서 성공하면 cursor 를 유지하고, 4번 모두 실패해도 버리지 않는다", async () => {
     const list = nodes(5);
     const first = new FakeFeedClient(list, 2);
     first.failures.set(2, new RateLimitedError());
@@ -141,7 +141,7 @@ describe("쪽 단위의 재시도", () => {
     await sync(t);
     expect(first.calls).toEqual(["2", "2", "2", "4"]);
 
-    // 4번 모두 실패하면 처음부터 다시 받는다
+    // 4번 모두 실패해도 cursor 를 버리지 않는다 (거부가 분명할 때만 버린다 - SH-60~62)
     const second = new FakeFeedClient(list, 2);
     second.failures.set(2, new RateLimitedError());
     const other = withRetries(second);
@@ -149,9 +149,9 @@ describe("쪽 단위의 재시도", () => {
     second.calls.length = 0;
     second.failures.clear();
     for (const call of [1, 2, 3, 4]) second.failures.set(call, new Error("cursor invalid"));
-    const done = await sync(other.t);
-    expect(second.calls).toEqual(["2", "2", "2", "2", null, "2", "4"]);
-    expect(done).toMatchObject({ entryCount: 5, fullSyncDone: true });
+    const failed = await sync(other.t);
+    expect(second.calls).toEqual(["2", "2", "2", "2"]);
+    expect(failed.fullSyncDone).toBe(false);
   });
 });
 

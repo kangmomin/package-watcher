@@ -116,7 +116,7 @@ describe("pickRecentPushes", () => {
     expect(pickRecentPushes("x", SINCE).size).toBe(0);
   });
 
-  it("[SF-114] listRecentPushes 는 events API 1회, 404 는 빈 Map", async () => {
+  it("[SF-114] listRecentPushes 는 events API 1회, 404 는 throw", async () => {
     const mock = createFetchMock(({ url }) =>
       url.pathname === "/repos/my-org/svc/events"
         ? { status: 200, body: [{ type: "PushEvent", created_at: "2026-11-10T00:00:00Z", payload: { ref: "refs/heads/a" } }] }
@@ -127,6 +127,7 @@ describe("pickRecentPushes", () => {
     expect([...(await github.listRecentPushes("my-org", "svc", SINCE))]).toEqual([["a", "2026-11-10T00:00:00Z"]]);
     expect(mock.calls).toHaveLength(1);
     expect(mock.calls[0]?.url.searchParams.get("per_page")).toBe("100");
-    expect((await github.listRecentPushes("my-org", "none", SINCE)).size).toBe(0);
+    // 404 는 빈 결과가 아니라 오류다(호출한 쪽이 "조회 실패"로 처리한다)
+    await expect(github.listRecentPushes("my-org", "none", SINCE)).rejects.toThrow(/404/);
   });
 });

@@ -86,6 +86,9 @@ export function createFeedService(deps: FeedServiceDeps): FeedService {
   let resumeTimer: { cancel(): void } | null = null;
   /** 연속으로 멈춘 횟수 (성공하면 0) */
   let failures = 0;
+  /** 마지막으로 rate limit 으로 멈춘 시각(ms, 메모리). 스캔 직전의 동기화가 그 뒤 1시간은 시작하지 않게 한다 */
+  let rateLimitedAt: number | null = null;
+  const rateLimitWaitMs = (): number => deps.rateLimitResumeDelayMs ?? RATE_LIMIT_RESUME_DELAY_MS;
 
   const isEnabled = (): boolean => readStoredSettings(repos.settings).feedEnabled;
 
@@ -98,12 +101,17 @@ export function createFeedService(deps: FeedServiceDeps): FeedService {
   function scheduleResume(result: FeedSyncResult): void {
     if (result.status === "ok") {
       failures = 0;
+      rateLimitedAt = null;
       return;
     }
+    if (result.status === "rateLimited") rateLimitedAt = clock.now().getTime();
+    // 중지 요청으로 끝난 실행은 실패가 아니다
     if (result.status === "stopped" || !result.full || autoResumeDelay === null || stopping) return;
+    // 쪽을 진행했다면 "연속" 실패가 아니다 — 매번 수백 쪽씩 진행하다 멈추는 경우에 3번 만에 포기하지 않는다
+    if (result.progressed) failures = 0;
     failures += 1;
     if (failures > MAX_AUTO_RESUMES) return;
-    const delay = result.status === "rateLimited" ? (deps.rateLimitResumeDelayMs ?? RATE_LIMIT_RESUME_DELAY_MS) : autoResumeDelay;
+    const delay = result.status === "rateLimited" ? rateLimitWaitMs() : autoResumeDelay;
     clearResumeTimer();
     resumeTimer = setTimer(() => {
       resumeTimer = null;
@@ -173,6 +181,8 @@ export function createFeedService(deps: FeedServiceDeps): FeedService {
     async syncBeforeScan(maxWaitMs) {
       try {
         if (!client || !isEnabled()) return;
+        // rate limit 으로 멈춘 뒤 1시간은 시작하지 않는다(스캔마다 호출해서 한도를 더 태우지 않게). 수동 실행은 막지 않는다.
+        if (!running && rateLimitedAt !== null && clock.now().getTime() - rateLimitedAt < rateLimitWaitMs()) return;
         const sync = running ?? launch();
         let timer: ReturnType<typeof setTimeout> | undefined;
         const timeout = new Promise<void>((resolve) => {

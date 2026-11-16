@@ -7,7 +7,7 @@ import type { Logger } from "../logger.ts";
 import type { FeedWrite } from "../repositories/feed.ts";
 import type { Repositories } from "../repositories/index.ts";
 import { HOUR_MS, printable, toIso } from "../services/common.ts";
-import type { FeedClient } from "./client.ts";
+import { FatalFeedError, InvalidCursorError, type FeedClient } from "./client.ts";
 import { convertAdvisory } from "./ranges.ts";
 
 const SUMMARY_MAX = 300;
@@ -64,9 +64,19 @@ export interface FeedSyncResult {
   status: "ok" | "stopped" | "failed" | "rateLimited";
   /** 전체 동기화였는가(이어받을 수 있는 것) */
   full: boolean;
+  /** 이번 실행이 쪽을 1개라도 반영했는가 (자동 이어받기의 연속 실패 횟수를 초기화하는 근거) */
+  progressed: boolean;
 }
 
-const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+/** 중지 요청(서버 종료, feed 끄기)으로 실행을 마친다 — 실패가 아니다 */
+class StopRequested extends Error {}
+
+/** 짧은 조각으로 나눠 기다린다 — 중지 요청에 바로 반응한다 */
+async function interruptibleSleep(ms: number, shouldStop: () => boolean): Promise<void> {
+  for (let left = ms; left > 0 && !shouldStop(); left -= 250) {
+    await new Promise((resolve) => setTimeout(resolve, Math.min(250, left)));
+  }
+}
 
 const yieldToEventLoop = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
@@ -179,19 +189,26 @@ export async function runFeedSync(deps: FeedSyncDeps): Promise<FeedSyncResult> {
   const { repos, client, clock, logger } = deps;
   const settings = repos.settings;
   const delays = deps.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
-  const sleep = deps.sleep ?? realSleep;
+  const sleep = deps.sleep ?? ((ms: number) => interruptibleSleep(ms, deps.shouldStop));
   let isFull = false;
+  let progressed = false;
 
-  /** rate limit 이 아닌 오류는 같은 cursor 로 delays 만큼 더 시도한다. 마지막 오류를 던진다 */
+  /**
+   * rate limit·cursor 거부·토큰 문제가 아닌 오류는 같은 cursor 로 delays 만큼 더 시도한다. 마지막 오류를 던진다.
+   * 대기 전후에 중지 요청을 확인한다(중지 요청 뒤의 오류는 실패가 아니라 중지다).
+   */
   async function fetchWithRetry(cursor: string | null) {
     for (let attempt = 0; ; attempt += 1) {
       try {
         return await client.fetchPage(cursor);
       } catch (error) {
+        if (deps.shouldStop()) throw new StopRequested();
         const delay = delays[attempt];
-        if (error instanceof RateLimitedError || delay === undefined || deps.shouldStop()) throw error;
+        const hopeless = error instanceof RateLimitedError || error instanceof InvalidCursorError || error instanceof FatalFeedError;
+        if (hopeless || delay === undefined) throw error;
         logger.warn(`외부 목록의 쪽을 받지 못해 ${delay}ms 뒤에 다시 시도합니다 (${attempt + 1}/${delays.length})`, error);
         await sleep(delay);
+        if (deps.shouldStop()) throw new StopRequested();
       }
     }
   }
@@ -233,17 +250,17 @@ export async function runFeedSync(deps: FeedSyncDeps): Promise<FeedSyncResult> {
       try {
         page = await fetchWithRetry(cursor);
       } catch (error) {
-        // 이어받던 cursor 를 거부하면(오류) 처음부터 다시 받는다. 같은 실행 id 라서 이미 받은 행은 그대로 유효하다.
-        if (!resumed || error instanceof RateLimitedError) throw error;
-        logger.warn("저장된 cursor 로 이어받지 못해 처음부터 다시 받습니다", error);
+        // GitHub 이 이어받던 cursor 를 거부한 것이 분명할 때만 처음부터 다시 받는다. 같은 실행 id 라서 이미 받은 행은 그대로 유효하다.
+        // 저장된 cursor 는 지우지 않는다 — 처음부터의 첫 쪽이 성공해서 새 cursor 로 바뀔 때까지 남는다(그 전에 실패해도 진행을 잃지 않는다).
+        if (!resumed || !(error instanceof InvalidCursorError)) throw error;
+        logger.warn("GitHub 이 저장된 cursor 를 거부해서 처음부터 다시 받습니다", error);
         resumed = false;
         cursor = null;
         skipped = 0;
-        settings.set("feed_cursor", null);
-        settings.set("feed_skipped", "0");
         continue;
       }
       resumed = false;
+      progressed = true;
       const nextCursor = page.nextCursor;
       let finished = 0;
       const outcome = repos.transaction(() => {
@@ -263,11 +280,11 @@ export async function runFeedSync(deps: FeedSyncDeps): Promise<FeedSyncResult> {
 
       cursor = nextCursor;
       if (cursor === null) {
-        if (full) return { status: "ok", full };
+        if (full) return { status: "ok", full, progressed };
         break;
       }
       if (!full && outcome.reachedOld) break;
-      if (deps.shouldStop()) return { status: "stopped", full };
+      if (deps.shouldStop()) return { status: "stopped", full, progressed };
       await yieldToEventLoop();
     }
 
@@ -277,14 +294,15 @@ export async function runFeedSync(deps: FeedSyncDeps): Promise<FeedSyncResult> {
       settings.set("feed_last_synced_at", toIso(clock.now()));
       settings.set("feed_last_error", null);
     });
-    return { status: "ok", full };
+    return { status: "ok", full, progressed };
   } catch (error) {
+    if (error instanceof StopRequested) return { status: "stopped", full: isFull, progressed };
     logger.error("외부 목록(feed) 동기화에 실패했습니다", error);
     try {
       settings.set("feed_last_error", describeError(error));
     } catch (saveError) {
       logger.error("외부 목록 동기화의 오류를 저장하지 못했습니다", saveError);
     }
-    return { status: error instanceof RateLimitedError ? "rateLimited" : "failed", full: isFull };
+    return { status: error instanceof RateLimitedError ? "rateLimited" : "failed", full: isFull, progressed };
   }
 }

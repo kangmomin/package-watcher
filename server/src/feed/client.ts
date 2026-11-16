@@ -20,6 +20,33 @@ export interface FeedClient {
   fetchPage(cursor: string | null): Promise<FeedPage>;
 }
 
+/** GitHub 이 넘겨 준 cursor 를 거부했다 (GraphQL 오류가 cursor·after 인자의 형식 문제를 가리킨다). 이어받기를 처음부터 다시 하는 유일한 근거 */
+export class InvalidCursorError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidCursorError";
+  }
+}
+
+/** 다시 시도해도 소용없는 오류: 토큰 문제(401, rate limit 이 아닌 403) */
+export class FatalFeedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FatalFeedError";
+  }
+}
+
+const AUTH_ERROR = /^GitHub API 오류 \((?:401|403)\)/;
+const CURSOR_WORD = /\b(?:cursor|after)\b/i;
+const CURSOR_PROBLEM = /\b(?:invalid|malformed|not (?:a )?valid|valid cursor|decode|decoding|parse|parsing|illegal|expired)\b/i;
+
+/** 오류의 문장(octokit 이 합친 message 와 `errors[].message`)이 cursor 인자의 형식 문제를 가리키는가 */
+export function isInvalidCursorMessage(error: unknown): boolean {
+  const { message, errors } = (error ?? {}) as { message?: unknown; errors?: unknown };
+  const texts = [message, ...(Array.isArray(errors) ? errors.map((item) => (item as { message?: unknown } | null)?.message) : [])];
+  return texts.some((text) => typeof text === "string" && CURSOR_WORD.test(text) && CURSOR_PROBLEM.test(text));
+}
+
 export const PAGE_SIZE = 100;
 
 /** 이 도구가 쓰는 필드만 요청한다. 일반 CVE 는 가져오지 않는다(classifications: MALWARE). */
@@ -98,7 +125,13 @@ export function createFeedClient(options: FeedClientOptions): FeedClient {
       try {
         data = await octokit.graphql(FEED_QUERY, { cursor });
       } catch (error) {
-        throw isGraphqlRateLimit(error) ? new RateLimitedError() : translateError(error);
+        if (isGraphqlRateLimit(error)) throw new RateLimitedError();
+        // 처음부터의 요청(cursor 없음)에는 cursor 오류가 있을 수 없다
+        if (cursor !== null && isInvalidCursorMessage(error)) {
+          throw new InvalidCursorError(`GitHub 이 cursor 를 거부했습니다: ${String((error as Error).message).slice(0, 200)}`);
+        }
+        const translated = translateError(error);
+        throw AUTH_ERROR.test(translated.message) ? new FatalFeedError(translated.message) : translated;
       }
       const connection = (data as { securityVulnerabilities?: unknown } | null)?.securityVulnerabilities as
         | { nodes?: unknown; pageInfo?: { hasNextPage?: unknown; endCursor?: unknown } }

@@ -6,6 +6,7 @@ import { fakeNode, FakeFeedClient } from "../test/feed.ts";
 import { npmLockV3, pkgJson } from "../test/repoFixtures.ts";
 import { cleanupTestApps, createTestApp, putSettings, runScan, type TestApp } from "../test/testApp.ts";
 import { addEntry, listEntries } from "../test/v2.ts";
+import { InvalidCursorError } from "./client.ts";
 import { comparableRange } from "./comparable.ts";
 import { convertAdvisory } from "./ranges.ts";
 
@@ -133,7 +134,7 @@ describe("M2: 범위의 유실 방지와 전체 동기화의 sweep", () => {
     await sync(t);
     client.calls.length = 0;
     client.failures.clear();
-    client.failures.set(1, new Error("GraphQL: cursor is invalid"));
+    client.failures.set(1, new InvalidCursorError("GraphQL: cursor is invalid"));
 
     const done = await sync(t);
 

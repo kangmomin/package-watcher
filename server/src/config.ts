@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import type { Settings } from "@pw/shared";
 
 export type TokenSource = Settings["githubTokenSource"];
@@ -32,6 +33,8 @@ export interface AppConfig {
   port: number;
   host: string;
   dataDir: string;
+  /** blob 의 디스크 캐시 폴더. `BLOB_CACHE=off` 이면 null */
+  blobCacheDir: string | null;
   webDistDir: string;
   github: { token: string | null; source: TokenSource };
   smtp: SmtpConfig | null;
@@ -43,6 +46,7 @@ export const ENV_KEYS = [
   "PORT",
   "HOST",
   "DATA_DIR",
+  "BLOB_CACHE",
   "WEB_DIST_DIR",
   "GITHUB_TOKEN",
   "GITHUB_ORG",
@@ -110,6 +114,7 @@ export function loadConfig(env: Env, ghAuthToken: () => string | null): AppConfi
     port: readPort(env, "PORT", DEFAULT_PORT),
     host: read(env, "HOST") ?? DEFAULT_HOST,
     dataDir: read(env, "DATA_DIR") ?? DEFAULT_DATA_DIR,
+    blobCacheDir: read(env, "BLOB_CACHE")?.toLowerCase() === "off" ? null : join(read(env, "DATA_DIR") ?? DEFAULT_DATA_DIR, "blob-cache"),
     webDistDir: read(env, "WEB_DIST_DIR") ?? defaultWebDistDir(),
     github: resolveGithubToken(env, ghAuthToken),
     smtp: readSmtp(env),

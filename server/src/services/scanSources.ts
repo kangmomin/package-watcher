@@ -25,6 +25,12 @@ const MAX_SOURCE_LENGTH = 1_048_576;
 const MAX_COMMANDS_PER_FILE = 5000;
 /** 파일 1개에서 검출에 쓰는 action·이미지 수의 상한(각각) */
 const MAX_REFS_PER_FILE = 5000;
+/**
+ * 디스크 캐시에 두는 보조 파일의 종류. 요청 수를 좌우하는 workflow·action.yml 만 둔다.
+ * mcp(`env` 의 API 토큰), compose·dockerfile(환경 변수·비밀번호), terraform·helm·vscode, registry-config·gitmodules(자격 증명)는 두지 않는다.
+ */
+export const isDiskCacheableKind = (kind: SourceKind): boolean => kind === "workflow" || kind === "action";
+
 export interface SourceFile extends TreeEntry {
   kind: SourceKind;
 }
@@ -249,7 +255,8 @@ export async function scanSources(
   // 호출자가 활성 종류를 주면 그 종류에서 쓸 수 있는 파일만 받는다.
   const fetchable = activeEcosystems ? files.filter((file) => needsSourceKind(file.kind, activeEcosystems)) : files;
   const contents = await mapWithConcurrency(fetchable, FILE_CONCURRENCY, (file) =>
-    client.getFile(org, repo.name, file.sha),
+    // 비밀값이 들어 있을 수 있는 파일은 디스크 캐시에 남기지 않는다(workflow·action.yml 만 둔다).
+    client.getFile(org, repo.name, file.sha, { noCache: !isDiskCacheableKind(file.kind) }),
   );
   const matches: SourceMatch[] = [];
   fetchable.forEach((file, index) => {

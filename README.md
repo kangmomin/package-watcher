@@ -73,6 +73,7 @@ npm start          # node server/dist/index.js (http://127.0.0.1:3000)
 | `PORT` | `3000` | listen 포트 |
 | `HOST` | `127.0.0.1` (Docker 이미지: `0.0.0.0`) | listen 주소 |
 | `DATA_DIR` | `./data` (Docker 이미지: `/data`) | SQLite 파일(`package-watcher.db`)을 두는 디렉터리. 없으면 만든다 |
+| `BLOB_CACHE` | (켬) | `off` 이면 blob 의 디스크 캐시(`$DATA_DIR/blob-cache`)를 쓰지 않는다. 아래 "GitHub 요청 수와 blob 캐시" 참고 |
 | `WEB_DIST_DIR` | 번들 위치 기준 `../../web/dist` (Docker 이미지: `/app/web/dist`) | 빌드된 GUI 위치. 없으면 정적 파일 제공을 건너뛴다 |
 | `GITHUB_TOKEN` | (없음) | GitHub 토큰. 없으면 `gh auth token` 을 실행하고, 그것도 없으면 토큰 없음(스캔 불가). 서버 시작 시 1회 해석한다 |
 | `GITHUB_ORG` | (없음) | 설정 초기값: 스캔할 GitHub org |
@@ -367,6 +368,18 @@ HTTP 전송을 직접 지원하지 않는 클라이언트(예: Claude Desktop)�
 tool 은 모두 15개다. 결과는 JSON 문자열(text content)이고(`export_blacklist` 만 파일 내용 그대로), 오류는 `isError: true` 와 `{ code, message, details? }` JSON 이다.
 
 - AI 에게 조사와 등록을 맡길 때 쓰는 지시문: [docs/20261116-ai-research-prompt.md](docs/20261116-ai-research-prompt.md) (미리 보기까지만 하고 승인을 기다린다).
+
+## GitHub 요청 수와 blob 캐시
+
+- **실측(org 의 repo 290개, 브랜치 스캔 포함):** 캐시가 빈 첫 스캔은 REST 요청이 약 **3,700회**(260초)다. GitHub 의 한도는 시간당 5,000회라서 **같은 시간에 첫 스캔을 2번 하면 한도를 넘을 수 있다**(넘으면 남은 repo 는 `RATE_LIMITED` 로 실패한다). 두 번째 스캔부터는 바뀐 파일만 받는다.
+- **blob 의 디스크 캐시:** blob 의 내용은 sha 가 같으면 바뀌지 않아서, 받은 파일을 `$DATA_DIR/blob-cache/<sha 앞 2자>/<sha>` 에 저장하고 다음 스캔에서 같은 sha 는 요청하지 않는다. 읽는 순서는 repo 안의 메모리 캐시 → 디스크 → GitHub 다. 검출·resolve·통계(`fileCount` 는 평가에 쓴 파일 수)는 캐시가 있든 없든 같고 요청 수와 시간만 다르다. 브랜치의 "받을 파일 300개" 상한은 디스크에 있는 파일을 세지 않는다.
+- **저장 규칙:** 파일 내용을 바이트 그대로 임시 파일에 쓴 뒤 rename 한다(파일 `0600`, 폴더 `0700`, 이미 있는 폴더도 시작할 때 `chmod` 를 시도한다). 읽을 때 git blob sha(`sha1("blob <바이트 수>\0<내용>")`)를 다시 계산해서 파일 이름과 다르면(깨진 파일, 옛 형식) 없는 것으로 보고 다시 받아 덮어쓴다. sha 가 `[0-9a-f]{40,64}` 가 아니면, 5MB 를 넘으면, 내용에 자격 증명이 든 URL(`://사용자:값@`, 예: lock 의 `resolved`)이 있으면, 잘못된 UTF-8 이라 원본 바이트로 되돌릴 수 없으면 저장하지 않는다. 스캔이 시작될 때(스캔을 막지 않고) 마지막 사용이 30일보다 오래된 파일을 지우고, 전체가 1GB 를 넘으면 오래된 것부터 지운다(지우기 직전에 다시 읽힌 파일은 지우지 않는다). 쓰기는 기다리지 않고 백그라운드로 하며 실패해도 스캔은 같다(요청 수 로그에 `캐시 쓰기 실패 n회` 가 붙는다).
+- **저장하는 파일(요청 수를 좌우하는 것만):** npm 의 `package.json`·lock·`pnpm-workspace.yaml`, 다른 패키지 종류의 lock·선언 파일(pip 선언 파일 제외), workflow·`action.yml`.
+- **저장하지 않는 파일(매번 받는다):** `.mcp.json`(`env` 의 API 토큰), docker compose(`environment` 의 비밀번호), Dockerfile(`ENV`·`ARG`), Terraform(`source` 의 자격 증명 URL), Helm, VS Code 설정, `.npmrc`·`.yarnrc.yml`·`pip.conf`류·`uv.toml`, `.gitmodules`, pip 의 `requirements*.txt` 등 pypi 선언 파일(`--extra-index-url` 의 자격 증명). 이 파일들은 브랜치의 "받을 파일 300개" 상한에서도 디스크에 있어도 받을 파일로 센다.
+- **고지:** repo 의 파일 내용(`package.json`, lock, workflow)이 데이터 폴더에 **평문으로** 남는다. DB 에는 원래 저장하지 않던 내용이다. 데이터 volume 의 접근 권한과 백업에 포함된다. workflow 에 하드코딩된 값이 있으면 그것도 남는다. 원하지 않으면 `BLOB_CACHE=off`. 깨진 캐시 파일은 디스크에 있다고 세지만 실제로는 GitHub 에서 받는다(상한의 계산은 그대로다).
+- **끄는 방법:** `BLOB_CACHE=off`. 폴더를 지워도 된다(다음 스캔이 다시 채운다).
+- **요청 수의 기록:** 스캔이 끝나면 로그에 `스캔 #n: GitHub 요청 REST x회, GraphQL y회, blob 캐시 적중 z회, t초` 를 1줄 남긴다(화면·API 에는 없다).
+- 캐시가 찬 뒤의 스캔 1회: repo 목록 `ceil(R/100)` + repo 마다 tree 1 + 바뀐 파일 + (최근 push 가 있는 repo P 마다 GraphQL 1 + events 1) + 평가하는 브랜치 B 마다 tree 1 + 브랜치의 새 파일. 삭제 이벤트가 있는 브랜치는 조회하지 않는다.
 
 ## 알려진 한계
 
