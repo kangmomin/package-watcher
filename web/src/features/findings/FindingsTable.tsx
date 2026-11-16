@@ -35,7 +35,7 @@ import {
   useSetFindingStatus,
   type SetFindingStatusVariables,
 } from "@/features/findings/hooks";
-import { NO_VERSION_SR_TEXT, dependencyTypeLabel, ecosystemLabel, findingFileLabel } from "@/lib/format";
+import { NO_VERSION_SR_TEXT, dependencyTypeLabel, ecosystemLabel, findingFileFullLabel, findingFileLabel } from "@/lib/format";
 
 export interface FindingsTableProps {
   items: Finding[];
@@ -82,7 +82,7 @@ export function FindingsTable({ items }: FindingsTableProps) {
                 </RowHeaderCell>
                 <TableCell className="max-w-64" title={finding.filePath}>
                   {finding.ref !== "" && <BranchBadge name={finding.ref} />}
-                  <span className="block truncate">{findingFileLabel(finding.filePath)}</span>
+                  <FileLabel finding={finding} className="block truncate" />
                 </TableCell>
                 <TableCell>{ecosystemLabel(finding.ecosystem)}</TableCell>
                 <TableCell
@@ -118,6 +118,18 @@ export function FindingsTable({ items }: FindingsTableProps) {
         </TableBody>
       </Table>
     </div>
+  );
+}
+
+/** 파일 칸의 값. 바꿔 보일 때는 보이는 글자를 숨기고 전체 값(sha)을 스크린 리더에 준다. */
+export function FileLabel({ finding, className }: { finding: Finding; className?: string }) {
+  const full = findingFileFullLabel(finding);
+  if (full === null) return <span className={className}>{finding.filePath}</span>;
+  return (
+    <span className={className}>
+      <span aria-hidden="true">{findingFileLabel(finding)}</span>
+      <span className="sr-only">{full}</span>
+    </span>
   );
 }
 

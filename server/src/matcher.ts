@@ -1,6 +1,7 @@
 import { ECOSYSTEM_RULES, type Ecosystem } from "@pw/shared";
 import { intersects, satisfies, validRange } from "semver";
 import { unwrapNpmAlias } from "./lockfiles/common.ts";
+import { normalizeTerraformSource } from "./sources/terraform.ts";
 
 /**
  * lockfile 의 정확한 버전이 블랙리스트 range 를 만족하는가.
@@ -82,6 +83,8 @@ export interface EntryIndex<E extends { name: string; ecosystem: string }> {
 
 /** 종류의 이름 규칙(pypi = PEP 503, nuget = 소문자)으로 정규화한다. 모르는 종류는 그대로 둔다. */
 export function normalizeFor(ecosystem: string, name: string): string {
+  // Terraform 은 같은 module 의 표기가 여럿이라(git::https://…, github.com/o/r) 이름을 서버에서 정규화한다.
+  if (ecosystem === "terraform") return normalizeTerraformSource(name);
   const rule = (ECOSYSTEM_RULES as Record<string, (typeof ECOSYSTEM_RULES)[Ecosystem] | undefined>)[ecosystem];
   return rule ? rule.normalizeName(name) : name;
 }

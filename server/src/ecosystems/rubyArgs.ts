@@ -16,6 +16,11 @@ export function splitArgs(text: string): string[] | null {
   let depth = 0;
   for (let index = 0; index < text.length; index += 1) {
     const char = text[index] as string;
+    // 따옴표 밖의 후위 `if`·`unless` 는 조건이다 (단어의 시작에서만 본다).
+    if (quote === "" && depth === 0 && /[iu]/.test(char) && (index === 0 || /\s/.test(text[index - 1] as string))) {
+      const word = /^(?:if|unless)(?=[\s(])/.exec(text.slice(index, index + 8));
+      if (word) break;
+    }
     if (quote !== "") {
       current += char;
       if (char === "\\" && index + 1 < text.length) {
@@ -119,22 +124,40 @@ export function readCalls(lines: string[], options: CallOptions, blocked: (index
   return deps;
 }
 
-/** `git "…" do` · `path "…" do` 블록 안의 줄인가를 줄마다 계산한다 (블록은 `do` 로 열고 `end` 로 닫는다) */
-export function blockedLines(lines: string[], openers: RegExp): boolean[] {
+export interface BlockInfo {
+  /** 줄마다: 열린 블록 중 `isBlocked` 가 참인 것 안에 있다 */
+  blocked: boolean[];
+  /** 줄마다: 어떤 블록 안도 아니다 */
+  topLevel: boolean[];
+}
+
+const BLOCK_OPENER = /\bdo(?:\s*\|[^|]*\|)?\s*(?:#.*)?$/;
+const STATEMENT_OPENER = /^(?:if|unless|case|begin|def|while|until|for|class|module)\b/;
+
+/**
+ * `do … end` 블록의 안인가를 줄마다 계산한다. `if`·`case`·`begin`·`def` 등 `end` 로 닫는 문장도 깊이로 센다.
+ * `isBlocked` 는 `do` 로 여는 줄을 받아 그 블록 안을 건너뛸지(git·path·사설 source) 정한다.
+ */
+export function blockedLines(lines: string[], isBlocked: (openerLine: string) => boolean): BlockInfo {
   const stack: boolean[] = [];
   let blockedCount = 0;
-  return lines.map((line) => {
-    const state = blockedCount > 0;
+  const blocked: boolean[] = [];
+  const topLevel: boolean[] = [];
+  for (const line of lines) {
+    blocked.push(blockedCount > 0);
+    topLevel.push(stack.length === 0);
     // 긴 줄은 정규식을 돌리지 않는다(readCalls 도 읽지 않는 줄이다).
-    if (line.length > MAX_LINE) return state;
+    if (line.length > MAX_LINE) continue;
     const trimmed = line.trim();
-    if (/\bdo(?:\s*\|[^|]*\|)?\s*(?:#.*)?$/.test(trimmed)) {
-      const blocked = openers.test(trimmed);
-      stack.push(blocked);
-      if (blocked) blockedCount += 1;
+    if (BLOCK_OPENER.test(trimmed)) {
+      const skip = isBlocked(trimmed);
+      stack.push(skip);
+      if (skip) blockedCount += 1;
+    } else if (STATEMENT_OPENER.test(trimmed) && !/\bend$/.test(trimmed)) {
+      stack.push(false);
     } else if (/^end\b/.test(trimmed) && stack.length > 0) {
       if (stack.pop()) blockedCount -= 1;
     }
-    return state;
-  });
+  }
+  return { blocked, topLevel };
 }

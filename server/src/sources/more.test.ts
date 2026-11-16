@@ -168,12 +168,12 @@ resource "x" "y" {
       { name: "terraform-aws-modules/vpc/aws", version: "5.8.1", raw: "terraform-aws-modules/vpc/aws" },
       { name: "terraform-aws-modules/eks/aws", version: "", raw: "terraform-aws-modules/eks/aws//modules/node" },
       {
-        name: "git::https://github.com/org/mod.git",
+        name: "github.com/org/mod",
         version: "v1.2.3",
         raw: "git::https://github.com/org/mod.git//sub/dir?ref=v1.2.3",
       },
       {
-        name: "git::https://github.com/org/mod2.git",
+        name: "github.com/org/mod2",
         version: "2.0.0",
         raw: "git::https://github.com/org/mod2.git?ref=v1.0.0",
       },
@@ -230,7 +230,7 @@ _password="c2VjcmV0c2VjcmV0"
 
   it(".yarnrc.yml: npmAuthToken 의 값이 있으면 이름만 보고한다", () => {
     expect(extractRegistryConfig(".yarnrc.yml", 'npmAuthToken: "abcdefghijkl"\nnpmRegistryServer: "https://x.io"\n')).toEqual({
-      registryHosts: [],
+      registryHosts: ["x.io"],
       tokenKeys: ["npmAuthToken"],
     });
     expect(extractRegistryConfig(".yarnrc.yml", "npmAuthToken: ${YARN_TOKEN}\n").tokenKeys).toEqual([]);

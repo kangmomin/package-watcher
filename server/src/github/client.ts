@@ -47,11 +47,14 @@ export interface GitHubClient {
    * 오래된 커밋을 새로 push 한 브랜치를 커밋 시각만으로는 놓치므로 함께 본다. 404 → 빈 Map.
    */
   listRecentPushes(org: string, repo: string, sinceIso: string): Promise<Map<string, string>>;
-  /** `branch` 의 `sinceIso` 이후 커밋(최근 순 100개, 1쪽만). 빈 repo(409)·404 → `[]` */
-  listRecentCommits(org: string, repo: string, branch: string, sinceIso: string): Promise<CommitInfo[]>;
+  /**
+   * `branch` 의 `sinceIso` 이후 커밋(최근 순, 쪽마다 100개, 기본 1쪽). `sinceIso = null` 이면 기간 제한이 없다(기준선을 만들 때).
+   * 빈 repo(409) → `[]`. 404 는 throw (이미 tree 를 읽은 repo 라서 이상 상황이다 — 호출한 쪽이 "조회 실패"로 둔다)
+   */
+  listRecentCommits(org: string, repo: string, branch: string, sinceIso: string | null, pages?: number): Promise<CommitInfo[]>;
   /** 위와 같되 `.github/workflows` 를 바꾼 커밋만(1쪽). 어느 파일이 바뀌었는지는 받지 않는다 */
   listWorkflowCommits(org: string, repo: string, branch: string, sinceIso: string): Promise<WorkflowCommit[]>;
-  /** 최근에 바뀐 PR 50개(state 무관, 1쪽). 404 → `[]` */
+  /** 최근에 바뀐 PR 50개(state 무관, 1쪽). 404 는 throw */
   listRecentPulls(org: string, repo: string): Promise<PullInfo[]>;
 }
 
@@ -407,15 +410,27 @@ export function createOctokitClient(options: OctokitClientOptions): GitHubClient
         }
       }),
 
-    listRecentCommits: (org, repo, branch, sinceIso) =>
+    listRecentCommits: (org, repo, branch, sinceIso, pages = 1) =>
       call(async () => {
+        const found: CommitInfo[] = [];
         try {
-          const { data } = await octokit.rest.repos.listCommits({ owner: org, repo, sha: branch, since: sinceIso, per_page: 100 });
-          return pickCommits(data);
+          for (let page = 1; page <= pages; page += 1) {
+            const { data } = await octokit.rest.repos.listCommits({
+              owner: org,
+              repo,
+              sha: branch,
+              ...(sinceIso === null ? {} : { since: sinceIso }),
+              per_page: 100,
+              page,
+            });
+            found.push(...pickCommits(data));
+            if (!Array.isArray(data) || data.length < 100) break;
+          }
         } catch (error) {
-          if (error instanceof RequestError && (error.status === 404 || error.status === 409)) return [];
+          if (error instanceof RequestError && error.status === 409) return [];
           throw error;
         }
+        return found;
       }),
 
     listWorkflowCommits: (org, repo, branch, sinceIso) =>
@@ -431,27 +446,22 @@ export function createOctokitClient(options: OctokitClientOptions): GitHubClient
           });
           return pickCommits(data).map(({ sha, committedAt, url, authorLogin }) => ({ sha, committedAt, url, authorLogin }));
         } catch (error) {
-          if (error instanceof RequestError && (error.status === 404 || error.status === 409)) return [];
+          if (error instanceof RequestError && error.status === 409) return [];
           throw error;
         }
       }),
 
     listRecentPulls: (org, repo) =>
       call(async () => {
-        try {
-          const { data } = await octokit.rest.pulls.list({
-            owner: org,
-            repo,
-            state: "all",
-            sort: "updated",
-            direction: "desc",
-            per_page: 50,
-          });
-          return pickPulls(data);
-        } catch (error) {
-          if (error instanceof RequestError && error.status === 404) return [];
-          throw error;
-        }
+        const { data } = await octokit.rest.pulls.list({
+          owner: org,
+          repo,
+          state: "all",
+          sort: "updated",
+          direction: "desc",
+          per_page: 50,
+        });
+        return pickPulls(data);
       }),
 
     getFile: (org, repo, sha) =>

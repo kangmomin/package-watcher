@@ -54,9 +54,10 @@ const KIND_ECOSYSTEMS: Record<SourceKind, readonly string[]> = {
   dockerfile: ["npm", "pypi", "docker", "content"],
   compose: ["docker", "content"],
   mcp: ["npm", "pypi", "content"],
-  vscode: ["vscode", "content"],
-  helm: ["helm", "content"],
-  terraform: ["terraform", "content"],
+  // content 가 받는 보조 파일은 위 5종뿐이다 (.tf 수십 개를 문자열 찾기 때문에 받지 않는다).
+  vscode: ["vscode"],
+  helm: ["helm"],
+  terraform: ["terraform"],
   // 아래 둘은 위험한 설정(policy)의 검사만 쓴다. 토큰이 든 파일이라 문자열 찾기(content)로는 받지 않는다.
   "registry-config": [],
   gitmodules: [],
@@ -254,7 +255,8 @@ export async function scanSources(
   fetchable.forEach((file, index) => {
     const where = printable(`${org}/${repo.name}/${file.path}`);
     const content = contents[index] ?? "";
-    received?.set(file.path, content);
+    // policy 전용 파일(토큰이 있을 수 있는 설정)은 content 검사의 대상이 아니다.
+    if (file.kind !== "registry-config" && file.kind !== "gitmodules") received?.set(file.path, content);
     if (content.length > MAX_SOURCE_LENGTH) {
       logger.warn(`보조 파일이 너무 커서 건너뜁니다: ${where}`);
       skipped?.add(file.path);

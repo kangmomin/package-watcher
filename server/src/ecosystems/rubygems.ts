@@ -4,6 +4,8 @@ import type { DeclaredDependency, EcosystemSupport, LockedPackage } from "./type
 
 const SECTION = /^[A-Z][A-Z ]*$/;
 const LOCKED_SPEC = /^ {4}([^\s(]+) \(([^)\s]+)\)$/;
+/** 버전 뒤의 플랫폼 접미(`1.15.5-x86_64-linux`). `1.0.0-beta` 같은 값은 건드리지 않는다 */
+const PLATFORM_SUFFIX = /-(?:x86_64|x86|x64|arm64|aarch64|arm|java|universal|mingw|mswin)[\w.-]*$/;
 const DEPENDENCY_NAME = /^ {2}([^\s(!]+)/;
 /** Gemfile.lock 의 형식 표지: 이 구역 중 하나는 있다 */
 const LOCK_SECTIONS = new Set(["GEM", "DEPENDENCIES", "PLATFORMS", "PATH", "GIT"]);
@@ -34,7 +36,7 @@ export function parseGemfileLock(content: string, file = "Gemfile.lock"): Locked
       }
       const match = inSpecs ? LOCKED_SPEC.exec(line) : null;
       if (match && specs.length < MAX_ITEMS) {
-        specs.push({ name: match[1] as string, version: (match[2] as string).split("-")[0] as string });
+        specs.push({ name: match[1] as string, version: (match[2] as string).replace(PLATFORM_SUFFIX, "") });
       }
     } else if (section === "DEPENDENCIES") {
       const match = DEPENDENCY_NAME.exec(line);
@@ -47,12 +49,27 @@ export function parseGemfileLock(content: string, file = "Gemfile.lock"): Locked
 
 const GEM_CALL = /^\s*gem[ \t(]+/;
 const GEM_SKIP = ["git", "github", "path", "gist", "bitbucket", "source"] as const;
-const SOURCE_BLOCK = /^(?:git|path|github)[\s(]/;
+const SOURCE_LINE = /^\s*source\s*\(?\s*['"]([^'"]*)['"]/;
+const OFFICIAL_SOURCE = /^https?:\/\/(?:www\.)?rubygems\.org\/?$/i;
 
-/** Gemfile: 줄 단위로 `gem "이름", "요구식"…` 을 읽는다. git·path·github 옵션과 블록의 gem 은 registry 에서 받지 않으므로 건너뛴다. */
+/** `git`·`path`·`github` 블록과 rubygems.org 가 아닌 `source` 블록은 registry 의 gem 이 아니다 */
+function isForeignBlock(opener: string): boolean {
+  if (/^(?:git|path|github)[\s(]/.test(opener)) return true;
+  const source = SOURCE_LINE.exec(opener)?.[1];
+  return source !== undefined && !OFFICIAL_SOURCE.test(source);
+}
+
+/**
+ * Gemfile: 줄 단위로 `gem "이름", "요구식"…` 을 읽는다. git·path·github 옵션과 블록의 gem 은 registry 에서 받지 않으므로 건너뛴다.
+ * 최상위 `source` 가 rubygems.org 가 아닌 것뿐이면 그 Gemfile 의 gem 은 모두 사설 registry 의 것이라 건너뛴다.
+ */
 export function parseGemfile(content: string, file = "Gemfile"): DeclaredDependency[] {
   const lines = logicalLines(readText(content, file));
-  const blocked = blockedLines(lines, SOURCE_BLOCK);
+  const { blocked, topLevel } = blockedLines(lines, isForeignBlock);
+  const sources = lines.flatMap((line, index) =>
+    topLevel[index] === true && !/\bdo\b/.test(line) ? [SOURCE_LINE.exec(line)?.[1]].filter((v): v is string => v !== undefined) : [],
+  );
+  if (sources.length > 0 && !sources.some((source) => OFFICIAL_SOURCE.test(source))) return [];
   return readCalls(lines, { call: GEM_CALL, skipOptions: GEM_SKIP }, (index) => blocked[index] === true);
 }
 

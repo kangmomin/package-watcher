@@ -289,8 +289,9 @@ function unpinnedImages(input: PolicyInput): Candidate[] {
   return found;
 }
 
-/** 내용이 바뀌면 다른 검출이 되도록 script 내용의 SHA-256 앞 12자를 버전으로 쓴다 */
-const hashOf = (text: string): string => createHash("sha256").update(text).digest("hex").slice(0, 12);
+/** 내용이 바뀌면 다른 검출이 되도록 script 내용(앞뒤 공백을 떼고 연속 공백을 1칸으로)의 SHA-256 앞 12자를 버전으로 쓴다 */
+const hashOf = (text: string): string =>
+  createHash("sha256").update(text.trim().replace(/\s+/g, " ")).digest("hex").slice(0, 12);
 
 function installScripts(input: PolicyInput): Candidate[] {
   const found: Candidate[] = [];
@@ -317,20 +318,27 @@ function customRegistries(input: PolicyInput): Candidate[] {
   );
 }
 
-/** 파일마다 1건. 키의 이름만 보고하고 토큰의 값은 검출에 넣지 않는다. */
+/** 키마다 1건. 키의 이름만 보고하고 토큰의 값은 검출에 넣지 않는다. */
 function npmrcTokens(input: PolicyInput): Candidate[] {
-  return input.sources.flatMap((source) => {
-    const key = source.tokenKeys?.[0];
-    return key === undefined ? [] : [{ filePath: source.path, packageName: key, version: "" }];
-  });
+  return input.sources.flatMap((source) =>
+    (source.tokenKeys ?? []).map((key) => ({ filePath: source.path, packageName: key, version: "" })),
+  );
 }
 
-/** 이 org 의 GitHub repo 인가 (https·ssh 주소, 대소문자 무시) 또는 상대 경로인가 */
+/** 이 org 의 GitHub repo 인가 (https·http·git·ssh 주소, 대소문자 무시) 또는 같은 org 안의 상대 경로(`../x`)인가 */
 function isInternalSubmodule(url: string, org: string): boolean {
   const lower = url.toLowerCase();
-  if (lower.startsWith("./") || lower.startsWith("../")) return true;
+  if (lower.startsWith("./")) return true;
+  // `../../other/x` 는 org 밖이다.
+  if (lower.startsWith("../")) return !lower.slice(3).startsWith("../");
   const name = org.toLowerCase();
-  return [`https://github.com/${name}/`, `ssh://github.com/${name}/`, `git@github.com:${name}/`].some((prefix) =>
+  return [
+    `https://github.com/${name}/`,
+    `http://github.com/${name}/`,
+    `git://github.com/${name}/`,
+    `ssh://github.com/${name}/`,
+    `git@github.com:${name}/`,
+  ].some((prefix) =>
     lower.startsWith(prefix),
   );
 }

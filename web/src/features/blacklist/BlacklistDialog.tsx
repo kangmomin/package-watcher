@@ -319,7 +319,7 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
               >
                 <SelectTrigger
                   id={fieldIds.ecosystem}
-                  className="w-44"
+                  className="w-52"
                   aria-required="true"
                   {...errorAria("ecosystem", entry !== null && hintIds.ecosystem)}
                 >

@@ -204,7 +204,7 @@ describe("커밋·PR 검출의 resolve", () => {
     expect((await allFindings(t)).map((f) => f.id).sort()).toEqual(before);
 
     t.github.setCommits("svc", []);
-    t.github.setPulls("svc", []);
+    t.github.setPulls("svc", [pull(5, "now different")]);
     await runScan(t);
     expect(await states()).toEqual([`commit/${sha(1)}:resolved`, "pull/5:resolved"]);
   });
@@ -225,6 +225,7 @@ describe("커밋·PR 검출의 resolve", () => {
     // 커밋 조회만 실패하면 PR 은 평가한다
     t.github.failCommits("svc", new Error("GitHub API 오류 (500): boom"));
     t.github.failPulls("svc", null);
+    t.github.setPulls("svc", [pull(5, "now different")]);
     await runScan(t);
     expect(await states()).toEqual([`commit/${sha(1)}:open`, "pull/5:resolved"]);
   });
@@ -248,7 +249,8 @@ describe("커밋·PR 검출의 resolve", () => {
     await runScan(t);
     t.github.setPushedAt("svc", OLD_PUSH);
     await runScan(t);
-    expect(await states()).toEqual([`commit/${sha(1)}:resolved`, "pull/5:resolved"]);
+    // pr 은 목록에 없다는 이유로는 resolve 하지 않는다 (SG-300)
+    expect(await states()).toEqual([`commit/${sha(1)}:resolved`, "pull/5:open"]);
 
     t.github.setPushedAt("svc", RECENT_PUSH);
     await runScan(t);
@@ -366,7 +368,7 @@ describe("workflow-changed 와 new-committer", () => {
   const rows = async (): Promise<string[]> =>
     (await policyFindings()).map((f) => `${f.packageName}|${f.filePath}|${f.version}|${f.status}`).sort();
   const authorsInDb = (): string[] =>
-    (p.instance.db.prepare("SELECT author FROM repo_authors WHERE repo = 'svc' ORDER BY author").all() as { author: string }[]).map(
+    (p.instance.db.prepare("SELECT author FROM repo_authors WHERE repo = 'svc' AND author NOT LIKE '(%' ORDER BY author").all() as { author: string }[]).map(
       (row) => row.author,
     );
   const calls = (method: "listRecentCommits" | "listWorkflowCommits" | "listRecentPulls"): number =>
@@ -431,7 +433,7 @@ describe("workflow-changed 와 new-committer", () => {
     expect((await rows())[0]).toMatch(/\|resolved$/);
   });
 
-  it("[SG-119] new-committer: 첫 평가는 기록만 하고 검출이 없다 (커밋이 없던 평가는 기준선이 아니다)", async () => {
+  it("[SG-119] new-committer: 첫 평가는 기록만 하고 검출이 없다 (커밋이 없던 평가도 기준선의 표식을 남긴다)", async () => {
     await only("new-committer");
     p.github.setRepos([{ name: "svc", files: BASE, pushedAt: RECENT_PUSH }]);
     await runScan(p);
@@ -440,7 +442,8 @@ describe("workflow-changed 와 new-committer", () => {
     p.github.setCommits("svc", [commit(1), commit(2, { authorLogin: "Bob" })]);
     await runScan(p);
 
-    expect(await rows()).toEqual([]);
+    // 표식이 있으므로 두 번째 평가는 첫 평가가 아니다: 처음 보는 두 사람이 새 작성자다
+    expect((await rows()).length).toBe(2);
     expect(authorsInDb()).toEqual(["alice", "bob"]);
     expect(calls("listRecentCommits")).toBe(2);
     expect(calls("listWorkflowCommits")).toBe(0);
@@ -585,5 +588,150 @@ describe("workflow-changed 와 new-committer", () => {
     await runScan(p);
 
     expect(p.mailer.sent).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------- 코드 리뷰 반영
+
+describe("pr 검출의 흔들림 방지", () => {
+  beforeEach(async () => {
+    await trace("pr", "needle-text");
+    setup();
+    t.github.setPulls("svc", [pull(5, "needle-text")]);
+  });
+
+  const statusOf = async (): Promise<string> => (await allFindings(t)).map((f) => `${f.filePath}:${f.status}`).join(",");
+
+  it("[SG-300] 목록 밖으로 밀려도 resolve 하지 않고 (무시 상태 유지), 다시 들어오면 같은 행이다", async () => {
+    await runScan(t);
+    const [first] = await allFindings(t);
+    await t.request("PATCH", `/api/findings/${first?.id}`, { status: "ignored" });
+
+    t.github.setPulls("svc", [pull(6, "other")]);
+    await runScan(t);
+    expect(await statusOf()).toBe("pull/5:ignored");
+
+    t.github.setPulls("svc", [pull(5, "needle-text")]);
+    await runScan(t);
+    const found = await allFindings(t);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ id: first?.id, status: "ignored" });
+  });
+
+  it("[SG-301] 목록에 있고 제목이 더 이상 일치하지 않으면 resolve 한다", async () => {
+    await runScan(t);
+    t.github.setPulls("svc", [pull(5, "renamed")]);
+    await runScan(t);
+    expect(await statusOf()).toBe("pull/5:resolved");
+  });
+
+  it("[SG-302] 처음 본 지 30일이 넘었고 이번 목록에 없으면 resolve 한다", async () => {
+    await runScan(t);
+    t.clock.advance(29 * DAY);
+    t.github.setPulls("svc", []);
+    t.github.setPushedAt("svc", "2026-12-10T00:00:00.000Z");
+    await runScan(t);
+    expect(await statusOf()).toBe("pull/5:open");
+
+    t.clock.advance(2 * DAY);
+    await runScan(t);
+    expect(await statusOf()).toBe("pull/5:resolved");
+  });
+
+  it("[SG-303] 조회가 실패하면 30일이 넘어도 그대로 둔다", async () => {
+    await runScan(t);
+    t.clock.advance(40 * DAY);
+    t.github.setPushedAt("svc", "2026-12-20T00:00:00.000Z");
+    t.github.failPulls("svc", new Error("GitHub API 오류 (404): gone"));
+    await runScan(t);
+    expect(await statusOf()).toBe("pull/5:open");
+  });
+});
+
+describe("new-committer 의 기준선 보강", () => {
+  let p: TestApp;
+
+  beforeEach(async () => {
+    p = createTestApp({ seedPolicy: true });
+    await putSettings(p);
+    const entries = await listEntries(p, { ecosystem: "policy" });
+    const off = entries.filter((item) => item.name !== "new-committer").map((item) => item.id);
+    await p.request("POST", "/api/blacklist/bulk", { action: "disable", ids: off });
+    p.github.setRepos([{ name: "svc", files: BASE, pushedAt: RECENT_PUSH }]);
+  });
+
+  const authors = (): string[] =>
+    (p.instance.db.prepare("SELECT author FROM repo_authors ORDER BY repo, author").all() as { author: string }[]).map((r) => r.author);
+  const found = async (): Promise<string[]> =>
+    (await listFindings(p, { category: "policy" })).items.map((f) => `${f.packageName}:${f.status}`);
+
+  it("[SG-305] 첫 평가는 since 없이 최대 3쪽으로 기준선을 만들고, 오래 쉰 기여자가 나중에 새 작성자로 나오지 않는다", async () => {
+    p.github.setCommits("svc", [commit(1), commit(2, { authorLogin: "dave", committedAt: "2026-09-01T00:00:00.000Z" })]);
+
+    await runScan(p);
+
+    expect(p.github.callsOf("listRecentCommits")[0]?.arg).toBe("main||3");
+    expect(authors()).toContain("dave");
+    expect(await found()).toEqual([]);
+
+    p.github.setCommits("svc", [commit(1), commit(3, { authorLogin: "dave", committedAt: "2026-11-11T00:00:00.000Z" })]);
+    await runScan(p);
+
+    expect(p.github.callsOf("listRecentCommits")[1]?.arg).toBe("main|2026-11-05T00:00:00.000Z");
+    expect(await found()).toEqual([]);
+  });
+
+  it("[SG-306] 첫 평가에 사람의 커밋이 없어도(bot 뿐) 표식이 남아 다음 평가는 첫 평가가 아니다", async () => {
+    p.github.setCommits("svc", [commit(1, { authorLogin: "dependabot[bot]" })]);
+    await runScan(p);
+    expect(authors()).toEqual(["(baseline)", "(last-eval)"]);
+
+    p.github.setCommits("svc", [commit(2, { authorLogin: "erin" })]);
+    await runScan(p);
+
+    expect(await found()).toEqual(["erin:open"]);
+    expect(p.github.callsOf("listRecentCommits")).toHaveLength(2);
+  });
+
+  it("[SG-307] 마지막 평가가 N일보다 오래됐으면 이번 평가는 기록만 한다 (껐다 켠 경우)", async () => {
+    p.github.setCommits("svc", [commit(1)]);
+    await runScan(p);
+
+    p.clock.advance(20 * DAY);
+    p.github.setPushedAt("svc", "2026-12-01T00:00:00.000Z");
+    p.github.setCommits("svc", [commit(2, { authorLogin: "frank", committedAt: "2026-11-30T00:00:00.000Z" })]);
+    await runScan(p);
+
+    expect(await found()).toEqual([]);
+    expect(authors()).toContain("frank");
+
+    // 평가가 이어지면 다시 검출한다
+    p.github.setCommits("svc", [commit(3, { authorLogin: "gina", committedAt: "2026-11-30T12:00:00.000Z" })]);
+    await runScan(p);
+    expect(await found()).toEqual(["gina:open"]);
+  });
+
+  it("[SG-308] repo 가 삭제되면 그 repo 의 작성자 기록도 지운다", async () => {
+    p.github.upsertRepo({ name: "keep", files: BASE });
+    p.github.setCommits("svc", [commit(1)]);
+    await runScan(p);
+    expect(authors().length).toBeGreaterThan(0);
+
+    p.github.removeRepo("svc");
+    await runScan(p);
+
+    expect(authors()).toEqual([]);
+  });
+
+  it("[SG-309] org 가 바뀌면 작성자 기록을 모두 지운다", async () => {
+    p.github.setCommits("svc", [commit(1)]);
+    await runScan(p);
+    expect(authors().length).toBeGreaterThan(0);
+
+    await putSettings(p, { org: "other-org" });
+    p.github.setRepos([]);
+    await runScan(p);
+
+    expect(authors()).toEqual([]);
   });
 });

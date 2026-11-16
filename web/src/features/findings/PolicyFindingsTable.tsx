@@ -9,9 +9,9 @@ import { SeverityBadge } from "@/components/SeverityBadge";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useBlacklist } from "@/features/blacklist/hooks";
-import { RowMenu } from "@/features/findings/FindingsTable";
+import { FileLabel, RowMenu } from "@/features/findings/FindingsTable";
 import { usePendingFindingIds, useSetFindingStatus } from "@/features/findings/hooks";
-import { POLICY_FALLBACK_LABEL, findingFileLabel, formatTableTime, policyCheckTitle } from "@/lib/format";
+import { POLICY_FALLBACK_LABEL, formatTableTime, policyCheckTitle } from "@/lib/format";
 
 export interface PolicyFindingsTableProps {
   items: Finding[];
@@ -58,7 +58,7 @@ export function PolicyFindingsTable({ items }: PolicyFindingsTableProps) {
                   {finding.repo}
                 </RowHeaderCell>
                 <TableCell className="max-w-64 truncate" title={finding.filePath}>
-                  {findingFileLabel(finding.filePath)}
+                  <FileLabel finding={finding} />
                 </TableCell>
                 <TableCell id={targetId} className="max-w-72 truncate font-mono text-xs" title={target}>
                   {target}

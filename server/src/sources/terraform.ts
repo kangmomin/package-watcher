@@ -67,15 +67,40 @@ function scanLine(line: string, state: State): void {
   }
 }
 
+/**
+ * source 를 같은 module 의 다른 표기가 같은 이름이 되게 정규화한다: `git::` 접두, 스킴, `git@host:`, userinfo, 끝의 `.git`,
+ * `//하위경로`, `?쿼리` 를 떼고 소문자로 만든다(`git::https://GitHub.com/o/r.git//sub?ref=v1` → `github.com/o/r`).
+ * 항목의 이름과 module 의 source 양쪽에 쓴다. 문자열 연산뿐이라 선형이다.
+ */
+export function normalizeTerraformSource(source: string): string {
+  let text = source.trim();
+  const query = text.indexOf("?");
+  if (query !== -1) text = text.slice(0, query);
+  if (text.toLowerCase().startsWith("git::")) text = text.slice(5);
+  const scheme = text.indexOf("://");
+  if (scheme !== -1 && /^[A-Za-z][A-Za-z0-9+.-]*$/.test(text.slice(0, scheme))) {
+    text = text.slice(scheme + 3);
+    const slash = text.indexOf("/");
+    const authority = slash === -1 ? text : text.slice(0, slash);
+    const at = authority.lastIndexOf("@");
+    if (at !== -1) text = text.slice(at + 1);
+  } else {
+    // `git@github.com:org/repo` (scp 형식)
+    const scp = /^[^\s/@:]+@([^\s/:]+):(.*)$/.exec(text);
+    if (scp) text = `${scp[1]}/${scp[2]}`;
+  }
+  const subdir = text.indexOf("//");
+  if (subdir !== -1) text = text.slice(0, subdir);
+  if (text.endsWith(".git")) text = text.slice(0, -4);
+  return text.toLowerCase();
+}
+
 /** source 에서 이름과 `?ref=` 를 뽑는다. 로컬 경로와 보간(`${}`)이 든 값은 null. */
 function splitSource(source: string): { name: string; ref: string } | null {
   if (source === "" || source.startsWith("./") || source.startsWith("../") || source.includes("${")) return null;
   const query = source.indexOf("?");
   const queryText = query === -1 ? "" : source.slice(query + 1);
-  let name = query === -1 ? source : source.slice(0, query);
-  const schemeEnd = name.indexOf("://");
-  const subdir = name.indexOf("//", schemeEnd === -1 ? 0 : schemeEnd + 3);
-  if (subdir !== -1) name = name.slice(0, subdir);
+  const name = normalizeTerraformSource(source);
   const ref = /(?:^|&)ref=([^&]*)/.exec(queryText)?.[1] ?? "";
   return name === "" ? null : { name, ref: ref.length <= MAX_REF ? ref : "" };
 }

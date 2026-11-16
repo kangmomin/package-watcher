@@ -44,7 +44,7 @@ describe("pickCommits·pickPulls", () => {
 });
 
 describe("커밋·PR 조회 (fetch mock)", () => {
-  it("[SG-101] listRecentCommits 는 sha·since·per_page=100 으로 1쪽만, 409·404 는 []", async () => {
+  it("[SG-101] listRecentCommits 는 sha·since·per_page=100 으로 1쪽만, 409(빈 repo)는 [], 404 는 throw", async () => {
     const mock = createFetchMock(({ url }) => {
       if (url.pathname === "/repos/my-org/svc/commits") return { status: 200, body: [rawCommit()] };
       if (url.pathname === "/repos/my-org/empty/commits") return { status: 409, body: { message: "Git Repository is empty." } };
@@ -62,7 +62,7 @@ describe("커밋·PR 조회 (fetch mock)", () => {
     expect(query?.get("per_page")).toBe("100");
     expect(query?.get("path")).toBeNull();
     expect(await github.listRecentCommits("my-org", "empty", "main", SINCE)).toEqual([]);
-    expect(await github.listRecentCommits("my-org", "none", "main", SINCE)).toEqual([]);
+    await expect(github.listRecentCommits("my-org", "none", "main", SINCE)).rejects.toThrow("404");
   });
 
   it("[SG-101] listWorkflowCommits 는 path=.github/workflows 를 더하고 필요한 필드만 돌려준다", async () => {
@@ -77,7 +77,7 @@ describe("커밋·PR 조회 (fetch mock)", () => {
     ]);
   });
 
-  it("[SG-101] listRecentPulls 는 state=all·updated desc·per_page=50 으로 1쪽만, 404 는 []", async () => {
+  it("[SG-101] listRecentPulls 는 state=all·updated desc·per_page=50 으로 1쪽만, 404 는 throw", async () => {
     const mock = createFetchMock(({ url }) =>
       url.pathname === "/repos/my-org/svc/pulls"
         ? { status: 200, body: [{ number: 3, title: "docs", state: "closed", updated_at: "2026-11-10T00:00:00Z", html_url: "u", user: { login: "bob" } }] }
@@ -93,10 +93,10 @@ describe("커밋·PR 조회 (fetch mock)", () => {
     expect(query?.get("sort")).toBe("updated");
     expect(query?.get("direction")).toBe("desc");
     expect(query?.get("per_page")).toBe("50");
-    expect(await github.listRecentPulls("my-org", "none")).toEqual([]);
+    await expect(github.listRecentPulls("my-org", "none")).rejects.toThrow("404");
   });
 
-  it("[SG-101] 5xx 는 throw, primary rate limit 은 RateLimitedError", async () => {
+  it("[SG-101] 404 는 throw(조회 실패), 5xx 는 throw, primary rate limit 은 RateLimitedError", async () => {
     const limited = createFetchMock(() => ({
       status: 403,
       body: { message: "rate limit" },
@@ -106,5 +106,22 @@ describe("커밋·PR 조회 (fetch mock)", () => {
 
     await expect(github.listRecentPulls("my-org", "svc")).rejects.toMatchObject({ name: "RateLimitedError" });
     await expect(github.listRecentCommits("my-org", "svc", "main", SINCE)).rejects.toMatchObject({ name: "RateLimitedError" });
+  });
+});
+
+describe("커밋 조회의 쪽 수와 since 생략", () => {
+  it("[SG-304] pages=3·since=null 이면 since 없이 최대 3쪽을 받고, 쪽이 100개 미만이면 거기서 멈춘다", async () => {
+    const page = (n: number) => Array.from({ length: 100 }, (_, i) => rawCommit({ sha: (n * 100 + i).toString(16).padStart(40, "0") }));
+    const mock = createFetchMock(({ url }) => {
+      const number = Number(url.searchParams.get("page") ?? "1");
+      return { status: 200, body: number === 1 ? page(0) : number === 2 ? page(1).slice(0, 40) : page(2) };
+    });
+    const github = createOctokitClient({ token: "t", fetch: mock.fetch });
+
+    const found = await github.listRecentCommits("my-org", "svc", "main", null, 3);
+
+    expect(found).toHaveLength(140);
+    expect(mock.calls).toHaveLength(2);
+    expect(mock.calls[0]?.url.searchParams.get("since")).toBeNull();
   });
 });

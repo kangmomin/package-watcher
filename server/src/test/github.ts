@@ -401,12 +401,20 @@ export class FakeGitHubClient implements GitHubClient {
     return new Map([...state.pushes].filter(([, at]) => Date.parse(at) >= Date.parse(sinceIso)));
   }
 
-  async listRecentCommits(org: string, repo: string, branch: string, sinceIso: string): Promise<CommitInfo[]> {
-    await this.enter("listRecentCommits", org, repo, `${branch}|${sinceIso}`);
+  async listRecentCommits(
+    org: string,
+    repo: string,
+    branch: string,
+    sinceIso: string | null,
+    pages = 1,
+  ): Promise<CommitInfo[]> {
+    await this.enter("listRecentCommits", org, repo, `${branch}|${sinceIso ?? ""}${pages === 1 ? "" : `|${pages}`}`);
     const state = this.repos.get(repo);
     if (!state) return [];
     if (state.commitsError) throw state.commitsError;
-    return state.commits.filter((commit) => Date.parse(commit.committedAt) >= Date.parse(sinceIso)).slice(0, 100);
+    return state.commits
+      .filter((commit) => sinceIso === null || Date.parse(commit.committedAt) >= Date.parse(sinceIso))
+      .slice(0, 100 * pages);
   }
 
   async listWorkflowCommits(org: string, repo: string, branch: string, sinceIso: string): Promise<WorkflowCommit[]> {

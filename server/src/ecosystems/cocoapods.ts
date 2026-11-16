@@ -46,12 +46,17 @@ export function parsePodfileLock(content: string, file = "Podfile.lock"): Locked
   return result;
 }
 
+const POD_SOURCE = /^\s*source\s*\(?\s*['"]([^'"]*)['"]/;
+const DEFAULT_SOURCE = /^https?:\/\/(?:cdn\.cocoapods\.org|github\.com\/CocoaPods\/Specs(?:\.git)?)\/?$/i;
 const POD_CALL = /^\s*pod[ \t(]+/;
 const POD_SKIP = ["git", "path", "podspec", "http", "svn", "hg", "source"] as const;
 
 /** Podfile: 줄 단위로 `pod 'Name', '요구식'` 을 읽는다. :git·:path·:podspec 는 trunk 의 패키지가 아니므로 건너뛴다. */
 export function parsePodfile(content: string, file = "Podfile"): DeclaredDependency[] {
   const lines = logicalLines(readText(content, file));
+  // source 가 있는데 기본 CDN·Specs repo 가 하나도 없으면 사설 spec repo 의 pod 이다.
+  const sources = lines.flatMap((line) => [POD_SOURCE.exec(line)?.[1]].filter((v): v is string => v !== undefined));
+  if (sources.length > 0 && !sources.some((source) => DEFAULT_SOURCE.test(source))) return [];
   return readCalls(lines, { call: POD_CALL, skipOptions: POD_SKIP }, () => false);
 }
 

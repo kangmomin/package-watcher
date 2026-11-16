@@ -2,7 +2,7 @@ import { asString, asTable, baseName, fail, isPlainObject, readJson } from "./co
 import { MAX_ITEMS } from "./rubyArgs.ts";
 import type { DeclaredDependency, EcosystemSupport, LockedPackage } from "./types.ts";
 
-/** composer.lock: `packages` 와 `packages-dev`. `dev-main` 같은 브랜치 버전은 건너뛴다 (v 접두는 shared 의 규칙이 처리한다). */
+/** composer.lock: `packages` 와 `packages-dev`. `dev-main` 같은 브랜치 버전도 그대로 담는다 (v 접두와 비교는 shared 의 규칙이 처리한다). */
 export function parseComposerLock(content: string, file = "composer.lock"): LockedPackage[] {
   const data = readJson(content, file);
   if (!Array.isArray(data.packages) && !Array.isArray(data["packages-dev"])) fail(file, "composer.lock 형식이 아닙니다");
@@ -14,7 +14,7 @@ export function parseComposerLock(content: string, file = "composer.lock"): Lock
       if (!isPlainObject(item) || result.length >= MAX_ITEMS) continue;
       const name = asString(item.name);
       const version = asString(item.version);
-      if (name === null || version === null || version.startsWith("dev-")) continue;
+      if (name === null || version === null) continue;
       result.push({ name, version });
     }
   }

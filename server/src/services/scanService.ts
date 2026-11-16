@@ -53,6 +53,7 @@ import { createCompositeIndex, feedRowIdOf, isFeedTempId, type FeedIndex } from 
 import { createEntryIndex, matchExact, matchRange, type EntryIndex, type MatchableEntry } from "../matcher.ts";
 import type { FindingKey } from "../repositories/findings.ts";
 import type { Repositories } from "../repositories/index.ts";
+import { BASELINE_MARKER, LAST_EVAL_MARKER } from "../repositories/repoAuthors.ts";
 import type { RepoDone } from "../repositories/scanRepos.ts";
 import type { ScanResult } from "../repositories/scans.ts";
 import { assignLockfiles, dirOf, readWorkspaceGlobs } from "../workspaces.ts";
@@ -185,6 +186,12 @@ interface HistoryEvaluation {
   authorsToRecord: readonly string[];
   /** 기록을 허용하는 new-committer 항목의 id (항목이 바뀌었으면 기록하지 않는다). 평가하지 않았으면 null */
   committerEntryId: number | null;
+  /** 이 repo 의 첫 평가였다(기준선 표식이 없었다) — 표식을 함께 기록한다 */
+  firstEvaluation: boolean;
+  /** 이번 목록에 있던 PR 번호. pr 검출은 "목록에 없다"는 이유로는 resolve 하지 않는다 */
+  listedPulls: ReadonlySet<number>;
+  /** `branchScanDays = 0` — 이 기능을 끈 것이다(pr 검출도 resolve 한다) */
+  off: boolean;
 }
 
 const emptyHistory = (): HistoryEvaluation => ({
@@ -192,6 +199,9 @@ const emptyHistory = (): HistoryEvaluation => ({
   retainedShas: new Set(),
   authorsToRecord: [],
   committerEntryId: null,
+  firstEvaluation: false,
+  listedPulls: new Set(),
+  off: false,
 });
 
 interface RepoScan extends TreeScan {
@@ -310,6 +320,10 @@ function isSameRepo(fullName: string, org: string, repo: string): boolean {
 }
 
 const BRANCH_REF_PREFIX = "refs/heads/";
+/** 기준선을 만드는 첫 평가가 받는 커밋의 쪽 수 (쪽마다 100개) */
+const BASELINE_PAGES = 3;
+/** 목록에 없는 pr 검출을 resolve 하기까지 두는 기간(처음 본 때부터, 일) */
+export const PR_KEEP_DAYS = 30;
 const WORKFLOW_DIR = ".github/workflows/";
 const COMMIT_PATH_PREFIX = "commit/";
 const PULL_PATH_PREFIX = "pull/";
@@ -483,7 +497,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       keptRefs: new Set(),
       branchesUnknown: false,
       rateLimited: false,
-      history: emptyHistory(),
+      history: { ...emptyHistory(), off: rules.branchScanDays <= 0 },
     };
     await scanBranches(org, blobs, repo, tree.entries, rules, result);
     await scanHistory(org, client, repo, tree.entries, rules, result);
@@ -546,23 +560,37 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     let newCommitters: { author: string; sha: string }[] = [];
 
     if (wantCommits) {
+      // 첫 평가(기준선 표식 없음)만 기간 제한 없이 최대 3쪽(300개)을 받아 기준선을 만든다. 평소에는 1쪽 + since.
+      const wantAuthors = policy.active.has("new-committer");
+      const known = wantAuthors ? repos.repoAuthors.list(repo.name) : new Map<string, string>();
+      const firstEvaluation = wantAuthors && !known.has(BASELINE_MARKER);
+      const lastEval = known.get(LAST_EVAL_MARKER);
+      // 마지막 평가가 기간보다 오래됐다(검사를 껐다 켠 경우 등): 그 사이의 기여자를 새 작성자로 보지 않고 기록만 한다
+      const stale = wantAuthors && !firstEvaluation && lastEval !== undefined && lastEval < sinceIso;
       const commits = await attempt(["commit", "committer"], () =>
-        client.listRecentCommits(org, repo.name, repo.defaultBranch, sinceIso),
+        firstEvaluation
+          ? client.listRecentCommits(org, repo.name, repo.defaultBranch, null, BASELINE_PAGES)
+          : client.listRecentCommits(org, repo.name, repo.defaultBranch, sinceIso),
       );
       if (commits !== null) {
         evaluated = true;
         if (indicators.hasCommit) {
-          const found = await indicators.matchCommits(repo.name, where, commits, logger);
+          // 기준선용 목록은 기간 밖의 커밋도 있다 — 흔적은 최근 N일의 최신 100개만 본다
+          const recent = firstEvaluation
+            ? commits.filter((commit) => Date.parse(commit.committedAt) >= rules.branchSince.getTime()).slice(0, 100)
+            : commits;
+          const found = await indicators.matchCommits(repo.name, where, recent, logger);
           matches.push(...found.map((match): Match => ({ ...match, ref: DEFAULT_BRANCH_REF })));
         }
         if (policy.active.has("new-committer")) {
-          const judged = judgeAuthors(repo.name, commits, sinceIso);
+          const judged = judgeAuthors(known, commits, sinceIso, firstEvaluation || stale);
           newCommitters = judged.candidates;
           result.history = {
             ...result.history,
             retainedShas: judged.retainedShas,
             authorsToRecord: judged.authorsToRecord,
             committerEntryId: policy.entryIds.get("new-committer") ?? null,
+            firstEvaluation,
           };
         }
       }
@@ -580,6 +608,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       const pulls = await attempt(["pr"], () => client.listRecentPulls(org, repo.name));
       if (pulls !== null) {
         evaluated = true;
+        result.history = { ...result.history, listedPulls: new Set(pulls.map((pull) => pull.number)) };
         const found = await indicators.matchPulls(repo.name, where, pulls, logger);
         matches.push(...found.map((match): Match => ({ ...match, ref: DEFAULT_BRANCH_REF })));
       }
@@ -598,18 +627,18 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
 
   /**
    * 새 작성자의 판정(DB 는 읽기만 한다 — 기록은 종료 트랜잭션이 한다).
-   * 기록이 하나도 없으면 첫 평가라서 본 작성자를 모두 기록만 하고 검출은 없다.
+   * 첫 평가(기준선 표식 없음)나 기준선 보충(`recordOnly`)이면 본 작성자를 모두 기록만 하고 검출은 없다.
    */
   function judgeAuthors(
-    repoName: string,
+    known: ReadonlyMap<string, string>,
     commits: readonly CommitInfo[],
     sinceIso: string,
+    recordOnly: boolean,
   ): {
     candidates: { author: string; sha: string }[];
     retainedShas: Set<string>;
     authorsToRecord: string[];
   } {
-    const known = repos.repoAuthors.list(repoName);
     const oldest = new Map<string, { sha: string; time: number }>();
     const retainedShas = new Set<string>();
     for (const commit of commits) {
@@ -625,7 +654,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     }
     const unseen = [...oldest].filter(([author]) => !known.has(author));
     return {
-      candidates: known.size === 0 ? [] : unseen.map(([author, { sha }]) => ({ author, sha })),
+      candidates: recordOnly ? [] : unseen.map(([author, { sha }]) => ({ author, sha })),
       retainedShas,
       authorsToRecord: unseen.map(([author]) => author),
     };
@@ -1191,7 +1220,10 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
 
     // ② 대상 목록에 없는 repo 의 활성 검출 — 재확인 후에만 resolve 한다.
     const targetNames = new Set(targets.map((repo) => repo.name));
-    const candidates = [...new Set(repos.findings.listActive().map((finding) => finding.repo))]
+    // 작성자 기록만 남은 repo 도 같은 재확인을 거친다 (삭제된 repo 의 기록을 지우려고)
+    const candidates = [
+      ...new Set([...repos.findings.listActive().map((finding) => finding.repo), ...repos.repoAuthors.listRepos()]),
+    ]
       .filter((name) => !targetNames.has(name))
       .sort();
     const baseline = Number.parseInt(repos.settings.get("listed_baseline") ?? "", 10);
@@ -1416,11 +1448,15 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       for (const outcome of collected.outcomes) if (outcome.ok) scanned.set(outcome.repo, outcome);
       // 처음 본 작성자의 기록은 검출과 같은 트랜잭션에서 한다(스캔이 버려지면 기록도 남지 않는다). 항목이 바뀌었으면 기록하지 않는다.
       for (const outcome of scanned.values()) {
-        const { committerEntryId, authorsToRecord } = outcome.history;
-        if (committerEntryId !== null && entries.has(committerEntryId) && authorsToRecord.length > 0) {
-          repos.repoAuthors.insertMany(outcome.repo, authorsToRecord, now);
-        }
+        const { committerEntryId, authorsToRecord, firstEvaluation } = outcome.history;
+        if (committerEntryId === null || !entries.has(committerEntryId)) continue;
+        repos.repoAuthors.insertMany(outcome.repo, authorsToRecord, now);
+        // 첫 평가는 사람의 커밋이 없어도 표식을 남긴다 — 다음 평가가 다시 "첫 평가"가 되지 않게
+        if (firstEvaluation) repos.repoAuthors.setMarker(outcome.repo, BASELINE_MARKER, now);
+        repos.repoAuthors.setMarker(outcome.repo, LAST_EVAL_MARKER, now);
       }
+      // 삭제·archived·이름 변경된 repo 의 작성자 기록은 지운다 (같은 이름의 새 repo 가 옛 기록을 물려받지 않게)
+      repos.repoAuthors.deleteRepos(collected.resolveRepos);
       const checkIdOf = new Map(snapshot.map((entry) => [entry.id, entry.name]));
       // 흔적 검출(path·content·branch)은 선언 파일 수가 아니라 이번 스캔의 결과에 따른다.
       const resolveRepos = new Set(collected.resolveRepos);
@@ -1439,6 +1475,13 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
         if (historyKind !== null) {
           if (outcome.history.failed.has(historyKind)) continue;
           if (!entries.has(finding.blacklistEntryId)) continue;
+          // pr: 목록 밖으로 밀렸다는 이유로는 resolve 하지 않는다(다시 들어오면 새 검출·메일이 되고 무시 상태를 잃는다).
+          // 그 PR 이 목록에 있는데 제목이 달라졌거나, 처음 본 지 PR_KEEP_DAYS 가 지났거나, 기능을 껐을 때만 resolve 한다.
+          if (historyKind === "pr" && !outcome.history.off) {
+            const listed = outcome.history.listedPulls.has(Number(finding.filePath.slice(PULL_PATH_PREFIX.length)));
+            const expired = Date.parse(finding.firstSeenAt) < Date.parse(now) - PR_KEEP_DAYS * DAY_MS;
+            if (!listed && !expired) continue;
+          }
           // new-committer: 그 작성자의 기록이 아직 기간 안이고 커밋이 이번 목록에 있으면 아직 "새 작성자"다
           const sha = finding.filePath.slice(COMMIT_PATH_PREFIX.length);
           if (historyKind === "committer" && outcome.history.retainedShas.has(sha)) {
@@ -1545,6 +1588,13 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       logger.warn(`running 으로 남은 스캔 ${abandoned}건을 failed(${ABANDONED})로 기록했습니다`);
     }
 
+    // repo 이름은 org 사이에 겹칠 수 있다 — org 가 바뀌었으면 작성자 기록을 비운다
+    if (repos.settings.get("authors_org") !== org) {
+      repos.transaction(() => {
+        repos.repoAuthors.deleteAll();
+        repos.settings.set("authors_org", org);
+      });
+    }
     const snapshot = repos.blacklist.listActive(todayKst(clock));
     const scan = repos.scans.insertRunning(trigger, now);
     // 외부 목록은 스캔이 시작될 때의 것으로 대조한다(동기화가 도중에 바꿔도 이 스캔은 같은 목록을 본다).

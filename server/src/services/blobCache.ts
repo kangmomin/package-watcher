@@ -27,7 +27,7 @@ export function createBlobCache(client: GitHubClient, maxChars = BLOB_CACHE_MAX_
     listBranches: (org, repo) => client.listBranches(org, repo),
     listRecentBranches: (org, repo, since) => client.listRecentBranches(org, repo, since),
     listRecentPushes: (org, repo, since) => client.listRecentPushes(org, repo, since),
-    listRecentCommits: (org, repo, branch, since) => client.listRecentCommits(org, repo, branch, since),
+    listRecentCommits: (org, repo, branch, since, pages) => client.listRecentCommits(org, repo, branch, since, pages),
     listWorkflowCommits: (org, repo, branch, since) => client.listWorkflowCommits(org, repo, branch, since),
     listRecentPulls: (org, repo) => client.listRecentPulls(org, repo),
     getFile(org, repo, sha) {

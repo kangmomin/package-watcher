@@ -17,9 +17,14 @@ const NPM_TOKEN_KEY = /(?:^|:)(_authToken|_auth|_password)$/;
 
 const unquote = (value: string): string => value.trim().replace(/^(["'])(.*)\1$/, "$2");
 
+/** URL 에 환경 변수가 들어 있어 host 를 알 수 없을 때의 표시 */
+export const ENV_HOST = "(환경 변수)";
+const HAS_ENV = /\$\{|\$[A-Za-z_]/;
+
 /** http(s) URL 의 host(소문자, 포트 포함). 공식 registry 이거나 URL 이 아니면 null */
 function customHost(text: string, official: ReadonlySet<string>): string | null {
   const value = unquote(text);
+  if (HAS_ENV.test(value)) return ENV_HOST;
   if (!/^https?:\/\//i.test(value)) return null;
   try {
     const host = new URL(value).host.toLowerCase();
@@ -57,12 +62,21 @@ function npmrc(content: string): RegistryConfigFacts {
     const tokenKey = NPM_TOKEN_KEY.exec(key)?.[1];
     if (tokenKey !== undefined && isTokenValue(value)) tokenKeys.add(tokenKey);
   }
-  return { registryHosts: finish(hosts), tokenKeys: [...tokenKeys] };
+  return { registryHosts: finish(hosts), tokenKeys: [...tokenKeys].sort() };
 }
 
 function yarnrc(content: string): RegistryConfigFacts {
   const tokenKeys = new Set<string>();
+  const hosts: string[] = [];
   for (const raw of lines(content)) {
+    const server = /^\s*npmRegistryServer\s*:\s*(.*)$/.exec(raw);
+    if (server) {
+      const text = server[1] as string;
+      const comment = text.search(/\s#/);
+      const host = customHost(comment === -1 ? text : text.slice(0, comment), OFFICIAL_NPM_HOSTS);
+      if (host !== null) hosts.push(host);
+      continue;
+    }
     const match = /^\s*npmAuthToken\s*:\s*(.*)$/.exec(raw);
     if (!match) continue;
     const text = match[1] as string;
@@ -70,7 +84,7 @@ function yarnrc(content: string): RegistryConfigFacts {
     const value = comment === -1 ? text : text.slice(0, comment);
     if (isTokenValue(value)) tokenKeys.add("npmAuthToken");
   }
-  return { registryHosts: [], tokenKeys: [...tokenKeys] };
+  return { registryHosts: finish(hosts), tokenKeys: [...tokenKeys].sort() };
 }
 
 const PIP_KEYS = new Set(["index-url", "index_url", "extra-index-url", "extra_index_url"]);
@@ -114,9 +128,11 @@ function toml(path: string, content: string): RegistryConfigFacts {
   };
   if (baseName(path) === "uv.toml") {
     addUv(data);
+    addUv(data.pip);
   } else {
     const tool = isPlainObject(data.tool) ? data.tool : {};
     addUv(tool.uv);
+    if (isPlainObject(tool.uv)) addUv(tool.uv.pip);
     if (isPlainObject(tool.poetry)) urls.push(...urlsOf(tool.poetry.source));
   }
   const hosts = urls.map((url) => customHost(url, OFFICIAL_PYPI_HOSTS)).filter((host): host is string => host !== null);
@@ -125,7 +141,9 @@ function toml(path: string, content: string): RegistryConfigFacts {
 
 function requirements(content: string): RegistryConfigFacts {
   const hosts: string[] = [];
-  for (const raw of lines(content)) {
+  // 줄 끝의 `\` 는 다음 줄과 한 줄이다.
+  const joined = normalizeText(content).replace(/\\\n/g, " ").split("\n").slice(0, 100_000);
+  for (const raw of joined) {
     const line = raw.replace(/(^|\s)#.*$/, "").trim();
     const match = /^(?:--extra-index-url|--index-url|-i)\s*=?\s*(\S+)/.exec(line);
     const host = match ? customHost(match[1] as string, OFFICIAL_PYPI_HOSTS) : null;

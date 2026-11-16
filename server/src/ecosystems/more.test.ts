@@ -121,7 +121,7 @@ end
 });
 
 describe("[SG-11] composer 파서", () => {
-  it("composer.lock: packages 와 packages-dev, v 접두는 그대로, dev- 버전은 건너뛴다", () => {
+  it("composer.lock: packages 와 packages-dev, v 접두와 dev- 버전은 그대로", () => {
     const text = JSON.stringify({
       "content-hash": "x",
       packages: [
@@ -132,7 +132,7 @@ describe("[SG-11] composer 파서", () => {
       ],
       "packages-dev": [{ name: "phpunit/phpunit", version: "10.1.0" }],
     });
-    expect(lock(parseComposerLock(text))).toEqual(["Monolog/Monolog@v2.9.1", "c/d@1.0.0", "phpunit/phpunit@10.1.0"]);
+    expect(lock(parseComposerLock(text))).toEqual(["Monolog/Monolog@v2.9.1", "a/b@dev-main", "c/d@1.0.0", "phpunit/phpunit@10.1.0"]);
   });
 
   it("composer.lock: JSON 오류와 형식 표지 없음은 형식 오류", () => {
