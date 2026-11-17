@@ -169,7 +169,7 @@ describe("침해의 흔적 — 리뷰 보강", () => {
       await user.paste(".ci-*.sh");
       await advance(300);
       await vi.waitFor(() =>
-        expect(server.last("GET", BLACKLIST)?.query).toEqual({ q: ".ci-*.sh" }),
+        expect(server.last("GET", BLACKLIST)?.query).toEqual({ q: ".ci-*.sh", excludeSource: "cve" }),
       );
     } finally {
       vi.useRealTimers();

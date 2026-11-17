@@ -48,26 +48,26 @@ describe("/mcp — 여러 종류", () => {
     }
   });
 
-  it("[SB-60] tool 은 15개이고 ecosystem enum 에 actions·docker 와 범위의 문법 설명이 있다", async () => {
+  it("[SB-60] tool 은 16개이고 ecosystem enum 에 actions·docker 와 범위의 문법 설명이 있다", async () => {
     const client = await connect();
     const { tools } = await client.listTools();
     const properties = (tools.find((item) => item.name === "add_blacklist_entry")?.inputSchema.properties ??
       {}) as Record<string, { enum?: string[]; description?: string }>;
 
-    expect(tools).toHaveLength(15);
+    expect(tools).toHaveLength(16);
     expect(properties.ecosystem?.enum).toEqual(expect.arrayContaining(["actions", "docker"]));
     expect(properties.versionRange?.description).toContain("sha256");
     expect(properties.versionRange?.description).toContain("쉼표");
     expect(properties.name?.description).toContain("owner/repo");
   });
 
-  it("[SC-61] tool 은 15개이고 ecosystem enum 과 설명에 path·content·branch 와 범위를 쓰지 않는다는 안내가 있다", async () => {
+  it("[SC-61] tool 은 16개이고 ecosystem enum 과 설명에 path·content·branch 와 범위를 쓰지 않는다는 안내가 있다", async () => {
     const client = await connect();
     const { tools } = await client.listTools();
     const properties = (tools.find((item) => item.name === "add_blacklist_entry")?.inputSchema.properties ??
       {}) as Record<string, { enum?: string[]; description?: string }>;
 
-    expect(tools).toHaveLength(15);
+    expect(tools).toHaveLength(16);
     expect(properties.ecosystem?.enum).toEqual(expect.arrayContaining(["path", "content", "branch"]));
     expect(properties.name?.description).toContain("브랜치");
     expect(properties.versionRange?.description).toContain("범위를 쓰지 않는다");

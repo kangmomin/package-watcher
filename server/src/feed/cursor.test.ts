@@ -103,7 +103,7 @@ describe("이어받던 cursor 를 버리는 조건", () => {
       createFetchMock(() => ({ status: 200, body: { data: null, errors: [{ message }] } }));
     const fail = async (message: string, cursor: string | null) => {
       const feed = createFeedClient({ token: "t", fetch: reply(message).fetch });
-      return feed.fetchPage(cursor).then(
+      return feed.fetchPage("malware", cursor).then(
         () => null,
         (reason: unknown) => reason as Error,
       );
@@ -132,7 +132,7 @@ describe("재시도하지 않는 오류와 중지", () => {
     for (const [status, body] of [[401, { message: "Bad credentials" }], [403, { message: "Forbidden" }]] as const) {
       const mock = createFetchMock(() => ({ status, body }));
       const feed = createFeedClient({ token: "t", fetch: mock.fetch });
-      await expect(feed.fetchPage(null)).rejects.toBeInstanceOf(FatalFeedError);
+      await expect(feed.fetchPage("malware", null)).rejects.toBeInstanceOf(FatalFeedError);
     }
   });
 

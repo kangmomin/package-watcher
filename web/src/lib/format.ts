@@ -8,6 +8,7 @@ import {
   type EcosystemCategory,
   type EntrySource,
   type EntryStatus,
+  type FeedKind,
   type ScanRepoStatus,
   type ScanTrigger,
   policyCheckOf,
@@ -70,9 +71,9 @@ export function entryStatusLabel(status: EntryStatus): string {
   return ENTRY_STATUS_LABELS[status];
 }
 
-const ENTRY_SOURCE_LABELS: Record<EntrySource, string> = { manual: "직접 등록", feed: "자동" };
+const ENTRY_SOURCE_LABELS: Record<EntrySource, string> = { manual: "직접 등록", feed: "자동", cve: "취약점" };
 
-/** 항목의 출처 라벨: 직접 등록 / 자동(외부 목록이 추가) */
+/** 항목의 출처 라벨: 직접 등록 / 자동(외부 목록의 악성 패키지가 추가) / 취약점(외부 목록의 CVE가 추가) */
 export function entrySourceLabel(source: EntrySource): string {
   return ENTRY_SOURCE_LABELS[source];
 }
@@ -180,4 +181,28 @@ export function findingFileLabel(source: FileLabelSource): string {
 /** 변환해 보일 때 스크린 리더가 읽을 전체 값. 변환하지 않으면 null. */
 export function findingFileFullLabel(source: FileLabelSource): string | null {
   return findingFileParts(source)?.full ?? null;
+}
+
+const FEED_KIND_LABELS: Record<FeedKind, string> = { malware: "악성 패키지", cve: "취약점" };
+
+/** 외부 목록의 분류 라벨 */
+export function feedKindLabel(kind: FeedKind): string {
+  return FEED_KIND_LABELS[kind];
+}
+
+/** CVSS 점수 표시. 없으면 "—". 소수 1자리. */
+export function formatCvssScore(score: number | null): string {
+  return score === null ? NOT_APPLICABLE_LABEL : score.toFixed(1);
+}
+
+/** 고쳐진 버전 목록 표시. 없으면 "—". */
+export function formatPatchedVersions(versions: readonly string[]): string {
+  return versions.length === 0 ? NOT_APPLICABLE_LABEL : versions.join(", ");
+}
+
+const HTTP_URL = /^https?:\/\//i;
+
+/** 링크로 걸어도 되는 URL(http·https)인가. 외부 데이터의 `javascript:` 같은 값을 막는다. */
+export function isHttpUrl(url: string): boolean {
+  return HTTP_URL.test(url);
 }

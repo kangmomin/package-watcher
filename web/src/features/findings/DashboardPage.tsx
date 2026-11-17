@@ -1,7 +1,7 @@
 // 대시보드 `/`.
-// 구성: SummaryCards + 탭 2개("검출" 기본 / "위험한 설정") + 각 탭의 FindingsFilters·표·Pager.
-// 탭의 선택은 URL query(`?tab=policy`)에 둔다. 탭마다 필터와 page 가 따로이고 탭을 바꿔도 유지된다(필터를 바꾸면 그 탭의 page 는 1).
-// 초기 요청 = /api/findings?status=open&excludeCategory=policy&page=1&limit=50. 필터 변경 → page=1.
+// 구성: SummaryCards + 탭 3개("검출" 기본 / "위험한 설정" / "취약점") + 각 탭의 필터·표·Pager.
+// 탭의 선택은 URL query(`?tab=policy`, `?tab=cve`)에 둔다. 탭마다 필터와 page 가 따로이고 탭을 바꿔도 유지된다(필터를 바꾸면 그 탭의 page 는 1).
+// 초기 요청 = /api/findings?status=open&excludeCategory=policy&excludeSource=cve&page=1&limit=50. 필터 변경 → page=1.
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router";
 import { DataState } from "@/components/DataState";
@@ -13,45 +13,55 @@ import { PolicyFindingsTable } from "@/features/findings/PolicyFindingsTable";
 import { useFindings } from "@/features/findings/hooks";
 import { SummaryCards } from "@/features/findings/SummaryCards";
 import { useSummary } from "@/features/summary/useSummary";
-import type { FindingsFilter } from "@/lib/api";
+import { VulnerabilitiesTab } from "@/features/vulnerabilities/VulnerabilitiesTab";
+import type { FindingsFilter, VulnerabilitiesFilter } from "@/lib/api";
 import { emptyPageFallback, firstLoadState, isUnconfirmedPage } from "@/lib/queryState";
 import { cn } from "@/lib/utils";
 
-type TabId = "findings" | "policy";
+type FindingsTabId = "findings" | "policy";
+type TabId = FindingsTabId | "cve";
 
 const TAB_PARAM = "tab";
-const POLICY_TAB_VALUE = "policy";
+const TAB_VALUES: readonly TabId[] = ["policy", "cve"];
 const INITIAL_FILTER: FindingsFilter = { status: "open" };
 // 탭이 요청에 항상 붙이는 분류 조건. 필터 state 에는 넣지 않는다.
-const TAB_SCOPE: Record<TabId, FindingsFilter> = {
-  findings: { excludeCategory: "policy" },
+// "검출" 탭은 위험한 설정과 취약점을 뺀다(각각 따로 센다).
+const TAB_SCOPE: Record<FindingsTabId, FindingsFilter> = {
+  findings: { excludeCategory: "policy", excludeSource: "cve" },
   policy: { category: "policy" },
 };
 
 export function DashboardPage() {
   const [params, setParams] = useSearchParams();
-  const tab: TabId = params.get(TAB_PARAM) === POLICY_TAB_VALUE ? "policy" : "findings";
-  const [filters, setFilters] = useState<Record<TabId, FindingsFilter>>({
+  const tab: TabId = TAB_VALUES.find((value) => value === params.get(TAB_PARAM)) ?? "findings";
+  const [filters, setFilters] = useState<Record<FindingsTabId, FindingsFilter>>({
     findings: INITIAL_FILTER,
     policy: INITIAL_FILTER,
   });
-  const [pages, setPages] = useState<Record<TabId, number>>({ findings: 1, policy: 1 });
+  const [pages, setPages] = useState<Record<FindingsTabId, number>>({ findings: 1, policy: 1 });
+  const [cveFilter, setCveFilter] = useState<VulnerabilitiesFilter>({});
+  const [cvePage, setCvePage] = useState(1);
   const summary = useSummary().data;
 
   // 탭마다 필터와 page 를 따로 유지한다. 핸들러는 참조를 고정한다 — FindingsFilters 의 debounce 타이머가 부모의 re-render 로 다시 시작되지 않게.
-  const changeFilter = useCallback((kind: TabId, next: FindingsFilter) => {
+  const changeFilter = useCallback((kind: FindingsTabId, next: FindingsFilter) => {
     setFilters((prev) => ({ ...prev, [kind]: next }));
     setPages((prev) => ({ ...prev, [kind]: 1 }));
   }, []);
-  const changePage = useCallback((kind: TabId, page: number) => setPages((prev) => ({ ...prev, [kind]: page })), []);
+  const changePage = useCallback((kind: FindingsTabId, page: number) => setPages((prev) => ({ ...prev, [kind]: page })), []);
   const changeFindingsFilter = useCallback((next: FindingsFilter) => changeFilter("findings", next), [changeFilter]);
   const changePolicyFilter = useCallback((next: FindingsFilter) => changeFilter("policy", next), [changeFilter]);
   const changeFindingsPage = useCallback((page: number) => changePage("findings", page), [changePage]);
   const changePolicyPage = useCallback((page: number) => changePage("policy", page), [changePage]);
+  const changeCveFilter = useCallback((next: VulnerabilitiesFilter) => {
+    setCveFilter(next);
+    setCvePage(1);
+  }, []);
 
   const handleTabChange = (next: string) => {
     const nextParams = new URLSearchParams(params);
-    if (next === POLICY_TAB_VALUE) nextParams.set(TAB_PARAM, POLICY_TAB_VALUE);
+    const value = TAB_VALUES.find((candidate) => candidate === next);
+    if (value !== undefined) nextParams.set(TAB_PARAM, value);
     else nextParams.delete(TAB_PARAM);
     setParams(nextParams);
   };
@@ -65,6 +75,7 @@ export function DashboardPage() {
         <TabsList aria-label="검출 종류">
           <TabsTrigger value="findings">{countLabel("검출", summary?.openCount)}</TabsTrigger>
           <TabsTrigger value="policy">{countLabel("위험한 설정", summary?.policyOpenCount)}</TabsTrigger>
+          <TabsTrigger value="cve">{countLabel("취약점", summary?.cveOpenCount)}</TabsTrigger>
         </TabsList>
         <TabsContent value="findings">
           <FindingsTab
@@ -84,13 +95,16 @@ export function DashboardPage() {
             onPageChange={changePolicyPage}
           />
         </TabsContent>
+        <TabsContent value="cve">
+          <VulnerabilitiesTab filter={cveFilter} page={cvePage} onFilterChange={changeCveFilter} onPageChange={setCvePage} />
+        </TabsContent>
       </Tabs>
     </div>
   );
 }
 
 interface FindingsTabProps {
-  kind: TabId;
+  kind: FindingsTabId;
   filter: FindingsFilter;
   page: number;
   onFilterChange: (filter: FindingsFilter) => void;

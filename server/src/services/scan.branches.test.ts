@@ -427,6 +427,7 @@ describe("브랜치 스캔 — 메일", () => {
     dependencyType: "transitive",
     status: "open",
     blacklistEntryId: 1,
+    source: "manual",
     reason: "악성",
     htmlUrl: "https://github.com/my-org/svc/blob/HEAD/package-lock.json",
     firstSeenAt: "2026-11-16T00:00:00.000Z",

@@ -244,7 +244,7 @@ describe("형식이 다른 응답", () => {
 
     const mock = createFetchMock(() => ({ status: 200, body: { data: { securityVulnerabilities: null } } }));
     const feed = createFeedClient({ token: "secret-token", fetch: mock.fetch });
-    const error = await feed.fetchPage(null).then(
+    const error = await feed.fetchPage("malware", null).then(
       () => null,
       (reason: unknown) => reason as Error,
     );

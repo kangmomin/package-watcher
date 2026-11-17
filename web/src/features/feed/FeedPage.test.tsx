@@ -21,13 +21,13 @@ async function renderFeed() {
 }
 
 describe("외부 목록 검색", () => {
-  it("[SE-70] 첫 요청은 page=1 이고 표에 종류·이름·범위·심각도·요약·갱신 시각·링크를 보인다", async () => {
+  it("[SE-70] 첫 요청은 page=1 이고 표에 분류·종류·이름·범위·심각도·점수·고쳐진 버전·요약·갱신 시각·링크를 보인다", async () => {
     const server = setupServer();
     await renderFeed();
     const row = await findRowWith("evil-npm-pkg");
     expect(server.last("GET", ENTRIES)?.query).toEqual({ page: "1", limit: "50" });
     const headers = screen.getAllByRole("columnheader").map((h) => h.textContent?.trim());
-    expect(headers).toEqual(["종류", "이름", "범위", "심각도", "요약", "갱신 시각", "권고"]);
+    expect(headers).toEqual(["분류", "종류", "이름", "범위", "심각도", "점수", "고쳐진 버전", "요약", "갱신 시각", "권고"]);
     expect(within(row).getByText("npm")).toBeInTheDocument();
     expect(within(row).getByText(">=1.0.0 <2.0.0")).toBeInTheDocument();
     expect(within(row).getByText("critical")).toBeInTheDocument();

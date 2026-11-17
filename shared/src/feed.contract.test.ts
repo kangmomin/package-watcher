@@ -12,6 +12,9 @@ import {
 import * as fx from "./fixtures.ts";
 
 const FEED_ENTRY = {
+  kind: "malware",
+  cvssScore: null,
+  patchedVersion: null,
   externalId: "GHSA-h6jf-g8cj-x4v3",
   ecosystem: "npm",
   name: "@univerjs-pro/sheets-pivot-chart",
@@ -25,6 +28,10 @@ const FEED_ENTRY = {
 
 const FEED_STATUS = {
   enabled: true,
+  byKind: {
+    malware: { entryCount: 151751, skippedCount: 12, lastSyncedAt: "2026-11-16T01:00:00.000Z", fullSyncDone: true, lastError: null },
+    cve: { entryCount: 0, skippedCount: 0, lastSyncedAt: null, fullSyncDone: false, lastError: null },
+  },
   entryCount: 151751,
   byEcosystem: { npm: 125762, pypi: 17529 },
   skippedCount: 12,

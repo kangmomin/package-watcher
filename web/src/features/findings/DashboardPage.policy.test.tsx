@@ -98,7 +98,7 @@ describe("대시보드 — 탭", () => {
     );
     expect(detections).toHaveAttribute("aria-selected", "true");
     await findRowWith("api");
-    expect(queries(server)[0]).toEqual({ status: "open", excludeCategory: "policy", page: "1", limit: "50" });
+    expect(queries(server)[0]).toEqual({ status: "open", excludeCategory: "policy", excludeSource: "cve", page: "1", limit: "50" });
     expect(screen.getByRole("tabpanel")).toHaveAccessibleName("검출 (12)");
   });
 

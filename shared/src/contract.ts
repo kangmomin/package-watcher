@@ -304,6 +304,35 @@ export const BRANCH_SCAN_DAYS_DEFAULT = 7;
 /** 스캔 1회에서 repo 1개가 평가하는 브랜치(기본 브랜치 제외)의 최대 수. */
 export const BRANCH_SCAN_MAX_BRANCHES = 20;
 
+/**
+ * 항목의 출처. 스캔에서 외부 목록(GitHub Advisory)이 일치했을 때 서버가 만든 항목은 `feed`(악성 패키지) 또는 `cve`(일반 취약점)다.
+ * 사용자가 만든 항목과 같은 방법으로 끄고, 고치고, 지울 수 있다.
+ */
+export const ENTRY_SOURCES = ["manual", "feed", "cve"] as const;
+export const entrySourceSchema = z.enum(ENTRY_SOURCES);
+export type EntrySource = z.infer<typeof entrySourceSchema>;
+/** 취약점(일반 CVE)의 출처. 이 출처의 검출은 "검출"과 따로 세고, 즉시 메일을 보내지 않는다. */
+export const CVE_SOURCE = "cve" satisfies EntrySource;
+
+/** 취약점을 대조하는 CVSS 점수의 기준. 0 = 대조하지 않는다. */
+export const CVE_MIN_SCORE_OFF = 0;
+export const CVE_MIN_SCORE_MIN = 4;
+export const CVE_MIN_SCORE_MAX = 10;
+export const CVE_MIN_SCORE_DEFAULT = 8;
+/** 점수가 없는 권고는 GitHub 의 등급이 이 값일 때만 대조한다. */
+export const CVE_UNSCORED_SEVERITY = "critical" satisfies Severity;
+const CVE_MIN_SCORE_MESSAGE = `취약점의 기준 점수는 0(끔) 또는 ${CVE_MIN_SCORE_MIN}~${CVE_MIN_SCORE_MAX} 사이의 값입니다 (소수 1자리까지)`;
+const isCveMinScore = (value: number): boolean =>
+  (value === CVE_MIN_SCORE_OFF || (value >= CVE_MIN_SCORE_MIN && value <= CVE_MIN_SCORE_MAX)) &&
+  Math.abs(value * 10 - Math.round(value * 10)) < 1e-9;
+const cvssScoreSchema = z.number().min(0).max(10);
+
+/** 권고 1건이 그 기준에서 대조 대상인가. 점수가 없으면 등급으로 판단한다. */
+export function cveMeetsMinScore(score: number | null, severity: Severity, minScore: number): boolean {
+  if (minScore <= CVE_MIN_SCORE_OFF) return false;
+  return score === null ? severity === CVE_UNSCORED_SEVERITY : score >= minScore;
+}
+
 export const findingSchema = z.object({
   id: idSchema,
   repo: z.string().min(1),
@@ -318,6 +347,8 @@ export const findingSchema = z.object({
   dependencyType: dependencyTypeSchema,
   status: findingStatusSchema,
   blacklistEntryId: idSchema,
+  /** 일치한 항목의 출처. `cve` = 취약점. */
+  source: entrySourceSchema,
   reason: z.string(),
   htmlUrl: z.string().min(1),
   firstSeenAt: isoDateSchema,
@@ -325,14 +356,6 @@ export const findingSchema = z.object({
   notifiedAt: isoDateSchema.nullable(),
 });
 export type Finding = z.infer<typeof findingSchema>;
-
-/**
- * 항목의 출처. `feed` = 외부 목록(GitHub Advisory 의 malware 항목)이 스캔에서 일치했을 때 서버가 만든 항목.
- * 사용자가 만든 항목과 같은 방법으로 끄고, 고치고, 지울 수 있다.
- */
-export const ENTRY_SOURCES = ["manual", "feed"] as const;
-export const entrySourceSchema = z.enum(ENTRY_SOURCES);
-export type EntrySource = z.infer<typeof entrySourceSchema>;
 
 export const blacklistEntrySchema = z.object({
   id: idSchema,
@@ -414,9 +437,11 @@ export const scanRepoSchema = z.object({
 export type ScanRepo = z.infer<typeof scanRepoSchema>;
 
 export const summarySchema = z.object({
-  /** open 검출의 수. `policy`(위험한 설정)는 세지 않는다 — `policyOpenCount` 가 따로 센다. */
+  /** open 검출의 수. `policy`(위험한 설정)와 취약점(`source = cve`)은 세지 않는다 — 아래의 두 값이 따로 센다. */
   openCount: countSchema,
   policyOpenCount: countSchema,
+  /** 취약점(`source = cve`)의 open 검출의 수. */
+  cveOpenCount: countSchema,
   ignoredCount: countSchema,
   lastScan: scanSchema.nullable(),
   nextScanAt: isoDateSchema.nullable(),
@@ -439,6 +464,8 @@ export const settingsSchema = z.object({
   feedEnabled: z.boolean(),
   /** 기본 브랜치 외에, 최근 이 일수 안에 커밋이 있는 브랜치도 스캔한다. 0 = 기본 브랜치만. */
   branchScanDays: z.number().int().min(0).max(BRANCH_SCAN_DAYS_MAX),
+  /** 취약점을 대조하는 CVSS 점수의 기준. 0 = 대조하지 않는다. `feedEnabled` 가 false 이면 쓰지 않는다. */
+  cveMinScore: z.number().refine(isCveMinScore),
 });
 export type Settings = z.infer<typeof settingsSchema>;
 
@@ -447,8 +474,20 @@ export type Settings = z.infer<typeof settingsSchema>;
 export const FEED_ENTRIES_DEFAULT_LIMIT = 50;
 export const FEED_ENTRIES_MAX_LIMIT = 200;
 
+/** 외부 목록의 분류. `malware` = 악성 패키지, `cve` = 일반 취약점. */
+export const FEED_KINDS = ["malware", "cve"] as const;
+export const feedKindSchema = z.enum(FEED_KINDS);
+export type FeedKind = z.infer<typeof feedKindSchema>;
+/** 외부 목록의 분류 → 일치했을 때 만드는 항목의 출처. */
+export const FEED_KIND_SOURCE: Readonly<Record<FeedKind, EntrySource>> = { malware: "feed", cve: "cve" };
+
 /** 외부 목록의 항목 1개 = 권고 1건의 (패키지, 범위) 1개. 블랙리스트 목록에는 나오지 않는다. */
 export const feedEntrySchema = z.object({
+  kind: feedKindSchema,
+  /** CVSS 점수 (v3 과 v4 중 큰 값). 없으면 null. `malware` 는 항상 null. */
+  cvssScore: cvssScoreSchema.nullable(),
+  /** 이 범위를 고친 첫 버전. 없거나 `malware` 이면 null. */
+  patchedVersion: z.string().min(1).nullable(),
   /** `GHSA-xxxx-xxxx-xxxx` */
   externalId: z.string().min(1),
   ecosystem: ecosystemSchema,
@@ -464,8 +503,21 @@ export const feedEntrySchema = z.object({
 });
 export type FeedEntry = z.infer<typeof feedEntrySchema>;
 
+/** 분류 1개의 동기화 상태. */
+export const feedKindStatusSchema = z.object({
+  entryCount: countSchema,
+  skippedCount: countSchema,
+  lastSyncedAt: isoDateSchema.nullable(),
+  fullSyncDone: z.boolean(),
+  lastError: z.string().nullable(),
+});
+export type FeedKindStatus = z.infer<typeof feedKindStatusSchema>;
+
+/** 맨 위의 값은 두 분류의 합이다: 수는 더하고, `fullSyncDone` 은 켜진 분류가 모두 끝났을 때 true, `lastError` 는 먼저 있는 것. */
 export const feedStatusSchema = z.object({
   enabled: z.boolean(),
+  /** 분류별 상태. `cve` 는 기준 점수와 상관없이 저장된 수다. */
+  byKind: z.object({ malware: feedKindStatusSchema, cve: feedKindStatusSchema }),
   /** 저장된 항목의 수 (대조에 쓰는 것). */
   entryCount: countSchema,
   /** 종류별 수. 0건인 종류는 생략할 수 있다. */
@@ -502,6 +554,57 @@ export const findingsPageSchema = pageSchema(findingSchema);
 export const scansPageSchema = pageSchema(scanSchema);
 export const scanReposPageSchema = pageSchema(scanRepoSchema);
 export const feedEntriesPageSchema = pageSchema(feedEntrySchema);
+
+// ---------------------------------------------------------------- 취약점 (패키지별 묶음)
+
+export const VULNERABILITIES_DEFAULT_LIMIT = 50;
+export const VULNERABILITIES_MAX_LIMIT = 200;
+/** 상세의 검출 목록의 최대 수. 넘으면 `findingsTotal` 로 전체 수를 알린다. */
+export const VULNERABILITY_DETAIL_MAX_FINDINGS = 500;
+export const VULNERABILITY_MAX_PATCHED_VERSIONS = 10;
+
+/** 취약점의 open 검출을 (종류, 패키지)로 묶은 1줄. 정렬: 최고 점수(없으면 뒤) → repo 수 → 이름. */
+export const vulnerabilityGroupSchema = z.object({
+  ecosystem: ecosystemSchema,
+  packageName: z.string().min(1),
+  /** 일치한 권고들의 가장 높은 CVSS 점수. 모두 점수가 없으면 null. */
+  maxScore: cvssScoreSchema.nullable(),
+  /** 일치한 권고들의 가장 높은 심각도. */
+  severity: severitySchema,
+  advisoryCount: countSchema,
+  repoCount: countSchema,
+  findingCount: countSchema,
+  /** 직접 의존성인 검출이 1건 이상 있는가. */
+  hasDirect: z.boolean(),
+  /** 일치한 권고들의 "고쳐진 버전" (중복 없음, 최대 10개). 이 값들 중 가장 높은 버전 이상으로 올리면 된다. */
+  patchedVersions: z.array(z.string().min(1)).max(VULNERABILITY_MAX_PATCHED_VERSIONS),
+});
+export type VulnerabilityGroup = z.infer<typeof vulnerabilityGroupSchema>;
+export const vulnerabilitiesPageSchema = pageSchema(vulnerabilityGroupSchema);
+
+export const vulnerabilityAdvisorySchema = z.object({
+  /** 이 권고의 블랙리스트 항목(`source = cve`). 끄면 이 권고를 org 전체에서 대조하지 않는다. */
+  blacklistEntryId: idSchema,
+  externalId: z.string().min(1),
+  cvssScore: cvssScoreSchema.nullable(),
+  severity: severitySchema,
+  summary: z.string(),
+  url: z.string().min(1),
+  versionRange: z.string().min(1).nullable(),
+  patchedVersion: z.string().min(1).nullable(),
+  findingCount: countSchema,
+});
+export type VulnerabilityAdvisory = z.infer<typeof vulnerabilityAdvisorySchema>;
+
+/** 패키지 1개의 상세: 일치한 권고(점수 내림차순)와 open 검출(repo, 파일 순). */
+export const vulnerabilityDetailSchema = z.object({
+  ecosystem: ecosystemSchema,
+  packageName: z.string().min(1),
+  advisories: z.array(vulnerabilityAdvisorySchema),
+  findings: z.array(findingSchema).max(VULNERABILITY_DETAIL_MAX_FINDINGS),
+  findingsTotal: countSchema,
+});
+export type VulnerabilityDetail = z.infer<typeof vulnerabilityDetailSchema>;
 
 export const testEmailResultSchema = z.object({ ok: z.literal(true) });
 export type TestEmailResult = z.infer<typeof testEmailResultSchema>;
@@ -701,6 +804,8 @@ export const settingsInputSchema = z.object({
     .min(0, `브랜치 스캔 기간은 0~${BRANCH_SCAN_DAYS_MAX} 사이의 정수입니다`)
     .max(BRANCH_SCAN_DAYS_MAX, `브랜치 스캔 기간은 0~${BRANCH_SCAN_DAYS_MAX} 사이의 정수입니다`)
     .optional(),
+  /** 생략하면 저장된 값을 유지한다. */
+  cveMinScore: z.number({ error: CVE_MIN_SCORE_MESSAGE }).refine(isCveMinScore, CVE_MIN_SCORE_MESSAGE).optional(),
 });
 export type SettingsInput = z.infer<typeof settingsInputSchema>;
 
@@ -734,6 +839,10 @@ export const findingsQuerySchema = z.object({
   category: ecosystemCategorySchema.optional(),
   /** 그 분류를 뺀 검출. 화면의 "검출" 탭이 `policy` 를 뺄 때 쓴다. */
   excludeCategory: ecosystemCategorySchema.optional(),
+  /** 그 출처의 항목이 만든 검출만. */
+  source: entrySourceSchema.optional(),
+  /** 그 출처를 뺀 검출. 화면의 "검출" 탭이 `cve` 를 뺄 때 쓴다. */
+  excludeSource: entrySourceSchema.optional(),
   severity: severitySchema.optional(),
   page: pageParam.default(1),
   limit: limitParam(FINDINGS_MAX_LIMIT).default(FINDINGS_DEFAULT_LIMIT),
@@ -753,12 +862,15 @@ export const blacklistQuerySchema = z.object({
   q: textFilter,
   /** 화면의 상태(켬·끔·만료)와 같은 뜻이다. 만료가 끔보다 우선한다. */
   status: z.enum(ENTRY_STATUSES).optional(),
-  /** 출처. `feed` = 외부 목록이 만든 항목만. */
+  /** 출처. `feed` = 외부 목록의 악성 패키지가 만든 항목만, `cve` = 취약점이 만든 항목만. */
   source: entrySourceSchema.optional(),
+  /** 그 출처를 뺀 항목. 화면의 기본 보기가 `cve` 를 뺄 때 쓴다. */
+  excludeSource: entrySourceSchema.optional(),
 });
 export type BlacklistQuery = z.infer<typeof blacklistQuerySchema>;
 
 export const feedEntriesQuerySchema = z.object({
+  kind: feedKindSchema.optional(),
   ecosystem: ecosystemSchema.optional(),
   /** 이름 또는 id(`GHSA-…`)의 대소문자 무시 부분 일치. */
   q: textFilter,
@@ -766,6 +878,24 @@ export const feedEntriesQuerySchema = z.object({
   limit: limitParam(FEED_ENTRIES_MAX_LIMIT).default(FEED_ENTRIES_DEFAULT_LIMIT),
 });
 export type FeedEntriesQuery = z.infer<typeof feedEntriesQuerySchema>;
+
+export const vulnerabilitiesQuerySchema = z.object({
+  ecosystem: ecosystemSchema.optional(),
+  /** 패키지 이름의 대소문자 무시 부분 일치. */
+  q: textFilter,
+  /** true 이면 직접 의존성인 검출이 있는 패키지만. */
+  directOnly: booleanParam.optional(),
+  page: pageParam.default(1),
+  limit: limitParam(VULNERABILITIES_MAX_LIMIT).default(VULNERABILITIES_DEFAULT_LIMIT),
+});
+export type VulnerabilitiesQuery = z.infer<typeof vulnerabilitiesQuerySchema>;
+
+/** 패키지 이름에 `/` 가 있어서(`@scope/pkg`, go module) 경로가 아니라 query 로 받는다. */
+export const vulnerabilityDetailQuerySchema = z.object({
+  ecosystem: ecosystemSchema,
+  name: z.string().trim().min(1, "name 이 필요합니다").max(255),
+});
+export type VulnerabilityDetailQuery = z.infer<typeof vulnerabilityDetailQuerySchema>;
 
 // ---------------------------------------------------------------- 일괄 관리 (bulk, import, export)
 

@@ -8,6 +8,11 @@ export function createFindingRoutes(services: AppServices): Hono {
 
   app.get("/summary", (c) => c.json(services.findings.summary()));
 
+  // 취약점(source = cve)의 패키지별 묶음. "/vulnerabilities/detail" 은 이름이 `/` 를 가질 수 있어 query 로 받는다.
+  app.get("/vulnerabilities", (c) => c.json(services.findings.listVulnerabilities(c.req.query())));
+
+  app.get("/vulnerabilities/detail", (c) => c.json(services.findings.vulnerabilityDetail(c.req.query())));
+
   app.get("/findings", (c) => c.json(services.findings.list(c.req.query())));
 
   app.patch("/findings/:id", async (c) => {

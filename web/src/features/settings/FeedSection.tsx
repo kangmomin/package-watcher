@@ -3,12 +3,12 @@
 // 상태는 폼과 따로 불러온다: 실패해도 폼은 그대로 쓸 수 있다.
 import { ECOSYSTEMS, type FeedStatus } from "@pw/shared";
 import { TriangleAlertIcon } from "lucide-react";
-import { useId, useState } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useFeedStatus, useSyncFeed } from "@/features/feed/hooks";
-import { NOT_APPLICABLE_LABEL, ecosystemLabel, formatCardTime, formatCount } from "@/lib/format";
+import { NOT_APPLICABLE_LABEL, ecosystemLabel, feedKindLabel, formatCardTime, formatCount } from "@/lib/format";
 import { firstLoadState } from "@/lib/queryState";
 
 export interface FeedSectionProps {
@@ -17,6 +17,8 @@ export interface FeedSectionProps {
   onEnabledChange: (enabled: boolean) => void;
   /** 폼에 저장하지 않은 변경이 있다 — "목록 검색" 으로 이동하면 사라진다 */
   isFormDirty?: boolean;
+  /** 취약점의 기준 점수 입력(폼의 필드). 외부 목록 사용 스위치 아래에 둔다. */
+  cveScoreField?: ReactNode;
 }
 
 const TOP_ECOSYSTEMS = 3;
@@ -32,7 +34,7 @@ function ecosystemParts(byEcosystem: FeedStatus["byEcosystem"]): string[] {
     });
 }
 
-export function FeedSection({ enabled, onEnabledChange, isFormDirty = false }: FeedSectionProps) {
+export function FeedSection({ enabled, onEnabledChange, isFormDirty = false, cveScoreField }: FeedSectionProps) {
   const id = useId();
   const status = useFeedStatus();
   const sync = useSyncFeed();
@@ -66,6 +68,7 @@ export function FeedSection({ enabled, onEnabledChange, isFormDirty = false }: F
           외부 목록 사용
         </label>
       </div>
+      {cveScoreField}
 
       {isLoading && (
         <p role="status" className="text-sm text-muted-foreground">
@@ -104,11 +107,17 @@ export function FeedSection({ enabled, onEnabledChange, isFormDirty = false }: F
 }
 
 function FeedStatusView({ status }: { status: FeedStatus }) {
+  // 취약점만 남았으면 취약점의 안내 1줄로 충분하다(같은 뜻을 두 번 쓰지 않는다).
+  const onlyCveUnfinished = status.byKind.malware.fullSyncDone && !status.byKind.cve.fullSyncDone;
   return (
     <div className="flex flex-col gap-2 text-sm">
       <dl className="grid gap-x-6 gap-y-1 sm:grid-cols-[8rem_1fr]">
         <dt className="text-muted-foreground">항목 수</dt>
         <dd>{`${formatCount(status.entryCount)}건`}</dd>
+        <dt className="text-muted-foreground">분류별</dt>
+        <dd>
+          {`${feedKindLabel("malware")} ${formatCount(status.byKind.malware.entryCount)}건 · ${feedKindLabel("cve")} ${formatCount(status.byKind.cve.entryCount)}건`}
+        </dd>
         {Object.keys(status.byEcosystem).length > 0 && (
           <>
             <dt className="text-muted-foreground">종류별</dt>
@@ -124,8 +133,11 @@ function FeedStatusView({ status }: { status: FeedStatus }) {
           </>
         )}
       </dl>
-      {!status.fullSyncDone && (
+      {!status.fullSyncDone && !onlyCveUnfinished && (
         <p className="text-amber-700 dark:text-amber-300">첫 동기화가 끝나지 않았습니다 — 목록이 일부입니다</p>
+      )}
+      {!status.byKind.cve.fullSyncDone && (
+        <p className="text-amber-700 dark:text-amber-300">취약점의 첫 동기화가 끝나지 않았습니다 — 목록이 일부입니다</p>
       )}
       {status.lastError && (
         // alert 가 아니다: 요청이 실패한 순간의 알림은 toast 가 하고, 이 줄은 화면을 열 때마다 읽히면 안 된다.

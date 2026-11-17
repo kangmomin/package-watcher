@@ -1,9 +1,11 @@
 import {
   BRANCH_SCAN_DAYS_DEFAULT,
   BRANCH_SCAN_DAYS_MAX,
+  CVE_MIN_SCORE_DEFAULT,
   DIGEST_TIMEZONE,
   digestTimeSchema,
   scanIntervalHoursSchema,
+  settingsSchema,
   severitySchema,
   toDetails,
   type Severity,
@@ -67,6 +69,8 @@ export interface StoredSettings {
   notifyMinSeverity: Severity;
   feedEnabled: boolean;
   branchScanDays: number;
+  /** 취약점을 대조하는 CVSS 점수의 기준. 0 = 대조하지 않는다 */
+  cveMinScore: number;
 }
 
 /** 저장된 설정. 값이 없거나 깨졌으면 기본값을 쓴다. */
@@ -75,7 +79,9 @@ export function readStoredSettings(settings: SettingsRepository): StoredSettings
   const digestTime = digestTimeSchema.safeParse(settings.get("digest_time"));
   const minSeverity = severitySchema.safeParse(settings.get("notify_min_severity"));
   const branchDays = branchScanDaysSchema.safeParse(Number(settings.get("branch_scan_days")));
+  const cveMinScore = settingsSchema.shape.cveMinScore.safeParse(Number(settings.get("cve_min_score")));
   return {
+    cveMinScore: settings.get("cve_min_score") !== null && cveMinScore.success ? cveMinScore.data : CVE_MIN_SCORE_DEFAULT,
     branchScanDays: settings.get("branch_scan_days") !== null && branchDays.success ? branchDays.data : BRANCH_SCAN_DAYS_DEFAULT,
     // 기본 켬. 저장된 값이 "false" 일 때만 끈다.
     feedEnabled: settings.get("feed_enabled") !== "false",

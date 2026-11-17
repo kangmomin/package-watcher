@@ -1,4 +1,5 @@
 import {
+  CVE_SOURCE,
   ECOSYSTEM_CATEGORY,
   POLICY_ECOSYSTEM,
   SEVERITIES,
@@ -6,6 +7,7 @@ import {
   type DependencyType,
   type Ecosystem,
   type EcosystemCategory,
+  type EntrySource,
   type Finding,
   type FindingStatus,
   type Page,
@@ -44,6 +46,10 @@ export interface FindingsFilter {
   category?: EcosystemCategory;
   /** 그 분류의 종류를 뺀다 */
   excludeCategory?: EcosystemCategory;
+  /** 그 출처의 항목이 만든 검출만 */
+  source?: EntrySource;
+  /** 그 출처를 뺀다 */
+  excludeSource?: EntrySource;
   severity?: Severity;
   page: number;
   limit: number;
@@ -58,6 +64,10 @@ export interface FindingsRepository {
   countByStatus(status: FindingStatus): number;
   /** `policy` 검출의 수 */
   countPolicyByStatus(status: FindingStatus): number;
+  /** 요약의 `openCount`: `policy` 와 취약점(`source = cve`)을 뺀 open 검출의 수 */
+  countOpenDetections(): number;
+  /** 취약점(`source = cve`) 검출의 수 */
+  countCveByStatus(status: FindingStatus): number;
   /** repo 별 open 검출 수 (`policy` 제외). 검출이 없는 repo 는 없다 */
   openCountsByRepo(): Map<string, number>;
   listActive(): Finding[];
@@ -81,12 +91,18 @@ export interface FindingsRepository {
    * "비활성 항목에는 활성 검출이 없다"는 불변식을 검출을 읽는 모든 시점에 성립시킨다.
    */
   resolveForInactiveEntries(todayKst: string, now: string): number;
+  /**
+   * 기준 점수를 통과하지 못한(`passing` 에 없는) `source = cve` 항목의 open 검출을 resolved 로 바꾼다. 멱등이다.
+   * 사용자가 무시한(ignored) 검출은 건드리지 않는다 — 기준을 바꿨다 돌려도 무시가 유지된다.
+   * 기준을 올렸거나, 취약점이 꺼졌거나, 외부 목록이 꺼졌을 때 기존 검출을 정리한다(내리면 다음 스캔이 다시 만든다).
+   */
+  resolveForGatedCveEntries(passing: ReadonlySet<number>, now: string): number;
   /** 활성 검출의 severity 를 항목의 값으로 맞춘다(이전 버전 이미지가 만든 검출 보정). 멱등이다. */
   syncSeverityFromEntries(): number;
   markNotified(ids: number[], now: string): void;
 }
 
-interface FindingRow {
+export interface FindingRow {
   id: number;
   repo: string;
   ref: string;
@@ -98,6 +114,7 @@ interface FindingRow {
   dependency_type: DependencyType;
   blacklist_entry_id: number;
   status: FindingStatus;
+  source: EntrySource;
   reason: string;
   html_url: string;
   first_seen_at: string;
@@ -105,9 +122,14 @@ interface FindingRow {
   notified_at: string | null;
 }
 
-const COLUMNS =
+// 검출의 출처 = 일치한 항목의 출처. 항목이 없으면(지워진 경우) 사용자가 만든 것으로 본다.
+export const SOURCE_EXPR =
+  "COALESCE((SELECT e.source FROM blacklist_entries e WHERE e.id = findings.blacklist_entry_id), 'manual')";
+const COLUMNS_BASE =
   "id, repo, ref, file_path, ecosystem, package_name, version, severity, dependency_type, blacklist_entry_id, " +
   "status, reason, html_url, first_seen_at, resolved_at, notified_at";
+export const FINDING_COLUMNS = `${COLUMNS_BASE}, ${SOURCE_EXPR} AS source`;
+const COLUMNS = FINDING_COLUMNS;
 const ACTIVE = "status IN ('open', 'ignored')";
 const ecosystemsOf = (category: EcosystemCategory): string[] =>
   Object.entries(ECOSYSTEM_CATEGORY).flatMap(([ecosystem, value]) => (value === category ? [ecosystem] : []));
@@ -118,7 +140,7 @@ const SEVERITY_RANK_SQL = `CASE severity ${SEVERITIES.map(
 ).join(" ")} END`;
 const LIST_ORDER = `ORDER BY ${SEVERITY_RANK_SQL} DESC, first_seen_at DESC, id DESC`;
 
-function toFinding(row: FindingRow): Finding {
+export function toFinding(row: FindingRow): Finding {
   return {
     id: row.id,
     repo: row.repo,
@@ -131,6 +153,7 @@ function toFinding(row: FindingRow): Finding {
     dependencyType: row.dependency_type,
     status: row.status,
     blacklistEntryId: row.blacklist_entry_id,
+    source: row.source,
     reason: row.reason,
     htmlUrl: row.html_url,
     firstSeenAt: row.first_seen_at,
@@ -146,12 +169,20 @@ export function createFindingsRepository(db: Db): FindingsRepository {
   const countStmt = db.prepare<[string], { count: number }>(
     `SELECT COUNT(*) AS count FROM findings WHERE status = ? AND ecosystem <> '${POLICY_ECOSYSTEM}'`,
   );
+  const countOpenDetectionsStmt = db.prepare<[], { count: number }>(
+    `SELECT COUNT(*) AS count FROM findings
+     WHERE status = 'open' AND ecosystem <> '${POLICY_ECOSYSTEM}' AND ${SOURCE_EXPR} <> '${CVE_SOURCE}'`,
+  );
+  const countCveStmt = db.prepare<[string], { count: number }>(
+    `SELECT COUNT(*) AS count FROM findings WHERE status = ? AND ${SOURCE_EXPR} = '${CVE_SOURCE}'`,
+  );
   const countPolicyStmt = db.prepare<[string], { count: number }>(
     `SELECT COUNT(*) AS count FROM findings WHERE status = ? AND ecosystem = '${POLICY_ECOSYSTEM}'`,
   );
   const openByRepoStmt = db.prepare<[], { repo: string; count: number }>(
     `SELECT repo, COUNT(*) AS count FROM findings
-     WHERE status = 'open' AND ecosystem <> '${POLICY_ECOSYSTEM}' GROUP BY repo ORDER BY repo`,
+     WHERE status = 'open' AND ecosystem <> '${POLICY_ECOSYSTEM}' AND ${SOURCE_EXPR} <> '${CVE_SOURCE}'
+     GROUP BY repo ORDER BY repo`,
   );
   const activeStmt = db.prepare<[], FindingRow>(
     `SELECT ${COLUMNS} FROM findings WHERE ${ACTIVE} ${ORDER}`,
@@ -162,18 +193,19 @@ export function createFindingsRepository(db: Db): FindingsRepository {
   const unnotifiedStmt = db.prepare<[number], FindingRow>(
     `SELECT ${COLUMNS} FROM findings
      WHERE status = 'open' AND notified_at IS NULL AND ecosystem <> '${POLICY_ECOSYSTEM}'
+       AND ${SOURCE_EXPR} <> '${CVE_SOURCE}'
        AND ${SEVERITY_RANK_SQL} >= ? ${ORDER}`,
   );
-  const insertStmt = db.prepare<unknown[], FindingRow>(
+  const insertStmt = db.prepare<unknown[], { id: number }>(
     `INSERT INTO findings (repo, ref, file_path, ecosystem, package_name, version, severity, dependency_type,
        blacklist_entry_id, status, reason, html_url, first_seen_at, last_seen_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?) RETURNING ${COLUMNS}`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?) RETURNING id`,
   );
   const touchStmt = db.prepare<[string, string, number]>(
     "UPDATE findings SET dependency_type = ?, last_seen_at = ? WHERE id = ?",
   );
-  const setStatusStmt = db.prepare<[string, number], FindingRow>(
-    `UPDATE findings SET status = ? WHERE id = ? RETURNING ${COLUMNS}`,
+  const setStatusStmt = db.prepare<[string, number], { id: number }>(
+    "UPDATE findings SET status = ? WHERE id = ? RETURNING id",
   );
   const resolveStmt = db.prepare<[string, number]>(
     `UPDATE findings SET status = 'resolved', resolved_at = ? WHERE id = ? AND ${ACTIVE}`,
@@ -192,6 +224,14 @@ export function createFindingsRepository(db: Db): FindingsRepository {
     `UPDATE findings SET status = 'resolved', resolved_at = :now
      WHERE ${ACTIVE} AND blacklist_entry_id IN (
        SELECT id FROM blacklist_entries WHERE NOT (${ACTIVE_ENTRY_SQL}))`,
+  );
+  // open 검출이 있는 cve 항목만 본다(수천 개의 항목을 매 스캔마다 훑지 않는다)
+  const openCveEntriesStmt = db.prepare<[], { id: number }>(
+    `SELECT DISTINCT blacklist_entry_id AS id FROM findings
+     WHERE status = 'open' AND blacklist_entry_id IN (SELECT id FROM blacklist_entries WHERE source = '${CVE_SOURCE}')`,
+  );
+  const resolveOpenByEntryStmt = db.prepare<[string, number]>(
+    "UPDATE findings SET status = 'resolved', resolved_at = ? WHERE blacklist_entry_id = ? AND status = 'open'",
   );
   // join 형태로 쓴다. 상관 서브쿼리는 항목이 없는 검출에서 NOT NULL 위반이 되어 시작을 막는다.
   const syncSeverityStmt = db.prepare(
@@ -230,6 +270,14 @@ export function createFindingsRepository(db: Db): FindingsRepository {
         where.push(`ecosystem ${negate ? "NOT IN" : "IN"} (${list.map(() => "?").join(", ")})`);
         params.push(...list);
       }
+      if (filter.source) {
+        where.push(`${SOURCE_EXPR} = ?`);
+        params.push(filter.source);
+      }
+      if (filter.excludeSource) {
+        where.push(`${SOURCE_EXPR} <> ?`);
+        params.push(filter.excludeSource);
+      }
       if (filter.severity) {
         where.push("severity = ?");
         params.push(filter.severity);
@@ -255,12 +303,14 @@ export function createFindingsRepository(db: Db): FindingsRepository {
     },
     countByStatus: (status) => countStmt.get(status)?.count ?? 0,
     countPolicyByStatus: (status) => countPolicyStmt.get(status)?.count ?? 0,
+    countOpenDetections: () => countOpenDetectionsStmt.get()?.count ?? 0,
+    countCveByStatus: (status) => countCveStmt.get(status)?.count ?? 0,
     openCountsByRepo: () => new Map(openByRepoStmt.all().map((row) => [row.repo, row.count])),
     listActive: () => activeStmt.all().map(toFinding),
     listOpen: () => openStmt.all().map(toFinding),
     listUnnotifiedOpen: (minRank) => unnotifiedStmt.all(minRank).map(toFinding),
     insertOpen(finding, now) {
-      const row = insertStmt.get(
+      const inserted = insertStmt.get(
         finding.repo,
         finding.ref,
         finding.filePath,
@@ -275,6 +325,7 @@ export function createFindingsRepository(db: Db): FindingsRepository {
         now,
         now,
       );
+      const row = inserted ? getStmt.get(inserted.id) : undefined;
       if (!row) throw new Error("finding insert 결과가 없습니다");
       return toFinding(row);
     },
@@ -282,7 +333,8 @@ export function createFindingsRepository(db: Db): FindingsRepository {
       touchStmt.run(dependencyType, now, id);
     },
     setStatus(id, status) {
-      const row = setStatusStmt.get(status, id);
+      const updated = setStatusStmt.get(status, id);
+      const row = updated ? getStmt.get(updated.id) : undefined;
       if (!row) throw new Error(`검출이 없습니다: ${id}`);
       return toFinding(row);
     },
@@ -296,6 +348,13 @@ export function createFindingsRepository(db: Db): FindingsRepository {
       reasonStmt.run(reason, severity, blacklistEntryId);
     },
     resolveForInactiveEntries: (todayKst, now) => inactiveStmt.run({ now, todayKst }).changes,
+    resolveForGatedCveEntries(passing, now) {
+      let changes = 0;
+      for (const { id } of openCveEntriesStmt.all()) {
+        if (!passing.has(id)) changes += resolveOpenByEntryStmt.run(now, id).changes;
+      }
+      return changes;
+    },
     syncSeverityFromEntries: () => syncSeverityStmt.run().changes,
     markNotified(ids, now) {
       for (const id of ids) notifiedStmt.run(now, id);

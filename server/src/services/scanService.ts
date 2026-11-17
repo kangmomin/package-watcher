@@ -2,7 +2,9 @@ import { createHash } from "node:crypto";
 import { parse as parseJsonc, type ParseError } from "jsonc-parser";
 import {
   BRANCH_SCAN_MAX_BRANCHES,
+  CVE_SOURCE,
   DEFAULT_BRANCH_REF,
+  FEED_KIND_SOURCE,
   POLICY_ECOSYSTEM,
   isNamePattern,
   scanReposQuerySchema,
@@ -78,7 +80,8 @@ import type { SourceFacts } from "../sources/index.ts";
 const NPM: Ecosystem = "npm";
 /** registry 에서 받지 않는 의존성의 spec */
 const LOCAL_SPEC = /^(?:workspace|link|file|portal):/i;
-const isFeedEntry = (entry: MatchableEntry): boolean => entry.id < 0 || entry.source === "feed";
+const isFeedEntry = (entry: MatchableEntry): boolean =>
+  entry.id < 0 || entry.source === "feed" || entry.source === CVE_SOURCE;
 /** repo 동시 처리 수 */
 export const REPO_CONCURRENCY = 5;
 /** repo 1개 안의 파일 동시 조회 수 */
@@ -146,11 +149,14 @@ interface FeedContext {
   index: FeedIndex;
   /** 이미 블랙리스트에 있는 (종류, 이름, 범위). 같은 키의 외부 목록 항목은 대조하지 않는다 */
   blocked: Set<string>;
+  /** malware 행을 막는 키: `blocked` 에서 `source = cve` 항목의 키를 뺀 것 — 취약점 항목(휴면·사용자가 끈 것 포함)은 악성 패키지를 막지 못한다 */
+  blockedForMalware: Set<string>;
 }
 
-/** 외부 목록의 항목으로 만드는 블랙리스트 항목의 사유 (최대 500자) */
-function feedReason(summary: string, externalId: string, url: string): string {
-  return `${summary} (${externalId}) 출처: ${url}`.trim().slice(0, 500);
+/** 외부 목록의 항목으로 만드는 블랙리스트 항목의 사유 (최대 500자). 취약점은 점수를 앞에 붙인다 */
+function feedReason(summary: string, externalId: string, url: string, cvssScore: number | null = null): string {
+  const score = cvssScore === null ? "" : `[CVSS ${cvssScore.toFixed(1)}] `;
+  return `${score}${summary} (${externalId}) 출처: ${url}`.trim().slice(0, 500);
 }
 
 interface Match extends FindingKey {
@@ -1184,7 +1190,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     const unique = [...new Map(listed.map((repo) => [repo.name, repo])).values()];
     const targets = unique.filter((repo) => !repo.archived && !repo.fork);
 
-    const entryIndex = createCompositeIndex(createEntryIndex(snapshot), feedContext?.index ?? null, feedContext?.blocked ?? new Set());
+    const entryIndex = createCompositeIndex(createEntryIndex(snapshot), feedContext?.index ?? null, feedContext?.blocked ?? new Set(), feedContext?.blockedForMalware);
     const indicators = createIndicatorRules(snapshot);
     const policy = createPolicyRules(snapshot);
     // 외부 목록에 항목이 있는 종류도 그 종류의 파일을 받는다.
@@ -1359,18 +1365,27 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       const seen = feedIndex?.match(row.ecosystem, row.name)?.find((item) => item.id === tempId);
       if (!seen || seen.versionRange !== row.versionRange) continue;
       const existing = repos.blacklist.findSameMeaning(row.ecosystem, row.name, row.versionRange, today);
-      const entry =
+      // 기준 점수를 통과하지 못해 이번 스캔의 항목에서 빠진 취약점 항목은 cve 행에 쓰지 않는다 — 검출을 만들었다가 다음 스캔이 지우는 일이 없게
+      if (row.kind === "cve" && existing?.source === CVE_SOURCE && !entries.has(existing.id)) continue;
+      let entry = existing;
+      if (row.kind === "malware" && existing?.source === CVE_SOURCE) {
+        // malware 우선: 같은 뜻의 cve 항목은 악성 패키지 항목으로 승격한다(휴면·사용자가 끈 것도). 그 항목의 활성 검출도 값을 맞춘다.
+        const reason = feedReason(row.summary, row.externalId, row.url);
+        entry = repos.blacklist.promoteToFeed(existing.id, { externalId: row.externalId, reason, severity: row.severity }, now, today);
+        repos.findings.updateReasonAndSeverityForEntry(entry.id, reason, row.severity);
+      }
+      entry ??=
         existing ??
         repos.blacklist.insert(
           {
             ecosystem: row.ecosystem,
             name: row.name,
             versionRange: row.versionRange,
-            reason: feedReason(row.summary, row.externalId, row.url),
+            reason: feedReason(row.summary, row.externalId, row.url, row.cvssScore),
             severity: row.severity,
             enabled: true,
             expiresAt: null,
-            source: "feed",
+            source: FEED_KIND_SOURCE[row.kind],
             externalId: row.externalId,
           },
           now,
@@ -1390,6 +1405,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     snapshot: BlacklistEntry[],
     collected: Collected,
     feedIndex: FeedIndex | null,
+    passingCve: ReadonlySet<number>,
   ): { scan: Scan; sendMail: boolean } {
     return repos.transaction(() => {
       if (repos.settings.get("org") !== org) {
@@ -1400,6 +1416,8 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       const today = todayKst(clock);
       // 비활성 항목의 활성 검출을 먼저 정리한다 — 이후 메일과 요약이 읽는 시점에 불변식이 성립한다.
       repos.findings.resolveForInactiveEntries(today, toIso(clock.now()));
+      // 기준 점수를 통과하지 못하는 취약점 항목(기준을 올렸거나 취약점·외부 목록을 껐다)의 검출도 같은 시점에 정리한다.
+      repos.findings.resolveForGatedCveEntries(passingCve, toIso(clock.now()));
       if (collected.kind === "listFailed") {
         failProgress(scanId, collected.error);
         return { scan: repos.scans.finish(scanId, failedResult(collected.error)), sendMail: true };
@@ -1454,8 +1472,8 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
           },
           now,
         );
-        // 위험한 설정은 스캔과 repo 의 신규 수에 넣지 않는다 (처음에 수백 건이 나온다).
-        if (entry.ecosystem !== POLICY_ECOSYSTEM) {
+        // 위험한 설정과 취약점은 스캔과 repo 의 신규 수에 넣지 않는다 (처음에 수백~수천 건이 나온다).
+        if (entry.ecosystem !== POLICY_ECOSYSTEM && entry.source !== CVE_SOURCE) {
           newFindingCount += 1;
           newByRepo.set(match.repo, (newByRepo.get(match.repo) ?? 0) + 1);
         }
@@ -1569,6 +1587,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     client: GitHubClient,
     snapshot: BlacklistEntry[],
     feedContext: FeedContext | null,
+    passingCve: ReadonlySet<number>,
   ): Promise<Scan> {
     let finished: Scan;
     let sendMail = false;
@@ -1580,7 +1599,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     void diskCache?.prune();
     try {
       const collected = await collect(scan.id, org, client, snapshot, feedContext);
-      ({ scan: finished, sendMail } = finalize(scan.id, org, snapshot, collected, feedContext?.index ?? null));
+      ({ scan: finished, sendMail } = finalize(scan.id, org, snapshot, collected, feedContext?.index ?? null, passingCve));
     } catch (error) {
       logger.error(`스캔 #${scan.id} 중 예상하지 못한 오류`, error);
       finished = failUnexpected(scan, error);
@@ -1628,13 +1647,21 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
         repos.settings.set("authors_org", org);
       });
     }
-    const snapshot = repos.blacklist.listActive(todayKst(clock));
+    // 취약점 항목은 기준 점수를 통과한 것만 대조한다. 외부 목록이 꺼졌으면 기준 0 과 같다(대조도, 기존 검출도 없다).
+    const stored = readStoredSettings(repos.settings);
+    const cveMinScore = stored.feedEnabled ? stored.cveMinScore : 0;
+    const passingCve = repos.blacklist.cveEntryIdsMeeting(cveMinScore);
+    const snapshot = repos.blacklist
+      .listActive(todayKst(clock))
+      .filter((entry) => entry.source !== CVE_SOURCE || passingCve.has(entry.id));
     const scan = repos.scans.insertRunning(trigger, now);
     // 외부 목록은 스캔이 시작될 때의 것으로 대조한다(동기화가 도중에 바꿔도 이 스캔은 같은 목록을 본다).
     const feedIndex = feed?.getIndex() ?? null;
-    const feedContext = feedIndex ? { index: feedIndex, blocked: repos.blacklist.allKeys() } : null;
+    const feedContext: FeedContext | null = feedIndex
+      ? { index: feedIndex, blocked: repos.blacklist.allKeys(), blockedForMalware: repos.blacklist.nonCveKeys() }
+      : null;
     // lock 은 메일 발송까지 끝난 뒤 finally 에서 푼다.
-    const done = execute(scan, org, github, snapshot, feedContext).finally(() => {
+    const done = execute(scan, org, github, snapshot, feedContext, passingCve).finally(() => {
       running = null;
     });
     running = done;

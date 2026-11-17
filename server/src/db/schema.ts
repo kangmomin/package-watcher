@@ -1,6 +1,6 @@
 import type { Db } from "./index.ts";
 
-export const LATEST_VERSION = 5;
+export const LATEST_VERSION = 6;
 
 // 시각은 모두 ISO 8601 UTC 문자열(`Date#toISOString`)로 저장한다. 문자열 정렬 = 시간 순서.
 // v1 스키마다. 새 DB 도 이것을 먼저 만든 뒤 v2 단계를 실행한다(마이그레이션 SQL 이 한 벌이다).
@@ -244,8 +244,21 @@ CREATE TABLE repo_authors (
 );
 `;
 
-function migrateToV5(db: Db): void {
+export function migrateToV5(db: Db): void {
   db.exec(V5_SQL);
+}
+
+// v6: 외부 목록의 분류(kind)·CVSS 점수·고쳐진 버전. 기존 행은 모두 malware 다(DEFAULT). 열 추가와 index 만이라 행은 그대로다.
+// blacklist_entries.source 에는 CHECK 가 없어서 `cve` 를 그대로 받는다(값의 검증은 zod).
+const V6_SQL = `
+ALTER TABLE feed_entries ADD COLUMN kind TEXT NOT NULL DEFAULT 'malware';
+ALTER TABLE feed_entries ADD COLUMN cvss_score REAL;
+ALTER TABLE feed_entries ADD COLUMN patched_version TEXT;
+CREATE INDEX feed_entries_kind ON feed_entries (kind, ecosystem);
+`;
+
+function migrateToV6(db: Db): void {
+  db.exec(V6_SQL);
 }
 
 /** `version` 은 그 단계가 만드는 `user_version`. 순서대로 실행한다. */
@@ -254,6 +267,7 @@ const STEPS: { version: number; run: (db: Db) => void }[] = [
   { version: 3, run: migrateToV3 },
   { version: 4, run: migrateToV4 },
   { version: 5, run: migrateToV5 },
+  { version: 6, run: migrateToV6 },
 ];
 
 /** 호출자가 연 트랜잭션 안에서 현재 버전보다 큰 단계를 순서대로 실행한다. 어느 단계든 실패하면 호출자가 롤백한다. */

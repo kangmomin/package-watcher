@@ -1,3 +1,4 @@
+import type { FeedKind } from "@pw/shared";
 import { Octokit } from "octokit";
 import {
   DO_NOT_RETRY,
@@ -16,8 +17,8 @@ export interface FeedPage {
 }
 
 export interface FeedClient {
-  /** 최근 갱신 순(UPDATED_AT DESC)의 malware 권고 100건. 실패하면 throw (rate limit 은 `RateLimitedError`) */
-  fetchPage(cursor: string | null): Promise<FeedPage>;
+  /** 최근 갱신 순(UPDATED_AT DESC)의 그 분류(malware 또는 일반 취약점) 권고 100건. 실패하면 throw (rate limit 은 `RateLimitedError`) */
+  fetchPage(kind: FeedKind, cursor: string | null): Promise<FeedPage>;
 }
 
 /** GitHub 이 넘겨 준 cursor 를 거부했다 (GraphQL 오류가 cursor·after 인자의 형식 문제를 가리킨다). 이어받기를 처음부터 다시 하는 유일한 근거 */
@@ -49,7 +50,10 @@ export function isInvalidCursorMessage(error: unknown): boolean {
 
 export const PAGE_SIZE = 100;
 
-/** 이 도구가 쓰는 필드만 요청한다. 일반 CVE 는 가져오지 않는다(classifications: MALWARE). */
+/**
+ * 이 도구가 쓰는 필드만 요청한다. malware 의 쿼리다.
+ * 문자열을 바꾸면 안 된다 — 녹화·재생 도구가 요청 body 의 hash 로 응답을 찾아서, 바꾸면 기존 녹화가 맞지 않는다.
+ */
 export const FEED_QUERY = `
 query($cursor: String) {
   securityVulnerabilities(classifications: MALWARE, first: ${PAGE_SIZE}, after: $cursor, orderBy: {field: UPDATED_AT, direction: DESC}) {
@@ -62,6 +66,23 @@ query($cursor: String) {
     }
   }
 }`;
+
+/** 일반 취약점(classifications: GENERAL)의 쿼리: malware 의 쿼리에 고쳐진 버전과 CVSS 점수를 더한다. */
+export const CVE_QUERY = `
+query($cursor: String) {
+  securityVulnerabilities(classifications: GENERAL, first: ${PAGE_SIZE}, after: $cursor, orderBy: {field: UPDATED_AT, direction: DESC}) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      updatedAt
+      vulnerableVersionRange
+      firstPatchedVersion { identifier }
+      package { ecosystem name }
+      advisory { ghsaId summary severity permalink withdrawnAt updatedAt cvssSeverities { cvssV3 { score } cvssV4 { score } } }
+    }
+  }
+}`;
+
+export const FEED_QUERY_OF: Readonly<Record<FeedKind, string>> = { malware: FEED_QUERY, cve: CVE_QUERY };
 
 export interface FeedClientOptions {
   token: string;
@@ -120,10 +141,10 @@ export function createFeedClient(options: FeedClientOptions): FeedClient {
   });
 
   return {
-    async fetchPage(cursor) {
+    async fetchPage(kind, cursor) {
       let data: unknown;
       try {
-        data = await octokit.graphql(FEED_QUERY, { cursor });
+        data = await octokit.graphql(FEED_QUERY_OF[kind], { cursor });
       } catch (error) {
         if (isGraphqlRateLimit(error)) throw new RateLimitedError();
         // 처음부터의 요청(cursor 없음)에는 cursor 오류가 있을 수 없다

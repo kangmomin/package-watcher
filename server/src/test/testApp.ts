@@ -192,6 +192,8 @@ export interface SettingsBody {
   recipients: string[];
   /** 생략하면 저장하지 않는다(기본 7) */
   branchScanDays?: number;
+  /** 생략하면 저장하지 않는다(기본 8) */
+  cveMinScore?: number;
 }
 
 export const DEFAULT_SETTINGS: SettingsBody = {

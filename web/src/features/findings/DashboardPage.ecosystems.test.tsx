@@ -36,7 +36,7 @@ describe("대시보드 종류 — 필터", () => {
     await waitFor(() =>
       expect(server.requests("GET", FINDINGS).at(-1)?.query).toEqual({
         status: "open",
-        excludeCategory: "policy",
+        excludeCategory: "policy", excludeSource: "cve",
         ecosystem: "go",
         page: "1",
         limit: "50",

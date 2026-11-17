@@ -18,12 +18,15 @@ const ecosystemSelect = () => screen.getByRole("combobox", { name: "종류" });
 const statusSelect = () => screen.getByRole("combobox", { name: "상태" });
 const nameSearch = () => screen.getByRole("textbox", { name: "이름" });
 
+// 기본 보기는 취약점 항목을 뺀다.
+const DEFAULT_SEARCH = "?excludeSource=cve";
+
 describe("블랙리스트 — 필터", () => {
   it("[BK-20] 필터가 모두 '전체'이면 query 없는 /api/blacklist 를 1번 요청한다", async () => {
     const server = setupServer();
     await renderBlacklist();
 
-    expect(server.last("GET", BLACKLIST)?.url.search).toBe("");
+    expect(server.last("GET", BLACKLIST)?.url.search).toBe(DEFAULT_SEARCH);
     expect(server.count("GET", BLACKLIST)).toBe(1);
     expect(ecosystemSelect()).toHaveTextContent("전체");
     expect(statusSelect()).toHaveTextContent("전체");
@@ -41,7 +44,7 @@ describe("블랙리스트 — 필터", () => {
     await user.click(within(screen.getByRole("listbox")).getByRole("option", { name: "go" }));
 
     await vi.waitFor(() =>
-      expect(server.last("GET", BLACKLIST)?.query).toEqual({ ecosystem: "go" }),
+      expect(server.last("GET", BLACKLIST)?.query).toEqual({ ecosystem: "go", excludeSource: "cve" }),
     );
   });
 
@@ -56,7 +59,7 @@ describe("블랙리스트 — 필터", () => {
     ] as const) {
       await chooseOption(user, statusSelect(), label);
       await vi.waitFor(() =>
-        expect(server.last("GET", BLACKLIST)?.query).toEqual({ status: value }),
+        expect(server.last("GET", BLACKLIST)?.query).toEqual({ status: value, excludeSource: "cve" }),
       );
     }
   });
@@ -67,10 +70,10 @@ describe("블랙리스트 — 필터", () => {
 
     await chooseOption(user, statusSelect(), "켬");
     await vi.waitFor(() =>
-      expect(server.last("GET", BLACKLIST)?.query).toEqual({ status: "active" }),
+      expect(server.last("GET", BLACKLIST)?.query).toEqual({ status: "active", excludeSource: "cve" }),
     );
     await chooseOption(user, statusSelect(), "전체");
-    await vi.waitFor(() => expect(server.last("GET", BLACKLIST)?.url.search).toBe(""));
+    await vi.waitFor(() => expect(server.last("GET", BLACKLIST)?.url.search).toBe(DEFAULT_SEARCH));
   });
 
   it("[BK-20] 이름 검색은 300ms debounce 뒤 trim 한 값으로 q 를 1번 요청하고, 공백만 있으면 q 를 생략한다", async () => {
@@ -84,14 +87,14 @@ describe("블랙리스트 — 필터", () => {
     // 입력 직후에는 아직 요청하지 않는다
     expect(counts(server).blacklist).toBe(before);
     await advance(300);
-    await vi.waitFor(() => expect(server.last("GET", BLACKLIST)?.query).toEqual({ q: "lo" }));
+    await vi.waitFor(() => expect(server.last("GET", BLACKLIST)?.query).toEqual({ q: "lo", excludeSource: "cve" }));
     expect(counts(server).blacklist).toBe(before + 1);
 
     await user.clear(nameSearch());
     await user.click(nameSearch());
     await user.paste("   ");
     await advance(400);
-    await vi.waitFor(() => expect(server.last("GET", BLACKLIST)?.url.search).toBe(""));
+    await vi.waitFor(() => expect(server.last("GET", BLACKLIST)?.url.search).toBe(DEFAULT_SEARCH));
   });
 
   it("[BK-20] 필터가 있고 0건이면 '조건에 맞는 항목이 없습니다' 를 표시한다", async () => {
@@ -104,7 +107,7 @@ describe("블랙리스트 — 필터", () => {
     await user.type(nameSearch(), "zzz");
     expect(await screen.findByText("조건에 맞는 항목이 없습니다")).toBeInTheDocument();
     expect(screen.queryByText("블랙리스트가 비어 있습니다")).not.toBeInTheDocument();
-    expect(server.last("GET", BLACKLIST)?.query).toEqual({ q: "zzz" });
+    expect(server.last("GET", BLACKLIST)?.query).toEqual({ q: "zzz", excludeSource: "cve" });
   });
 
   it("[BK-20] 필터 없이 0건이면 v1 의 문구를 표시한다", async () => {

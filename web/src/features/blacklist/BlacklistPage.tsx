@@ -1,7 +1,8 @@
 // 블랙리스트 `/blacklist`.
 // 구성: 필터 + [가져오기] [내보내기] [항목 추가] + 일괄 버튼 줄 + BlacklistTable + BlacklistDialog(추가/수정 공용) + DeleteConfirm + ImportDialog.
+// 기본 보기는 취약점 항목을 뺀다(excludeSource=cve). 출처 필터에서 "전체"나 "취약점"을 고르면 보인다.
 // empty = 필터가 없으면 "블랙리스트가 비어 있습니다", 있으면 "조건에 맞는 항목이 없습니다".
-import { isUserManagedEcosystem, type BlacklistEntry } from "@pw/shared";
+import { CVE_SOURCE, isUserManagedEcosystem, type BlacklistEntry } from "@pw/shared";
 import { PlusIcon, UploadIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { DataState } from "@/components/DataState";
@@ -14,14 +15,15 @@ import { DeleteConfirm } from "@/features/blacklist/DeleteConfirm";
 import { ExportMenu } from "@/features/blacklist/ExportMenu";
 import { ImportDialog } from "@/features/blacklist/ImportDialog";
 import { useBlacklist, useBulkBlacklist } from "@/features/blacklist/hooks";
-import type { BlacklistFilter } from "@/lib/api";
+import { DEFAULT_BLACKLIST_FILTER, type BlacklistFilter } from "@/lib/api";
 import { firstLoadState } from "@/lib/queryState";
 
 export function BlacklistPage() {
-  const [filter, setFilter] = useState<BlacklistFilter>({});
+  const [filter, setFilter] = useState<BlacklistFilter>(DEFAULT_BLACKLIST_FILTER);
   const blacklist = useBlacklist(filter);
   const data = blacklist.data;
   const bulk = useBulkBlacklist();
+  // 기본 보기(취약점 항목을 뺌)는 사용자가 건 필터가 아니다.
   const hasFilter =
     filter.ecosystem !== undefined ||
     filter.status !== undefined ||
@@ -80,6 +82,11 @@ export function BlacklistPage() {
           </Button>
         </div>
       </div>
+      {filter.excludeSource === CVE_SOURCE && (
+        <p className="text-sm text-muted-foreground">
+          기본 보기는 취약점 항목을 숨깁니다. 출처에서 &apos;취약점&apos; 또는 &apos;전체&apos;를 고르면 보입니다.
+        </p>
+      )}
       <BulkActions
         ids={selectedIds}
         onClear={clearSelected}

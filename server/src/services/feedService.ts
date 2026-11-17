@@ -1,6 +1,9 @@
 import {
+  FEED_KINDS,
   feedEntriesQuerySchema,
   type FeedEntry,
+  type FeedKind,
+  type FeedKindStatus,
   type FeedStatus,
   type Page,
 } from "@pw/shared";
@@ -8,14 +11,17 @@ import type { Clock } from "../clock.ts";
 import { AppError } from "../errors.ts";
 import type { FeedClient } from "../feed/client.ts";
 import { createFeedIndex, type FeedIndex } from "../feed/index.ts";
-import { runFeedSync, type FeedSyncResult } from "../feed/sync.ts";
+import { runFeedSync, SYNC_KEYS, type FeedSyncResult } from "../feed/sync.ts";
 import type { Logger } from "../logger.ts";
 import type { Repositories } from "../repositories/index.ts";
 import { parseInput, readStoredSettings } from "./common.ts";
 
 /** 스캔이 읽는 쪽. 스캔은 feed 의 동기화 상태를 몰라도 된다. */
 export interface FeedSource {
-  /** 켜져 있고 항목이 1건 이상이면 대조 index, 아니면 null. 내용이 바뀐 경우에만 다시 만든다. */
+  /**
+   * 켜져 있고 항목이 1건 이상이면 대조 index, 아니면 null. 내용이나 취약점의 기준 점수가 바뀐 경우에만 다시 만든다.
+   * 취약점(cve)은 기준 점수를 통과한 행만 들어간다.
+   */
   getIndex(): FeedIndex | null;
 }
 
@@ -80,12 +86,12 @@ export function createFeedService(deps: FeedServiceDeps): FeedService {
   let stopping = false;
   /** feed 의 행이 바뀔 때마다 올린다. index 캐시가 이 값으로 낡았는지 판단한다 */
   let revision = 0;
-  let cached: { revision: number; enabled: boolean; index: FeedIndex | null } | null = null;
+  let cached: { revision: number; enabled: boolean; cveMinScore: number; index: FeedIndex | null } | null = null;
   const setTimer = deps.setTimer ?? defaultSetTimer;
   const autoResumeDelay = deps.autoResumeDelayMs === undefined ? AUTO_RESUME_DELAY_MS : deps.autoResumeDelayMs;
   let resumeTimer: { cancel(): void } | null = null;
-  /** 연속으로 멈춘 횟수 (성공하면 0) */
-  let failures = 0;
+  /** 분류마다 연속으로 멈춘 횟수 (성공하면 0) */
+  const failures: Record<FeedKind, number> = { malware: 0, cve: 0 };
   /** 마지막으로 rate limit 으로 멈춘 시각(ms, 메모리). 스캔 직전의 동기화가 그 뒤 1시간은 시작하지 않게 한다 */
   let rateLimitedAt: number | null = null;
   const rateLimitWaitMs = (): number => deps.rateLimitResumeDelayMs ?? RATE_LIMIT_RESUME_DELAY_MS;
@@ -97,49 +103,76 @@ export function createFeedService(deps: FeedServiceDeps): FeedService {
     resumeTimer = null;
   }
 
-  /** 전체 동기화가 오류로 멈추면 나중에 1번 자동으로 이어받는다. 이미 실행 중이거나 꺼졌으면 하지 않는다 */
-  function scheduleResume(result: FeedSyncResult): void {
+  /**
+   * 분류 1개의 결과로 다음 자동 이어받기까지의 지연(ms)을 정한다. 이어받지 않으면 null.
+   * 전체 동기화가 오류로 멈춘 것만 대상이다. 연속 실패 횟수는 분류마다 센다.
+   */
+  function resumeDelayOf(kind: FeedKind, result: FeedSyncResult): number | null {
     if (result.status === "ok") {
-      failures = 0;
-      rateLimitedAt = null;
-      return;
+      failures[kind] = 0;
+      return null;
     }
-    if (result.status === "rateLimited") rateLimitedAt = clock.now().getTime();
     // 중지 요청으로 끝난 실행은 실패가 아니다
-    if (result.status === "stopped" || !result.full || autoResumeDelay === null || stopping) return;
+    if (result.status === "stopped" || !result.full || autoResumeDelay === null || stopping) return null;
     // 쪽을 진행했다면 "연속" 실패가 아니다 — 매번 수백 쪽씩 진행하다 멈추는 경우에 3번 만에 포기하지 않는다
-    if (result.progressed) failures = 0;
-    failures += 1;
-    if (failures > MAX_AUTO_RESUMES) return;
-    const delay = result.status === "rateLimited" ? rateLimitWaitMs() : autoResumeDelay;
+    if (result.progressed) failures[kind] = 0;
+    failures[kind] += 1;
+    if (failures[kind] > MAX_AUTO_RESUMES) return null;
+    return result.status === "rateLimited" ? rateLimitWaitMs() : autoResumeDelay;
+  }
+
+  /** 분류별 결과(실행한 것만)로 rate limit 기록과 자동 이어받기 타이머를 정한다. 이미 실행 중이거나 꺼졌으면 타이머가 하지 않는다 */
+  function scheduleResume(results: [FeedKind, FeedSyncResult][]): void {
+    if (results.some(([, result]) => result.status === "rateLimited")) rateLimitedAt = clock.now().getTime();
+    else if (results.length > 0 && results.every(([, result]) => result.status === "ok")) rateLimitedAt = null;
+    const delays = results.flatMap(([kind, result]) => resumeDelayOf(kind, result) ?? []);
+    if (delays.length === 0) return;
     clearResumeTimer();
     resumeTimer = setTimer(() => {
       resumeTimer = null;
       if (running || stopping || !client || !isEnabled()) return;
       launch();
-    }, delay);
+    }, Math.min(...delays));
+  }
+
+  /** malware 먼저, 그 다음 cve(기준이 0 이면 하지 않는다). 한 분류가 실패해도 다음 분류를 시도한다 */
+  async function runKinds(feedClient: FeedClient): Promise<[FeedKind, FeedSyncResult][]> {
+    const kinds: FeedKind[] = readStoredSettings(repos.settings).cveMinScore > 0 ? ["malware", "cve"] : ["malware"];
+    const results: [FeedKind, FeedSyncResult][] = [];
+    let processedBefore = 0;
+    for (const kind of kinds) {
+      if (stopping || !isEnabled()) break;
+      const base = processedBefore;
+      let last = 0;
+      const result = await runFeedSync({
+        kind,
+        repos,
+        client: feedClient,
+        clock,
+        logger,
+        onChange: () => {
+          revision += 1;
+        },
+        onProgress: (processed) => {
+          last = processed;
+          syncedSoFar = base + processed;
+        },
+        shouldStop: () => stopping || !isEnabled(),
+        retryDelaysMs: deps.retryDelaysMs,
+        sleep: deps.sleep,
+      });
+      processedBefore += last;
+      results.push([kind, result]);
+    }
+    return results;
   }
 
   function launch(): Promise<void> {
     if (!client) throw new AppError("TOKEN_MISSING", TOKEN_MISSING_MESSAGE);
     clearResumeTimer();
     syncedSoFar = 0;
-    const done = runFeedSync({
-      repos,
-      client,
-      clock,
-      logger,
-      onChange: () => {
-        revision += 1;
-      },
-      onProgress: (processed) => {
-        syncedSoFar = processed;
-      },
-      shouldStop: () => stopping || !isEnabled(),
-      retryDelaysMs: deps.retryDelaysMs,
-      sleep: deps.sleep,
-    })
-      .then((result) => scheduleResume(result))
+    const done = runKinds(client)
+      .then((results) => scheduleResume(results))
       .catch((error: unknown) => logger.error("외부 목록 동기화 중 예상하지 못한 오류", error))
       .finally(() => {
         running = null;
@@ -149,19 +182,36 @@ export function createFeedService(deps: FeedServiceDeps): FeedService {
     return done;
   }
 
+  function kindStatus(kind: FeedKind): FeedKindStatus {
+    const keys = SYNC_KEYS[kind];
+    return {
+      entryCount: repos.feed.count(kind),
+      skippedCount: Number(repos.settings.get(keys.skipped)) || 0,
+      lastSyncedAt: repos.settings.get(keys.lastSyncedAt),
+      fullSyncDone: repos.settings.get(keys.fullDone) === "true",
+      lastError: repos.settings.get(keys.lastError),
+    };
+  }
+
+  /** 맨 위의 값은 두 분류의 합이다: 수는 더하고, fullSyncDone 은 켜진 분류(cve 는 기준이 0 이 아닐 때)가 모두 끝났을 때 true, lastSyncedAt 은 켜진 분류의 가장 오래된 것, lastError 는 먼저 있는 것 */
   function getStatus(): FeedStatus {
-    const lastError = repos.settings.get("feed_last_error");
+    const byKind = { malware: kindStatus("malware"), cve: kindStatus("cve") };
     const byEcosystem = repos.feed.countsByEcosystem();
+    const cveOn = readStoredSettings(repos.settings).cveMinScore > 0;
+    // 마지막 동기화 = 켜진 분류가 모두 동기화한 시각(가장 오래된 것). 한 분류라도 아직 없으면 null
+    const synced = FEED_KINDS.filter((kind) => kind === "malware" || cveOn).map((kind) => byKind[kind].lastSyncedAt);
+    const oldest = synced.some((value) => value === null) ? null : ([...synced].sort()[0] ?? null);
     return {
       enabled: isEnabled(),
-      entryCount: Object.values(byEcosystem).reduce((sum, count) => sum + count, 0),
+      byKind,
+      entryCount: byKind.malware.entryCount + byKind.cve.entryCount,
       byEcosystem,
-      skippedCount: Number(repos.settings.get("feed_skipped")) || 0,
-      lastSyncedAt: repos.settings.get("feed_last_synced_at"),
-      fullSyncDone: repos.settings.get("feed_full_sync_done") === "true",
+      skippedCount: byKind.malware.skippedCount + byKind.cve.skippedCount,
+      lastSyncedAt: oldest,
+      fullSyncDone: byKind.malware.fullSyncDone && (!cveOn || byKind.cve.fullSyncDone),
       syncing: running !== null,
       syncedSoFar: running !== null ? syncedSoFar : 0,
-      lastError,
+      lastError: byKind.malware.lastError ?? byKind.cve.lastError,
     };
   }
 
@@ -204,9 +254,10 @@ export function createFeedService(deps: FeedServiceDeps): FeedService {
     getIndex() {
       const enabled = isEnabled();
       if (!enabled) return null;
-      if (!cached || cached.revision !== revision || cached.enabled !== enabled) {
-        const index = createFeedIndex(repos.feed.iterateIndexRows());
-        cached = { revision, enabled, index: index.size > 0 ? index : null };
+      const { cveMinScore } = readStoredSettings(repos.settings);
+      if (!cached || cached.revision !== revision || cached.enabled !== enabled || cached.cveMinScore !== cveMinScore) {
+        const index = createFeedIndex(repos.feed.iterateIndexRows(cveMinScore));
+        cached = { revision, enabled, cveMinScore, index: index.size > 0 ? index : null };
       }
       return cached.index;
     },

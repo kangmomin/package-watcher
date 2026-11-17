@@ -6,6 +6,7 @@ import { createRepoAuthorsRepository, type RepoAuthorsRepository } from "./repoA
 import { createScanReposRepository, type ScanReposRepository } from "./scanRepos.ts";
 import { createScansRepository, type ScansRepository } from "./scans.ts";
 import { createSettingsRepository, type SettingsRepository } from "./settings.ts";
+import { createVulnerabilitiesRepository, type VulnerabilitiesRepository } from "./vulnerabilities.ts";
 
 export interface Repositories {
   blacklist: BlacklistRepository;
@@ -15,6 +16,7 @@ export interface Repositories {
   scanRepos: ScanReposRepository;
   settings: SettingsRepository;
   repoAuthors: RepoAuthorsRepository;
+  vulnerabilities: VulnerabilitiesRepository;
   /** 동기 트랜잭션 (better-sqlite3 `db.transaction`) */
   transaction<T>(fn: () => T): T;
 }
@@ -28,6 +30,7 @@ export function createRepositories(db: Db): Repositories {
     scanRepos: createScanReposRepository(db),
     settings: createSettingsRepository(db),
     repoAuthors: createRepoAuthorsRepository(db),
+    vulnerabilities: createVulnerabilitiesRepository(db),
     transaction: (fn) => db.transaction(fn)(),
   };
 }

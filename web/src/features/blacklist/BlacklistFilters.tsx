@@ -1,6 +1,6 @@
 // 블랙리스트 필터 줄: 종류 select, 상태 select, 출처 select, 이름 검색.
-// "전체" = 그 필터 파라미터 생략. 이름 입력 = trim + 300ms debounce, 비면 생략.
-import { ENTRY_SOURCES, ENTRY_STATUSES, SUPPORTED_ECOSYSTEMS, type EntrySource, type EntryStatus } from "@pw/shared";
+// 출처의 "기본" = 취약점 항목을 뺀다(excludeSource=cve). 그 밖의 "전체" = 그 필터 파라미터 생략. 이름 입력 = trim + 300ms debounce, 비면 생략.
+import { CVE_SOURCE, ENTRY_SOURCES, ENTRY_STATUSES, SUPPORTED_ECOSYSTEMS, type EntrySource, type EntryStatus } from "@pw/shared";
 import { useEffect, useId, useState } from "react";
 import { EcosystemSelectItems } from "@/components/EcosystemSelectItems";
 import { Input } from "@/components/ui/input";
@@ -12,7 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { BlacklistFilter } from "@/lib/api";
+import { DEFAULT_BLACKLIST_FILTER, type BlacklistFilter } from "@/lib/api";
 import { entrySourceLabel, entryStatusLabel } from "@/lib/format";
 
 export interface BlacklistFiltersProps {
@@ -23,6 +23,20 @@ export interface BlacklistFiltersProps {
 const FILTER_DEBOUNCE_MS = 300;
 // Radix Select 는 빈 문자열 값을 쓸 수 없다.
 const ALL_OPTION = "all";
+/** 출처의 기본 보기: 취약점 항목을 뺀다(수백 건이 목록을 덮지 않게). */
+const DEFAULT_OPTION = "default";
+
+function sourceSelectValue(filter: BlacklistFilter): string {
+  if (filter.source !== undefined) return filter.source;
+  return filter.excludeSource === CVE_SOURCE ? DEFAULT_OPTION : ALL_OPTION;
+}
+
+/** 출처 select 의 선택을 필터에 반영한다. source 와 excludeSource 는 함께 쓰지 않는다. */
+function withSourceChoice(filter: BlacklistFilter, next: string): BlacklistFilter {
+  const base: BlacklistFilter = { ...filter, source: undefined, excludeSource: undefined };
+  if (next === DEFAULT_OPTION) return { ...base, ...DEFAULT_BLACKLIST_FILTER };
+  return { ...base, source: ENTRY_SOURCES.find((option: EntrySource) => option === next) };
+}
 
 export function BlacklistFilters({ filter, onFilterChange }: BlacklistFiltersProps) {
   const id = useId();
@@ -86,18 +100,14 @@ export function BlacklistFilters({ filter, onFilterChange }: BlacklistFiltersPro
       <div className="flex flex-col gap-1.5">
         <Label htmlFor={`${id}-source`}>출처</Label>
         <Select
-          value={filter.source ?? ALL_OPTION}
-          onValueChange={(next) =>
-            onFilterChange({
-              ...filter,
-              source: ENTRY_SOURCES.find((option: EntrySource) => option === next),
-            })
-          }
+          value={sourceSelectValue(filter)}
+          onValueChange={(next) => onFilterChange(withSourceChoice(filter, next))}
         >
-          <SelectTrigger id={`${id}-source`} className="w-32">
+          <SelectTrigger id={`${id}-source`} className="w-36">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
+            <SelectItem value={DEFAULT_OPTION}>기본</SelectItem>
             <SelectItem value={ALL_OPTION}>전체</SelectItem>
             {ENTRY_SOURCES.map((option) => (
               <SelectItem key={option} value={option}>
