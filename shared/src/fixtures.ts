@@ -113,6 +113,7 @@ export const findingOpenDirect: Finding = {
   dependencyType: "direct",
   status: "open",
   blacklistEntryId: 1,
+  source: "manual",
   reason: "취약점",
   htmlUrl: "https://github.com/my-org/api/blob/HEAD/package-lock.json",
   firstSeenAt: T0,
@@ -132,6 +133,7 @@ export const findingOpenTransitive: Finding = {
   dependencyType: "transitive",
   status: "open",
   blacklistEntryId: 2,
+  source: "manual",
   reason: "악성 코드",
   htmlUrl: "https://github.com/my-org/web-app/blob/HEAD/apps/site/pnpm-lock.yaml",
   firstSeenAt: T0,
@@ -186,6 +188,7 @@ export const findingCritical: Finding = {
   version: "0.0.1",
   severity: "critical",
   blacklistEntryId: 14,
+  source: "manual",
   reason: "악성 scope",
   htmlUrl: "https://github.com/my-org/payments/blob/HEAD/yarn.lock",
 };
@@ -198,6 +201,7 @@ export const findingHigh: Finding = {
   version: "2.0.0",
   severity: "high",
   blacklistEntryId: 12,
+  source: "manual",
   reason: "기한이 지난 권고",
   htmlUrl: "https://github.com/my-org/gateway/blob/HEAD/yarn.lock",
 };
@@ -210,6 +214,7 @@ export const findingLow: Finding = {
   version: "3.1.0",
   severity: "low",
   blacklistEntryId: 11,
+  source: "manual",
   reason: "일시 중지",
   htmlUrl: "https://github.com/my-org/docs-site/blob/HEAD/yarn.lock",
 };
@@ -364,6 +369,7 @@ export const scanRepos: ScanRepo[] = [
 
 export const summaryDefault: Summary = {
   policyOpenCount: 0,
+  cveOpenCount: 0,
   openCount: 12,
   ignoredCount: 3,
   lastScan: scanSuccess,
@@ -372,6 +378,7 @@ export const summaryDefault: Summary = {
 
 export const summaryEmpty: Summary = {
   policyOpenCount: 0,
+  cveOpenCount: 0,
   openCount: 0,
   ignoredCount: 0,
   lastScan: null,
@@ -393,6 +400,7 @@ export const settingsDefault: Settings = {
   notifyMinSeverity: "low",
   feedEnabled: true,
   branchScanDays: 7,
+  cveMinScore: 8,
 };
 
 export const settingsUnconfigured: Settings = {
@@ -406,6 +414,7 @@ export const settingsUnconfigured: Settings = {
   notifyMinSeverity: "low",
   feedEnabled: true,
   branchScanDays: 7,
+  cveMinScore: 8,
 };
 
 // ---------------------------------------------------------------- Page / 기타
