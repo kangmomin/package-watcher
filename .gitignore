@@ -10,3 +10,4 @@ coverage/
 .vite/
 *.tsbuildinfo
 .claude/worktrees/
+.claude/harness-reports/*.lock
