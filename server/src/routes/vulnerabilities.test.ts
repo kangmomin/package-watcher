@@ -370,3 +370,47 @@ describe("/mcp — list_vulnerabilities", () => {
     }
   });
 });
+
+describe("같은 범위의 권고가 여럿인 항목", () => {
+  /** 항목은 낮은 점수의 권고를 가리키고, 같은 (종류, 이름, 범위)의 다른 권고가 더 높은 점수로 있다 */
+  function seedShared() {
+    const entry = seedAdvisory({ ghsa: "GHSA-lowl-lowl-0001", name: "shared", score: 5, patched: "2.0.0" });
+    t.instance.db
+      .prepare(
+        `INSERT INTO feed_entries (external_id, ecosystem, name, version_range, raw_range, severity, summary, url, updated_at, kind, cvss_score, patched_version)
+         VALUES ('GHSA-high-high-0001', 'npm', 'shared', '<2.0.0', '< 2.0.0', 'critical', '요약 높음', 'https://github.com/advisories/GHSA-high-high-0001', '2026-11-01T00:00:00.000Z', 'cve', 9.5, '2.1.0')`,
+      )
+      .run();
+    seedFinding({ repo: "r1", entryId: entry, name: "shared" });
+    seedFinding({ repo: "r2", entryId: entry, name: "shared" });
+  }
+
+  it("[SI-106] 묶음의 점수는 같은 범위 행들의 최고 점수이고 건수는 부풀지 않는다. 상세는 그 범위의 권고를 모두 보인다", async () => {
+    seedShared();
+
+    const [group] = (await list()).items;
+    expect(group).toMatchObject({ maxScore: 9.5, advisoryCount: 2, repoCount: 2, findingCount: 2 });
+    expect(group?.patchedVersions).toEqual(["2.0.0", "2.1.0"]);
+
+    const result = await detail("npm", "shared");
+    expect(result.findingsTotal).toBe(2);
+    expect(result.findings).toHaveLength(2);
+    expect(result.advisories.map((advisory) => [advisory.externalId, advisory.cvssScore, advisory.findingCount])).toEqual([
+      ["GHSA-high-high-0001", 9.5, 2],
+      ["GHSA-lowl-lowl-0001", 5, 2],
+    ]);
+    expect(new Set(result.advisories.map((advisory) => advisory.blacklistEntryId)).size).toBe(1);
+  });
+
+  it("[SI-107] 권고 행이 없으면(JOIN 이 빗나가면) 점수 null, 요약은 항목의 사유로 대체한다", async () => {
+    const entry = seedAdvisory({ ghsa: "GHSA-orph-orph-0001", name: "orphan", score: 9 });
+    t.instance.db.prepare("DELETE FROM feed_entries WHERE external_id = 'GHSA-orph-orph-0001'").run();
+    seedFinding({ repo: "r1", entryId: entry, name: "orphan" });
+
+    const [group] = (await list()).items;
+    expect(group).toMatchObject({ maxScore: null, advisoryCount: 1, findingCount: 1 });
+    const result = await detail("npm", "orphan");
+    expect(result.advisories).toHaveLength(1);
+    expect(result.advisories[0]).toMatchObject({ cvssScore: null, summary: "사유 GHSA-orph-orph-0001", externalId: "GHSA-orph-orph-0001" });
+  });
+});

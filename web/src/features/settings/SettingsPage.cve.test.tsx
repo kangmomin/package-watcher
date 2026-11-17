@@ -72,7 +72,7 @@ describe("설정 — 취약점의 기준 점수", () => {
     expect(settingsInputSchema.parse(server.last("PUT", SETTINGS)?.body).cveMinScore).toBe(0);
   });
 
-  it.each([["3.9"], ["10.1"], ["5.55"], [""]])(
+  it.each([["3.9"], ["10.1"], ["5.55"], ["8.25"], [""]])(
     "[SI-74] 범위 밖이거나 소수 1자리가 아닌 값(%j)은 저장하지 않고 필드 오류를 보인다",
     async (value) => {
       const server = setupServer();

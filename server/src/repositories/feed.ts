@@ -32,6 +32,8 @@ export interface FeedWrite {
 /** 스캔의 대조 index 를 만드는 데 필요한 열만 */
 export interface FeedIndexRow {
   id: number;
+  /** 생략하면 malware */
+  kind?: FeedKind;
   ecosystem: string;
   name: string;
   versionRange: string | null;
@@ -127,11 +129,11 @@ export function createFeedRepository(db: Db): FeedRepository {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (external_id, ecosystem, name, version_range) DO UPDATE SET
        raw_range = excluded.raw_range, severity = excluded.severity, summary = excluded.summary,
-       url = excluded.url, updated_at = excluded.updated_at,
+       url = excluded.url, updated_at = excluded.updated_at, kind = excluded.kind,
        cvss_score = excluded.cvss_score, patched_version = excluded.patched_version
      WHERE raw_range IS NOT excluded.raw_range OR severity IS NOT excluded.severity
         OR summary IS NOT excluded.summary OR url IS NOT excluded.url OR updated_at IS NOT excluded.updated_at
-        OR cvss_score IS NOT excluded.cvss_score OR patched_version IS NOT excluded.patched_version`,
+        OR kind IS NOT excluded.kind OR cvss_score IS NOT excluded.cvss_score OR patched_version IS NOT excluded.patched_version`,
   );
   const seenStmt = db.prepare<[string, string, string, string, string, string]>(
     `UPDATE feed_entries SET seen_run = ?
@@ -192,7 +194,7 @@ export function createFeedRepository(db: Db): FeedRepository {
     *iterateIndexRows(cveMinScore = 0) {
       for (const row of indexStmt.iterate()) {
         if (row.kind === "cve" && !cveMeetsMinScore(row.cvss_score, row.severity, cveMinScore)) continue;
-        yield { id: row.id, ecosystem: row.ecosystem, name: row.name, versionRange: fromDbRange(row.version_range) };
+        yield { id: row.id, kind: row.kind, ecosystem: row.ecosystem, name: row.name, versionRange: fromDbRange(row.version_range) };
       }
     },
     get(id) {

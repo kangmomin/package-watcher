@@ -208,10 +208,10 @@ function blacklistParams({ ecosystem, status, source, q }: BlacklistFilter) {
 
 /**
  * 내보내기 링크. 목록과 같은 필터를 붙인다(선택 상태는 쓰지 않는다).
- * 기본 보기의 excludeSource 는 붙이지 않는다: 지금까지의 내보내기 그대로다(출처를 거르려면 출처 필터를 쓴다).
+ * 기본 보기의 excludeSource 도 붙인다: 화면에 보이는 목록과 같은 항목을 내보낸다.
  */
 export function exportBlacklistUrl(format: BlacklistFileFormat, filter: BlacklistFilter): string {
-  return withQuery("/api/blacklist/export", { format, ...blacklistParams(filter) });
+  return withQuery("/api/blacklist/export", { format, ...blacklistParams(filter), excludeSource: filter.excludeSource });
 }
 
 export const api = {

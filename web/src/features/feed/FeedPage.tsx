@@ -68,7 +68,7 @@ export function FeedPage() {
         {data && (
           <div className="flex flex-col gap-3">
             <div aria-busy={isUnconfirmed || undefined} className={cn("transition-opacity", isUnconfirmed && "opacity-60")}>
-              <FeedTable items={data.items} showCve={filter.kind === "cve" || data.items.some((entry) => entry.kind === "cve")} />
+              <FeedTable items={data.items} showCve={filter.kind !== "malware"} />
             </div>
             <Pager page={data.page} limit={data.limit} total={data.total} onPageChange={setPage} isDisabled={isUnconfirmed} />
           </div>
@@ -149,7 +149,7 @@ function FeedFilters({ filter, onFilterChange }: FeedFiltersProps) {
   );
 }
 
-// 취약점(cve) 항목이 보일 때만 분류·점수·고쳐진 버전 열을 더한다(악성 패키지만 보일 때는 점수와 고쳐진 버전이 없다).
+// 분류가 악성 패키지가 아니면 분류·점수·고쳐진 버전 열을 항상 보인다(쪽마다 열이 바뀌지 않게). 악성 패키지만 볼 때는 점수와 고쳐진 버전이 없다.
 function FeedTable({ items, showCve }: { items: FeedEntry[]; showCve: boolean }) {
   return (
     <div className="rounded-lg border">

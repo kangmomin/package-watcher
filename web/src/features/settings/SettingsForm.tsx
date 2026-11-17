@@ -111,6 +111,8 @@ export function SettingsForm({ settings, isFetchedAfterMount = true }: SettingsF
   const belowThresholdCount = blacklistItems?.filter(
     (entry) =>
       entryStatusOf(entry) === "active" &&
+      // 취약점은 즉시 메일을 보내지 않는다(요약 메일만) — 이 기준과 상관없다.
+      entry.source !== "cve" &&
       SEVERITY_RANK[entry.severity] < SEVERITY_RANK[selectedSeverity],
   ).length;
 
@@ -326,7 +328,11 @@ export function SettingsForm({ settings, isFetchedAfterMount = true }: SettingsF
         render={({ field }) => (
           <FeedSection
             enabled={field.value}
-            onEnabledChange={field.onChange}
+            onEnabledChange={(next) => {
+              field.onChange(next);
+              // 꺼진 동안 점수 입력은 쓸 수 없다. 고치지 못하는 오류가 저장을 막지 않게 저장된 값으로 되돌린다.
+              if (!next) form.resetField("cveMinScore");
+            }}
             isFormDirty={isDirty}
             cveScoreField={
               <div className="flex flex-col gap-1.5">

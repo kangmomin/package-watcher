@@ -69,6 +69,7 @@ export function createSettingsService(deps: SettingsServiceDeps): SettingsServic
         if (data.branchScanDays !== undefined) {
           repos.settings.set("branch_scan_days", String(data.branchScanDays));
         }
+        // 기준을 바꿔도 기존 검출은 다음 스캔의 종료 트랜잭션에서 정리·재생성된다(저장은 검출을 건드리지 않는 것이 의도다).
         if (data.cveMinScore !== undefined) {
           repos.settings.set("cve_min_score", String(data.cveMinScore));
         }

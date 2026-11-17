@@ -12,6 +12,7 @@ import { emptyPageFallback, firstLoadState, isUnconfirmedPage } from "@/lib/quer
 import { cn } from "@/lib/utils";
 
 const CVE_OFF_MESSAGE = "취약점의 대조가 꺼져 있습니다. 설정에서 기준 점수를 정하십시오";
+const FEED_OFF_MESSAGE = "외부 목록이 꺼져 있습니다. 설정에서 켜십시오";
 const CVE_EMPTY_MESSAGE = "기준 이상의 취약점이 없습니다";
 const FILTERED_EMPTY_MESSAGE = "조건에 맞는 취약점이 없습니다";
 
@@ -38,9 +39,11 @@ export function VulnerabilitiesTab({ filter, page, onFilterChange, onPageChange 
 
   const emptyMessage = hasFilter
     ? FILTERED_EMPTY_MESSAGE
-    : settings?.cveMinScore === 0
-      ? CVE_OFF_MESSAGE
-      : CVE_EMPTY_MESSAGE;
+    : settings?.feedEnabled === false
+      ? FEED_OFF_MESSAGE
+      : settings?.cveMinScore === 0
+        ? CVE_OFF_MESSAGE
+        : CVE_EMPTY_MESSAGE;
 
   return (
     <>
@@ -54,7 +57,8 @@ export function VulnerabilitiesTab({ filter, page, onFilterChange, onPageChange 
         {data && (
           <div className="flex flex-col gap-3">
             <div aria-busy={isUnconfirmed || undefined} className={cn("transition-opacity", isUnconfirmed && "opacity-60")}>
-              <VulnerabilitiesTable items={data.items} />
+              {/* 쪽이나 필터가 바뀌면 펼침 상태를 비운다(key) */}
+              <VulnerabilitiesTable key={`${page}:${JSON.stringify(filter)}`} items={data.items} />
             </div>
             <Pager page={data.page} limit={data.limit} total={data.total} onPageChange={onPageChange} isDisabled={isUnconfirmed} />
           </div>

@@ -323,7 +323,7 @@ describe("취약점 탭", () => {
     expect(screen.queryByText(/건 중/)).not.toBeInTheDocument();
   });
 
-  it("[SI-61] 상세 조회가 404 이면 더는 취약점이 없다는 문장을, 실패하면 [다시 시도] 를 보인다", async () => {
+  it("[SI-61] 상세 조회가 404 이면 더는 취약점이 없다는 문장을 보이고 다시 요청하지 않는다", async () => {
     const server = setupServer({ detail: reply.error(apiErrorNotFound) });
     const { user } = renderDashboard();
     await findRowWith("lodash");

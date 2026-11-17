@@ -80,3 +80,27 @@ describe("feed 저장소의 분류(kind)", () => {
     });
   });
 });
+
+describe("분류의 재분류 (GENERAL → MALWARE)", () => {
+  it("[SI-108] 같은 권고가 다른 분류로 오면 kind 가 바뀌고, 다른 분류의 sweep 에 지워지지 않는다", () => {
+    const t = createTestApp();
+    const repos = createRepositories(t.instance.db);
+    const base = row("re", { kind: "cve", cvssScore: 9 });
+    repos.feed.upsert([base], "cve:run-1");
+    expect(repos.feed.count("cve")).toBe(1);
+
+    // malware 동기화가 같은 권고를 본다 → 분류가 바뀐다
+    expect(repos.feed.upsert([row("re", { kind: "malware", cvssScore: null })], "run-m1")).toBe(1);
+    expect(repos.feed.count("malware")).toBe(1);
+    expect(repos.feed.count("cve")).toBe(0);
+
+    // 이어지는 cve 전체 동기화(그 권고를 더 이상 주지 않는다)는 malware 행을 지우지 않는다
+    repos.feed.upsert([row("other", { kind: "cve", cvssScore: 9 })], "cve:run-2");
+    expect(repos.feed.sweep("cve", "cve:run-2")).toBe(0);
+    expect(repos.feed.count("malware")).toBe(1);
+    // malware 의 다음 전체 동기화가 계속 보는 한 남는다 (지웠다 다시 생기는 반복이 없다)
+    repos.feed.upsert([row("re", { kind: "malware", cvssScore: null })], "run-m2");
+    expect(repos.feed.sweep("malware", "run-m2")).toBe(0);
+    expect([...repos.feed.iterateIndexRows(8)].map((item) => item.name).sort()).toEqual(["other", "re"]);
+  });
+});

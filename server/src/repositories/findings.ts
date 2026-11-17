@@ -15,7 +15,6 @@ import {
 } from "@pw/shared";
 import type { Db } from "../db/index.ts";
 import { ACTIVE_ENTRY_SQL } from "../services/entryActivity.ts";
-import { CVE_ENTRY_PASSES_SQL } from "./cveGate.ts";
 
 /** 검출 키. 활성(open/ignored) 행에 대해 유일하다. */
 export interface FindingKey {
@@ -93,10 +92,11 @@ export interface FindingsRepository {
    */
   resolveForInactiveEntries(todayKst: string, now: string): number;
   /**
-   * 기준 점수를 통과하지 못한 `source = cve` 항목(기준 0 = 모두, 점수·권고 행이 없는 것 포함)의 활성 검출을 resolved 로 바꾼다. 멱등이다.
+   * 기준 점수를 통과하지 못한(`passing` 에 없는) `source = cve` 항목의 open 검출을 resolved 로 바꾼다. 멱등이다.
+   * 사용자가 무시한(ignored) 검출은 건드리지 않는다 — 기준을 바꿨다 돌려도 무시가 유지된다.
    * 기준을 올렸거나, 취약점이 꺼졌거나, 외부 목록이 꺼졌을 때 기존 검출을 정리한다(내리면 다음 스캔이 다시 만든다).
    */
-  resolveForGatedCveEntries(minScore: number, now: string): number;
+  resolveForGatedCveEntries(passing: ReadonlySet<number>, now: string): number;
   /** 활성 검출의 severity 를 항목의 값으로 맞춘다(이전 버전 이미지가 만든 검출 보정). 멱등이다. */
   syncSeverityFromEntries(): number;
   markNotified(ids: number[], now: string): void;
@@ -225,10 +225,13 @@ export function createFindingsRepository(db: Db): FindingsRepository {
      WHERE ${ACTIVE} AND blacklist_entry_id IN (
        SELECT id FROM blacklist_entries WHERE NOT (${ACTIVE_ENTRY_SQL}))`,
   );
-  const gatedCveStmt = db.prepare<{ now: string; minScore: number }>(
-    `UPDATE findings SET status = 'resolved', resolved_at = :now
-     WHERE ${ACTIVE} AND blacklist_entry_id IN (
-       SELECT b.id FROM blacklist_entries b WHERE b.source = '${CVE_SOURCE}' AND NOT ${CVE_ENTRY_PASSES_SQL})`,
+  // open 검출이 있는 cve 항목만 본다(수천 개의 항목을 매 스캔마다 훑지 않는다)
+  const openCveEntriesStmt = db.prepare<[], { id: number }>(
+    `SELECT DISTINCT blacklist_entry_id AS id FROM findings
+     WHERE status = 'open' AND blacklist_entry_id IN (SELECT id FROM blacklist_entries WHERE source = '${CVE_SOURCE}')`,
+  );
+  const resolveOpenByEntryStmt = db.prepare<[string, number]>(
+    "UPDATE findings SET status = 'resolved', resolved_at = ? WHERE blacklist_entry_id = ? AND status = 'open'",
   );
   // join 형태로 쓴다. 상관 서브쿼리는 항목이 없는 검출에서 NOT NULL 위반이 되어 시작을 막는다.
   const syncSeverityStmt = db.prepare(
@@ -345,7 +348,13 @@ export function createFindingsRepository(db: Db): FindingsRepository {
       reasonStmt.run(reason, severity, blacklistEntryId);
     },
     resolveForInactiveEntries: (todayKst, now) => inactiveStmt.run({ now, todayKst }).changes,
-    resolveForGatedCveEntries: (minScore, now) => gatedCveStmt.run({ now, minScore }).changes,
+    resolveForGatedCveEntries(passing, now) {
+      let changes = 0;
+      for (const { id } of openCveEntriesStmt.all()) {
+        if (!passing.has(id)) changes += resolveOpenByEntryStmt.run(now, id).changes;
+      }
+      return changes;
+    },
     syncSeverityFromEntries: () => syncSeverityStmt.run().changes,
     markNotified(ids, now) {
       for (const id of ids) notifiedStmt.run(now, id);

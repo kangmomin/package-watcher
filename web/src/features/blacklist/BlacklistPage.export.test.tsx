@@ -37,7 +37,7 @@ describe("블랙리스트 — 내보내기", () => {
     });
   });
 
-  it("[v2-AC-15][BK-24] [내보내기] 메뉴에는 JSON·CSV 다운로드 링크가 있고 필터가 없으면 format 만 붙는다", async () => {
+  it("[v2-AC-15][BK-24] [내보내기] 메뉴에는 JSON·CSV 다운로드 링크가 있고 기본 보기라서 format 과 excludeSource=cve 가 붙는다", async () => {
     setupServer();
     const { user } = await renderBlacklist();
     await openExportMenu(user);
@@ -47,8 +47,8 @@ describe("블랙리스트 — 내보내기", () => {
     expect(json).toHaveAttribute("download");
     expect(csv).toHaveAttribute("download");
     expect(json.tagName).toBe("A");
-    expect(json.getAttribute("href")).toBe("/api/blacklist/export?format=json");
-    expect(csv.getAttribute("href")).toBe("/api/blacklist/export?format=csv");
+    expect(json.getAttribute("href")).toBe("/api/blacklist/export?format=json&excludeSource=cve");
+    expect(csv.getAttribute("href")).toBe("/api/blacklist/export?format=csv&excludeSource=cve");
   });
 
   it("[BK-24] 지금의 필터(ecosystem, status, q)를 링크에 붙인다", async () => {
@@ -81,6 +81,7 @@ describe("블랙리스트 — 내보내기", () => {
         ecosystem: "go",
         status: "expired",
         q: "lo",
+        excludeSource: "cve",
       });
     }
   });
@@ -103,7 +104,7 @@ describe("블랙리스트 — 내보내기", () => {
     await openExportMenu(user);
 
     expect(screen.getByRole("menuitem", { name: "JSON" }).getAttribute("href")).toBe(
-      "/api/blacklist/export?format=json",
+      "/api/blacklist/export?format=json&excludeSource=cve",
     );
     await user.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("menu")).not.toBeInTheDocument());

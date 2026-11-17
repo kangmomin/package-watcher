@@ -1,4 +1,5 @@
 import {
+  cveMeetsMinScore,
   FEED_KIND_SOURCE,
   type BlacklistEntry,
   type BlacklistQuery,
@@ -10,7 +11,6 @@ import {
 import type { Db } from "../db/index.ts";
 import { comparableRange } from "../feed/comparable.ts";
 import { ACTIVE_ENTRY_SQL, EXPIRED_ENTRY_SQL, isExpired } from "../services/entryActivity.ts";
-import { CVE_ENTRY_PASSES_SQL } from "./cveGate.ts";
 
 /** 저장할 값. 검증·기본값 적용·병합이 끝난 상태라서 모든 필드가 있다. */
 export interface BlacklistWrite {
@@ -56,16 +56,24 @@ export interface BlacklistRepository {
    */
   disableWithdrawnFeedEntries(kind: FeedKind, now: string): number[];
   /**
-   * 기준 점수를 통과하는 `source=cve` 항목의 id. 같은 (종류, 이름, 범위)의 cve 행 중 `cveMeetsMinScore` 가 true 인 것이 있으면 통과다
-   * (같은 범위의 권고가 여럿이어도 항목은 1개라서 항목의 externalId 하나만 보면 점수가 낮은 권고에 가려진다).
-   * `minScore` 가 0 이면 비어 있다.
+   * 기준 점수를 통과하는 `source=cve` 항목의 id. 같은 (종류, 이름)에서 범위의 뜻이 같은(`comparableRange`) cve 행 중
+   * `cveMeetsMinScore` 가 true 인 것이 있으면 통과다(같은 범위의 권고가 여럿이어도 항목은 1개라서 항목의 externalId 하나만 보면
+   * 점수가 낮은 권고에 가려지고, 표기만 다른 범위는 문자열 비교로는 영구 휴면한다). `minScore` 가 0 이면 비어 있다.
    */
   cveEntryIdsMeeting(minScore: number): Set<number>;
+  /**
+   * `source=cve` 항목을 외부 목록의 악성 패키지 항목으로 승격한다(같은 뜻의 범위에 malware 권고가 일치했을 때: malware 가 우선이다).
+   * 출처·권고 id·사유·심각도를 malware 권고의 값으로 바꾸고, 사용자가 꺼 두었거나 만료일을 둔 항목도 켜고 만료를 없앤다.
+   * 사용자가 취약점을 무시한 것이지 악성 패키지를 무시한 것이 아니다.
+   */
+  promoteToFeed(id: number, input: { externalId: string; reason: string; severity: Severity }, now: string, today: string): BlacklistEntry;
   /**
    * 모든 항목(꺼짐·만료 포함)의 키. 외부 목록의 항목이 이미 있는 항목과 겹치는지 보는 데 쓴다.
    * 키 모양은 `keyOf` 다.
    */
   allKeys(): Set<string>;
+  /** `allKeys` 에서 `source=cve` 항목의 키를 뺀 것. malware 행을 막는 데 쓴다(취약점 항목은 악성 패키지를 막지 못한다) */
+  nonCveKeys(): Set<string>;
   insert(input: BlacklistWrite, now: string, today: string): BlacklistEntry;
   update(id: number, input: BlacklistWrite, now: string, today: string): BlacklistEntry;
   remove(id: number): boolean;
@@ -84,6 +92,14 @@ interface BlacklistRow {
   updated_at: string;
   source: EntrySource;
   external_id: string | null;
+}
+
+interface WithdrawnRow {
+  id: number;
+  reason: string;
+  ecosystem: string;
+  name: string;
+  version_range: string;
 }
 
 const COLUMNS =
@@ -147,13 +163,30 @@ export function createBlacklistRepository(db: Db): BlacklistRepository {
     `SELECT ${COLUMNS} FROM blacklist_entries WHERE ecosystem = ? AND name = ?`,
   );
   // 분류의 범위 안에서만 본다: 그 분류의 행에 없는 권고의 항목만 철회로 본다.
-  const withdrawnStmt = db.prepare<[string, string], { id: number; reason: string }>(
-    `SELECT id, reason FROM blacklist_entries
+  const withdrawnStmt = db.prepare<[string, string], WithdrawnRow>(
+    `SELECT id, reason, ecosystem, name, version_range FROM blacklist_entries
      WHERE source = ? AND external_id IS NOT NULL
        AND external_id NOT IN (SELECT external_id FROM feed_entries WHERE kind = ?)`,
   );
-  const cveMeetingStmt = db.prepare<{ minScore: number }, { id: number }>(
-    `SELECT b.id FROM blacklist_entries b WHERE b.source = 'cve' AND ${CVE_ENTRY_PASSES_SQL}`,
+  const cveEntriesStmt = db.prepare<[], { id: number; ecosystem: string; name: string; version_range: string }>(
+    "SELECT id, ecosystem, name, version_range FROM blacklist_entries WHERE source = 'cve'",
+  );
+  const cveRowsStmt = db.prepare<
+    [string, string],
+    { version_range: string; cvss_score: number | null; severity: Severity; external_id: string }
+  >(
+    // 점수가 높은 것이 먼저(NULL 은 뒤)
+    `SELECT version_range, cvss_score, severity, external_id FROM feed_entries
+     WHERE kind = 'cve' AND ecosystem = ? AND name = ? ORDER BY cvss_score DESC, external_id ASC`,
+  );
+  const repointStmt = db.prepare<[string, number]>("UPDATE blacklist_entries SET external_id = ? WHERE id = ?");
+  const promoteStmt = db.prepare<[string, string, string, string, number], BlacklistRow>(
+    `UPDATE blacklist_entries
+     SET source = 'feed', external_id = ?, reason = ?, severity = ?, enabled = 1, expires_at = NULL, updated_at = ?
+     WHERE id = ? RETURNING ${COLUMNS}`,
+  );
+  const nonCveKeysStmt = db.prepare<[], { ecosystem: string; name: string; version_range: string }>(
+    "SELECT ecosystem, name, version_range FROM blacklist_entries WHERE source <> 'cve'",
   );
   const markWithdrawnStmt = db.prepare<[string, string, number]>(
     "UPDATE blacklist_entries SET enabled = 0, reason = ?, updated_at = ? WHERE id = ?",
@@ -214,16 +247,52 @@ export function createBlacklistRepository(db: Db): BlacklistRepository {
         .find((candidate) => comparableRange(ecosystem, fromDbRangeText(candidate.version_range)) === wanted);
       return row ? toEntry(row, today) : null;
     },
-    cveEntryIdsMeeting: (minScore) => new Set(cveMeetingStmt.all({ minScore }).map((row) => row.id)),
+    cveEntryIdsMeeting(minScore) {
+      const passing = new Set<number>();
+      if (minScore <= 0) return passing;
+      for (const entry of cveEntriesStmt.all()) {
+        const wanted = comparableRange(entry.ecosystem, fromDbRangeText(entry.version_range));
+        const meets = cveRowsStmt
+          .all(entry.ecosystem, entry.name)
+          .some(
+            (row) =>
+              comparableRange(entry.ecosystem, fromDbRangeText(row.version_range)) === wanted &&
+              cveMeetsMinScore(row.cvss_score, row.severity, minScore),
+          );
+        if (meets) passing.add(entry.id);
+      }
+      return passing;
+    },
+    promoteToFeed(id, input, now, today) {
+      const row = promoteStmt.get(input.externalId, input.reason, input.severity, now, id);
+      if (!row) throw new Error(`blacklist 항목이 없습니다: ${id}`);
+      return toEntry(row, today);
+    },
     disableWithdrawnFeedEntries(kind, now) {
       const changed: number[] = [];
       for (const row of withdrawnStmt.all(FEED_KIND_SOURCE[kind], kind)) {
         if (row.reason.endsWith(WITHDRAWN_MARK)) continue;
+        // cve: 같은 뜻의 범위에 다른 권고가 남아 있으면 그 항목은 계속 쓴다 — 권고 id 만 점수가 가장 높은 남은 권고로 바꾼다
+        if (kind === "cve") {
+          const wanted = comparableRange(row.ecosystem, fromDbRangeText(row.version_range));
+          const remaining = cveRowsStmt
+            .all(row.ecosystem, row.name)
+            .find((candidate) => comparableRange(row.ecosystem, fromDbRangeText(candidate.version_range)) === wanted);
+          if (remaining) {
+            repointStmt.run(remaining.external_id, row.id);
+            continue;
+          }
+        }
         const reason = `${row.reason.slice(0, 500 - WITHDRAWN_MARK.length)}${WITHDRAWN_MARK}`;
         markWithdrawnStmt.run(reason, now, row.id);
         changed.push(row.id);
       }
       return changed;
+    },
+    nonCveKeys() {
+      const keys = new Set<string>();
+      for (const row of nonCveKeysStmt.iterate()) keys.add(keyOf(row.ecosystem, row.name, row.version_range));
+      return keys;
     },
     allKeys() {
       const keys = new Set<string>();
