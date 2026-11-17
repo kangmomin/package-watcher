@@ -40,6 +40,7 @@ export function createSettingsService(deps: SettingsServiceDeps): SettingsServic
       notifyMinSeverity: stored.notifyMinSeverity,
       feedEnabled: stored.feedEnabled,
       branchScanDays: stored.branchScanDays,
+      cveMinScore: stored.cveMinScore,
     };
   }
 
@@ -67,6 +68,9 @@ export function createSettingsService(deps: SettingsServiceDeps): SettingsServic
         }
         if (data.branchScanDays !== undefined) {
           repos.settings.set("branch_scan_days", String(data.branchScanDays));
+        }
+        if (data.cveMinScore !== undefined) {
+          repos.settings.set("cve_min_score", String(data.cveMinScore));
         }
         if (orgChanged) {
           repos.findings.resolveAllActive(toIso(now));

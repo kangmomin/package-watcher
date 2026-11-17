@@ -14,6 +14,7 @@ const finding = (overrides: Partial<Finding>): Finding => ({
   dependencyType: "direct",
   status: "open",
   blacklistEntryId: 1,
+  source: "manual",
   reason: "침해의 흔적",
   htmlUrl: "https://github.com/my-org/svc/tree/wfx-docs",
   firstSeenAt: "2026-11-16T00:00:00.000Z",

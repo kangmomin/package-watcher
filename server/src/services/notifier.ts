@@ -1,4 +1,5 @@
 import {
+  CVE_SOURCE,
   POLICY_ECOSYSTEM,
   SEVERITY_RANK,
   policyCheckOf,
@@ -86,6 +87,7 @@ export interface Notifier {
   /**
    * 일일 요약: `open` 검출만. 0건 또는 수신자 0명이면 보내지 않는다.
    * `policy`(위험한 설정)는 행에 넣지 않고 끝에 검사별 건수만 붙인다. policy 만 있으면 "보낼 것"이 없다.
+   * 취약점(`source = cve`)도 행에 넣지 않고 끝에 1줄(`취약점: 총 n건, 패키지 m개`)만 붙인다. 취약점만 있으면 보내지 않는다.
    */
   sendDigest(): Promise<void>;
   /** 저장된 수신자에게 테스트 메일. `NO_RECIPIENTS` / `SMTP_NOT_CONFIGURED` / `SMTP_FAILED` (AppError) */
@@ -159,6 +161,12 @@ export function renderFindings(findings: Finding[]): string {
 }
 
 /** 위험한 설정의 구역: 총 건수와 검사별 건수(많은 순, 같으면 id 순). 0건인 검사는 생략한다. */
+/** 취약점의 구역: 1줄. 패키지 수는 (종류, 이름)이 다른 것의 수다. */
+function renderCveSection(cve: Finding[]): string {
+  const packages = new Set(cve.map((finding) => `${finding.ecosystem}\u0000${finding.packageName}`));
+  return `취약점: 총 ${cve.length}건, 패키지 ${packages.size}개`;
+}
+
 function renderPolicySection(policy: Finding[], titleOfEntry: ReadonlyMap<number, string>): string {
   const counts = new Map<number, number>();
   for (const finding of policy) {
@@ -220,12 +228,13 @@ export function createNotifier(deps: NotifierDeps): Notifier {
 
     async sendDigest() {
       const open = repos.findings.listOpen();
-      const findings = open.filter((finding) => finding.ecosystem !== POLICY_ECOSYSTEM);
+      const cve = open.filter((finding) => finding.source === CVE_SOURCE);
+      const findings = open.filter((finding) => finding.ecosystem !== POLICY_ECOSYSTEM && finding.source !== CVE_SOURCE);
       if (findings.length === 0) return;
       const to = recipientsForMail("일일 요약");
       if (!to) return;
       const { date } = toKst(clock.now());
-      const policy = open.filter((finding) => finding.ecosystem === POLICY_ECOSYSTEM);
+      const policy = open.filter((finding) => finding.ecosystem === POLICY_ECOSYSTEM && finding.source !== CVE_SOURCE);
       let section = "";
       if (policy.length > 0) {
         const titles = new Map(
@@ -235,6 +244,7 @@ export function createNotifier(deps: NotifierDeps): Notifier {
         );
         section = `\n${renderPolicySection(policy, titles)}\n`;
       }
+      if (cve.length > 0) section += `\n${renderCveSection(cve)}\n`;
       await trySend("일일 요약", {
         to,
         subject: `${SUBJECT_PREFIX} 일일 요약 (${date}): 미해결 검출 ${findings.length}건`,

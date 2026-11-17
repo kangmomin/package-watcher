@@ -1,7 +1,7 @@
 // 외부 목록 검색 `/feed`. 상단 메뉴에는 없고 설정 화면의 "목록 검색" 링크로만 온다.
-// 검색어(이름 또는 GHSA-…) 300ms debounce + 종류 select(패키지·CI) + 표 + 쪽 나눔.
+// 검색어(이름 또는 GHSA-…) 300ms debounce + 분류 select(전체/악성 패키지/취약점) + 종류 select(패키지·CI) + 표 + 쪽 나눔.
 // empty = 필터가 없으면 "아직 가져온 항목이 없습니다", 있으면 "조건에 맞는 항목이 없습니다".
-import { SUPPORTED_ECOSYSTEMS, type FeedEntry } from "@pw/shared";
+import { FEED_KINDS, SUPPORTED_ECOSYSTEMS, type FeedEntry } from "@pw/shared";
 import { ArrowLeftIcon, ExternalLinkIcon } from "lucide-react";
 import { useCallback, useEffect, useId, useState } from "react";
 import { Link } from "react-router";
@@ -16,14 +16,20 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useFeedEntries } from "@/features/feed/hooks";
 import type { FeedEntriesFilter } from "@/lib/api";
-import { ecosystemLabel, formatCardTime } from "@/lib/format";
+import {
+  NOT_APPLICABLE_LABEL,
+  ecosystemLabel,
+  feedKindLabel,
+  formatCardTime,
+  formatCvssScore,
+  isHttpUrl,
+} from "@/lib/format";
 import { emptyPageFallback, firstLoadState, isUnconfirmedPage } from "@/lib/queryState";
 import { cn } from "@/lib/utils";
 
 const FILTER_DEBOUNCE_MS = 300;
 // Radix Select 는 빈 문자열 값을 쓸 수 없다.
 const ALL_OPTION = "all";
-const SAFE_URL = /^https?:\/\//i;
 
 export function FeedPage() {
   const [filter, setFilter] = useState<FeedEntriesFilter>({});
@@ -31,7 +37,7 @@ export function FeedPage() {
   const entries = useFeedEntries(filter, page);
   const data = entries.data;
   const isUnconfirmed = isUnconfirmedPage(entries);
-  const hasFilter = filter.q !== undefined || filter.ecosystem !== undefined;
+  const hasFilter = filter.q !== undefined || filter.ecosystem !== undefined || filter.kind !== undefined;
 
   // 필터를 바꾸면 1쪽으로 돌아간다. 참조를 고정해서 debounce 타이머가 re-render 로 다시 시작되지 않게 한다.
   const changeFilter = useCallback((next: FeedEntriesFilter) => {
@@ -62,7 +68,7 @@ export function FeedPage() {
         {data && (
           <div className="flex flex-col gap-3">
             <div aria-busy={isUnconfirmed || undefined} className={cn("transition-opacity", isUnconfirmed && "opacity-60")}>
-              <FeedTable items={data.items} />
+              <FeedTable items={data.items} showCve={filter.kind === "cve" || data.items.some((entry) => entry.kind === "cve")} />
             </div>
             <Pager page={data.page} limit={data.limit} total={data.total} onPageChange={setPage} isDisabled={isUnconfirmed} />
           </div>
@@ -104,6 +110,25 @@ function FeedFilters({ filter, onFilterChange }: FeedFiltersProps) {
         />
       </div>
       <div className="flex flex-col gap-1.5">
+        <Label htmlFor={`${id}-kind`}>분류</Label>
+        <Select
+          value={filter.kind ?? ALL_OPTION}
+          onValueChange={(next) => onFilterChange({ ...filter, kind: FEED_KINDS.find((option) => option === next) })}
+        >
+          <SelectTrigger id={`${id}-kind`} className="w-36">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL_OPTION}>전체</SelectItem>
+            {FEED_KINDS.map((option) => (
+              <SelectItem key={option} value={option}>
+                {feedKindLabel(option)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="flex flex-col gap-1.5">
         <Label htmlFor={`${id}-ecosystem`}>종류</Label>
         <Select
           value={filter.ecosystem ?? ALL_OPTION}
@@ -124,16 +149,20 @@ function FeedFilters({ filter, onFilterChange }: FeedFiltersProps) {
   );
 }
 
-function FeedTable({ items }: { items: FeedEntry[] }) {
+// 취약점(cve) 항목이 보일 때만 분류·점수·고쳐진 버전 열을 더한다(악성 패키지만 보일 때는 점수와 고쳐진 버전이 없다).
+function FeedTable({ items, showCve }: { items: FeedEntry[]; showCve: boolean }) {
   return (
     <div className="rounded-lg border">
       <Table aria-label="외부 목록">
         <TableHeader>
           <TableRow>
+            {showCve && <TableHead scope="col">분류</TableHead>}
             <TableHead scope="col">종류</TableHead>
             <TableHead scope="col">이름</TableHead>
             <TableHead scope="col">범위</TableHead>
             <TableHead scope="col">심각도</TableHead>
+            {showCve && <TableHead scope="col">점수</TableHead>}
+            {showCve && <TableHead scope="col">고쳐진 버전</TableHead>}
             <TableHead scope="col">요약</TableHead>
             <TableHead scope="col">갱신 시각</TableHead>
             <TableHead scope="col">권고</TableHead>
@@ -142,6 +171,7 @@ function FeedTable({ items }: { items: FeedEntry[] }) {
         <TableBody>
           {items.map((entry) => (
             <TableRow key={`${entry.externalId}:${entry.ecosystem}:${entry.name}:${entry.rawRange}`}>
+              {showCve && <TableCell>{feedKindLabel(entry.kind)}</TableCell>}
               <TableCell>{ecosystemLabel(entry.ecosystem)}</TableCell>
               <RowHeaderCell className="max-w-64 truncate font-mono text-xs font-medium" title={entry.name}>
                 {entry.name}
@@ -152,10 +182,14 @@ function FeedTable({ items }: { items: FeedEntry[] }) {
               <TableCell>
                 <SeverityBadge severity={entry.severity} />
               </TableCell>
+              {showCve && <TableCell className="tabular-nums">{formatCvssScore(entry.cvssScore)}</TableCell>}
+              {showCve && (
+                <TableCell className="font-mono text-xs">{entry.patchedVersion ?? NOT_APPLICABLE_LABEL}</TableCell>
+              )}
               <TableCell className="max-w-96 whitespace-normal [overflow-wrap:anywhere]">{entry.summary}</TableCell>
               <TableCell className="whitespace-nowrap tabular-nums">{formatCardTime(entry.updatedAt)}</TableCell>
               <TableCell>
-                {SAFE_URL.test(entry.url) ? (
+                {isHttpUrl(entry.url) ? (
                   <a
                     href={entry.url}
                     target="_blank"

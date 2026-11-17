@@ -44,7 +44,12 @@ function watchScanFinish(queryClient: QueryClient): void {
     if (finished) {
       // 이 알림은 summary 상태를 갱신하는 도중에 온다. 갱신이 끝난 뒤에 무효화한다.
       queueMicrotask(() => {
-        void invalidateKeys(queryClient, [queryKeys.scansAll(), queryKeys.findingsAll(), queryKeys.summary()]);
+        void invalidateKeys(queryClient, [
+          queryKeys.scansAll(),
+          queryKeys.findingsAll(),
+          queryKeys.vulnerabilitiesAll(),
+          queryKeys.summary(),
+        ]);
       });
     }
   });

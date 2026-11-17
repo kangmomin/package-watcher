@@ -64,7 +64,7 @@ describe("/mcp — 외부 목록(feed)", () => {
     const { tools } = await client.listTools();
     for (const name of ["list_blacklist", "export_blacklist"]) {
       const properties = (tools.find((tool) => tool.name === name)?.inputSchema.properties ?? {}) as Record<string, { enum?: string[] }>;
-      expect(properties.source?.enum, name).toEqual(["manual", "feed"]);
+      expect(properties.source?.enum, name).toEqual(["manual", "feed", "cve"]);
     }
     await call(client, "add_blacklist_entry", { name: "manual-pkg", reason: "수동" });
 

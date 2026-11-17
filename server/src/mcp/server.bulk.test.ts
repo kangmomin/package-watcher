@@ -50,13 +50,13 @@ const ITEMS = [
 ];
 
 describe("/mcp — 일괄 관리 tool", () => {
-  it("[v2-AC-19][BK-15] tools/list 는 15개이고 기존 10개의 이름을 그대로 포함한다. 새 tool 의 입력이 선언되어 있다", async () => {
+  it("[v2-AC-19][BK-15] tools/list 는 16개이고 기존 10개의 이름을 그대로 포함한다. 새 tool 의 입력이 선언되어 있다", async () => {
     const client = await connect();
 
     const { tools } = await client.listTools();
 
     const names = tools.map((tool) => tool.name);
-    expect(names).toHaveLength(15);
+    expect(names).toHaveLength(16);
     expect(names).toEqual(expect.arrayContaining([...OLD_TOOLS, ...NEW_TOOLS]));
     const propertiesOf = (name: string): string[] =>
       Object.keys(tools.find((tool) => tool.name === name)?.inputSchema.properties ?? {});

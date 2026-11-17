@@ -25,7 +25,18 @@ export type SettingKey =
   | "feed_last_started_at"
   | "feed_last_synced_at"
   | "feed_skipped"
-  | "feed_last_error";
+  | "feed_last_error"
+  // 취약점(cve) 의 기준 점수와, 분류마다 독립인 동기화 상태 (malware 는 위의 `feed_*`)
+  | "cve_min_score"
+  | "feed_cve_full_sync_done"
+  | "feed_cve_cursor"
+  | "feed_cve_full_started_at"
+  | "feed_cve_run_id"
+  | "feed_cve_last_full_at"
+  | "feed_cve_last_started_at"
+  | "feed_cve_last_synced_at"
+  | "feed_cve_skipped"
+  | "feed_cve_last_error";
 
 /** SQL 만 담당. 값은 문자열로 저장한다. */
 export interface SettingsRepository {

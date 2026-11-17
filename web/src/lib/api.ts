@@ -17,6 +17,8 @@ import {
   settingsSchema,
   summarySchema,
   testEmailResultSchema,
+  vulnerabilitiesPageSchema,
+  vulnerabilityDetailSchema,
   type BlacklistEntry,
   type BlacklistInput,
   type BlacklistFileFormat,
@@ -29,6 +31,7 @@ import {
   type EntryStatus,
   type ErrorCode,
   type FeedEntry,
+  type FeedKind,
   type FeedStatus,
   type Finding,
   type FindingStatus,
@@ -44,6 +47,8 @@ import {
   type Severity,
   type Summary,
   type TestEmailResult,
+  type VulnerabilityDetail,
+  type VulnerabilityGroup,
 } from "@pw/shared";
 import type { ZodType } from "zod";
 
@@ -73,11 +78,17 @@ export interface BlacklistFilter {
   ecosystem?: Ecosystem;
   status?: EntryStatus;
   source?: EntrySource;
+  /** 그 출처를 뺀 항목 (기본 보기가 `cve` 를 뺀다) */
+  excludeSource?: EntrySource;
   q?: string;
 }
 
+/** 블랙리스트 화면을 열었을 때의 필터: 취약점 항목(수백 건)이 목록을 덮지 않게 뺀다. */
+export const DEFAULT_BLACKLIST_FILTER: BlacklistFilter = { excludeSource: "cve" };
+
 /** 외부 목록 검색의 조건. 값이 없는 키는 요청에 넣지 않는다. */
 export interface FeedEntriesFilter {
+  kind?: FeedKind;
   q?: string;
   ecosystem?: Ecosystem;
 }
@@ -96,6 +107,10 @@ export interface FindingsFilter {
   category?: EcosystemCategory;
   /** 그 분류를 뺀 검출 ("검출" 탭) */
   excludeCategory?: EcosystemCategory;
+  /** 그 출처의 검출만 */
+  source?: EntrySource;
+  /** 그 출처를 뺀 검출 ("검출" 탭이 `cve` 를 뺀다) */
+  excludeSource?: EntrySource;
   severity?: Severity;
 }
 
@@ -115,6 +130,19 @@ export interface ScanReposFilter {
 }
 
 export interface ScanReposParams extends ScanReposFilter {
+  page: number;
+  limit: number;
+}
+
+/** 취약점 탭의 조건. 값이 없는 키는 요청에 넣지 않는다. */
+export interface VulnerabilitiesFilter {
+  ecosystem?: Ecosystem;
+  q?: string;
+  /** true 이면 직접 의존성이 있는 패키지만. false 는 요청에 넣지 않는다. */
+  directOnly?: boolean;
+}
+
+export interface VulnerabilitiesParams extends VulnerabilitiesFilter {
   page: number;
   limit: number;
 }
@@ -178,23 +206,50 @@ function blacklistParams({ ecosystem, status, source, q }: BlacklistFilter) {
   return { ecosystem, status, source, q };
 }
 
-/** 내보내기 링크. 목록과 같은 필터를 붙인다(선택 상태는 쓰지 않는다). */
+/**
+ * 내보내기 링크. 목록과 같은 필터를 붙인다(선택 상태는 쓰지 않는다).
+ * 기본 보기의 excludeSource 는 붙이지 않는다: 지금까지의 내보내기 그대로다(출처를 거르려면 출처 필터를 쓴다).
+ */
 export function exportBlacklistUrl(format: BlacklistFileFormat, filter: BlacklistFilter): string {
   return withQuery("/api/blacklist/export", { format, ...blacklistParams(filter) });
 }
 
 export const api = {
   getSummary: (): Promise<Summary> => request(summarySchema, "GET", "/api/summary"),
-  listFindings: ({ status, repo, package: pkg, ecosystem, category, excludeCategory, severity, page, limit }: FindingsParams): Promise<Page<Finding>> =>
+  listFindings: ({
+    status,
+    repo,
+    package: pkg,
+    ecosystem,
+    category,
+    excludeCategory,
+    source,
+    excludeSource,
+    severity,
+    page,
+    limit,
+  }: FindingsParams): Promise<Page<Finding>> =>
     request(
       findingsPageSchema,
       "GET",
-      withQuery("/api/findings", { status, repo, package: pkg, ecosystem, category, excludeCategory, severity, page, limit }),
+      withQuery("/api/findings", {
+        status,
+        repo,
+        package: pkg,
+        ecosystem,
+        category,
+        excludeCategory,
+        source,
+        excludeSource,
+        severity,
+        page,
+        limit,
+      }),
     ),
   setFindingStatus: (id: number, input: FindingStatusInput): Promise<Finding> =>
     request(findingSchema, "PATCH", `/api/findings/${id}`, input),
   listBlacklist: (filter: BlacklistFilter = {}): Promise<BlacklistList> =>
-    request(blacklistListSchema, "GET", withQuery("/api/blacklist", blacklistParams(filter))),
+    request(blacklistListSchema, "GET", withQuery("/api/blacklist", { ...blacklistParams(filter), excludeSource: filter.excludeSource })),
   bulkBlacklist: (input: BulkInput): Promise<BulkResult> =>
     request(bulkResultSchema, "POST", "/api/blacklist/bulk", input),
   importBlacklist: (input: ImportInput): Promise<ImportResult> =>
@@ -222,8 +277,16 @@ export const api = {
   triggerScan: (): Promise<Scan> => request(scanSchema, "POST", "/api/scans"),
   getFeedStatus: (): Promise<FeedStatus> => request(feedStatusSchema, "GET", "/api/feed"),
   syncFeed: (): Promise<FeedStatus> => request(feedStatusSchema, "POST", "/api/feed/sync"),
-  listFeedEntries: ({ q, ecosystem, page, limit }: FeedEntriesParams): Promise<Page<FeedEntry>> =>
-    request(feedEntriesPageSchema, "GET", withQuery("/api/feed/entries", { q, ecosystem, page, limit })),
+  listFeedEntries: ({ kind, q, ecosystem, page, limit }: FeedEntriesParams): Promise<Page<FeedEntry>> =>
+    request(feedEntriesPageSchema, "GET", withQuery("/api/feed/entries", { kind, q, ecosystem, page, limit })),
+  listVulnerabilities: ({ ecosystem, q, directOnly, page, limit }: VulnerabilitiesParams): Promise<Page<VulnerabilityGroup>> =>
+    request(
+      vulnerabilitiesPageSchema,
+      "GET",
+      withQuery("/api/vulnerabilities", { ecosystem, q, directOnly: directOnly ? "true" : undefined, page, limit }),
+    ),
+  getVulnerabilityDetail: (ecosystem: Ecosystem, name: string): Promise<VulnerabilityDetail> =>
+    request(vulnerabilityDetailSchema, "GET", withQuery("/api/vulnerabilities/detail", { ecosystem, name })),
   getSettings: (): Promise<Settings> => request(settingsSchema, "GET", "/api/settings"),
   saveSettings: (input: SettingsInput): Promise<Settings> => request(settingsSchema, "PUT", "/api/settings", input),
   sendTestEmail: (): Promise<TestEmailResult> =>

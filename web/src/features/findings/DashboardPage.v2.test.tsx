@@ -128,7 +128,7 @@ describe("대시보드 v2 — 종류·심각도 필터", () => {
 
     expect(ecosystemFilter()).toHaveTextContent(TEXT.all);
     expect(severityFilter()).toHaveTextContent(TEXT.all);
-    expect(findingsQueries(server)[0]).toEqual({ status: "open", excludeCategory: "policy", page: "1", limit: "50" });
+    expect(findingsQueries(server)[0]).toEqual({ status: "open", excludeCategory: "policy", excludeSource: "cve", page: "1", limit: "50" });
   });
 
   it("[CT-18] 필터 옵션: 종류 = 전체 + SUPPORTED_ECOSYSTEMS, 심각도 = 전체 + SEVERITIES(높은 순)", async () => {
@@ -163,16 +163,16 @@ describe("대시보드 v2 — 종류·심각도 필터", () => {
 
     await chooseOption(user, severityFilter(), "high");
     await waitFor(() =>
-      expect(findingsQueries(server).at(-1)).toEqual({ status: "open", severity: "high", excludeCategory: "policy", page: "1", limit: "50" }),
+      expect(findingsQueries(server).at(-1)).toEqual({ status: "open", severity: "high", excludeCategory: "policy", excludeSource: "cve", page: "1", limit: "50" }),
     );
 
     await chooseOption(user, severityFilter(), "critical");
     await waitFor(() =>
-      expect(findingsQueries(server).at(-1)).toEqual({ status: "open", severity: "critical", excludeCategory: "policy", page: "1", limit: "50" }),
+      expect(findingsQueries(server).at(-1)).toEqual({ status: "open", severity: "critical", excludeCategory: "policy", excludeSource: "cve", page: "1", limit: "50" }),
     );
 
     await chooseOption(user, severityFilter(), TEXT.all);
-    await waitFor(() => expect(findingsQueries(server).at(-1)).toEqual({ status: "open", excludeCategory: "policy", page: "1", limit: "50" }));
+    await waitFor(() => expect(findingsQueries(server).at(-1)).toEqual({ status: "open", excludeCategory: "policy", excludeSource: "cve", page: "1", limit: "50" }));
   });
 
   it("[CT-18] 종류 필터를 바꾸면 ecosystem= 과 page=1 로 다시 요청하고, '전체' 는 파라미터를 생략한다", async () => {
@@ -182,7 +182,7 @@ describe("대시보드 v2 — 종류·심각도 필터", () => {
 
     await chooseOption(user, ecosystemFilter(), "npm");
     await waitFor(() =>
-      expect(findingsQueries(server).at(-1)).toEqual({ status: "open", ecosystem: "npm", excludeCategory: "policy", page: "1", limit: "50" }),
+      expect(findingsQueries(server).at(-1)).toEqual({ status: "open", ecosystem: "npm", excludeCategory: "policy", excludeSource: "cve", page: "1", limit: "50" }),
     );
 
     // 두 필터를 함께 쓴다
@@ -190,7 +190,7 @@ describe("대시보드 v2 — 종류·심각도 필터", () => {
     await waitFor(() =>
       expect(findingsQueries(server).at(-1)).toEqual({
         status: "open",
-        excludeCategory: "policy",
+        excludeCategory: "policy", excludeSource: "cve",
         ecosystem: "npm",
         severity: "low",
         page: "1",
@@ -200,7 +200,7 @@ describe("대시보드 v2 — 종류·심각도 필터", () => {
 
     await chooseOption(user, ecosystemFilter(), TEXT.all);
     await waitFor(() =>
-      expect(findingsQueries(server).at(-1)).toEqual({ status: "open", severity: "low", excludeCategory: "policy", page: "1", limit: "50" }),
+      expect(findingsQueries(server).at(-1)).toEqual({ status: "open", severity: "low", excludeCategory: "policy", excludeSource: "cve", page: "1", limit: "50" }),
     );
   });
 });

@@ -67,7 +67,7 @@ describe("DB 마이그레이션 v3(최신은 v4) (scan_repos)", () => {
 
     const { db, migratedFrom, backupPath } = open(path);
 
-    expect(userVersionOf(db)).toBe(5);
+    expect(userVersionOf(db)).toBe(6);
     expect(migratedFrom).toBe(2);
     expect(backupPath).toBe(`${path}.v2-backup`);
     expect(backupFilesIn(path)).toEqual(["package-watcher.db.v2-backup"]);
@@ -109,7 +109,7 @@ describe("DB 마이그레이션 v3(최신은 v4) (scan_repos)", () => {
 
     const { db, migratedFrom, backupPath } = open(path);
 
-    expect(userVersionOf(db)).toBe(5);
+    expect(userVersionOf(db)).toBe(6);
     expect(migratedFrom).toBe(0);
     expect(backupPath).toBe(`${path}.v0-backup`);
     expect(backupFilesIn(path)).toEqual(["package-watcher.db.v0-backup"]);
@@ -124,7 +124,7 @@ describe("DB 마이그레이션 v3(최신은 v4) (scan_repos)", () => {
 
     const { db, migratedFrom, backupPath } = open(path);
 
-    expect(userVersionOf(db)).toBe(5);
+    expect(userVersionOf(db)).toBe(6);
     expect(migratedFrom).toBeNull();
     expect(backupPath).toBeNull();
     expect(backupFilesIn(path)).toEqual([]);
@@ -168,7 +168,7 @@ describe("DB 마이그레이션 v3(최신은 v4) (scan_repos)", () => {
 
     const second = open(path);
 
-    expect(userVersionOf(second.db)).toBe(5);
+    expect(userVersionOf(second.db)).toBe(6);
     expect(second.migratedFrom).toBeNull();
     expect(second.backupPath).toBeNull();
   });

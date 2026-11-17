@@ -14,15 +14,23 @@ import { api, type ApiRequestError } from "@/lib/api";
 import { errorToastMessage, invalidateKeys, isUnknownOutcome } from "@/lib/errors";
 import { queryKeys } from "@/lib/queryKeys";
 
-export function useSettings(): UseQueryResult<Settings, ApiRequestError> {
+/** enabled = false 이면 조회하지 않는다(그 값이 필요할 때만 읽는 화면용). */
+export function useSettings({ enabled = true }: { enabled?: boolean } = {}): UseQueryResult<Settings, ApiRequestError> {
   return useQuery<Settings, ApiRequestError>({
     queryKey: queryKeys.settings(),
     queryFn: api.getSettings,
+    enabled,
   });
 }
 
 // feedEnabled 가 바뀌면 feed 상태의 enabled 도 바뀐다.
-const SAVE_KEYS = [queryKeys.settings(), queryKeys.summary(), queryKeys.findingsAll(), queryKeys.feedStatus()];
+const SAVE_KEYS = [
+  queryKeys.settings(),
+  queryKeys.summary(),
+  queryKeys.findingsAll(),
+  queryKeys.vulnerabilitiesAll(),
+  queryKeys.feedStatus(),
+];
 
 /** toast·필드 오류·폼 reset 은 화면이 한다(오류 코드별로 필드 오류와 toast 를 나눠야 한다). */
 export function useSaveSettings(): UseMutationResult<Settings, ApiRequestError, SettingsInput> {

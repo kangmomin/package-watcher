@@ -1,9 +1,13 @@
 import {
   findingsQuerySchema,
   findingStatusInputSchema,
+  vulnerabilitiesQuerySchema,
+  vulnerabilityDetailQuerySchema,
   type Finding,
   type Page,
   type Summary,
+  type VulnerabilityDetail,
+  type VulnerabilityGroup,
 } from "@pw/shared";
 import type { TokenSource } from "../config.ts";
 import { AppError } from "../errors.ts";
@@ -23,6 +27,10 @@ export interface FindingService {
   setStatus(id: number, input: unknown): Finding;
   /** `nextScanAt` 은 org 또는 토큰이 없으면 null */
   summary(): Summary;
+  /** `vulnerabilitiesQuerySchema` 로 검증한 뒤, 취약점(`source = cve`)의 open 검출을 패키지별로 묶은 목록 */
+  listVulnerabilities(query: unknown): Page<VulnerabilityGroup>;
+  /** `vulnerabilityDetailQuerySchema` 로 검증. 그 패키지의 open 검출이 없으면 NOT_FOUND */
+  vulnerabilityDetail(query: unknown): VulnerabilityDetail;
 }
 
 export interface FindingServiceDeps {
@@ -55,11 +63,21 @@ export function createFindingService(deps: FindingServiceDeps): FindingService {
       if (current.status === status) return current;
       return repos.findings.setStatus(id, status);
     },
+    listVulnerabilities(query) {
+      return repos.vulnerabilities.list(parseInput(vulnerabilitiesQuerySchema, query));
+    },
+    vulnerabilityDetail(query) {
+      const { ecosystem, name } = parseInput(vulnerabilityDetailQuerySchema, query);
+      const rows = repos.vulnerabilities.detail(ecosystem, name);
+      if (!rows) throw new AppError("NOT_FOUND", "그 패키지의 취약점 검출을 찾을 수 없습니다");
+      return { ecosystem, packageName: name, ...rows };
+    },
     summary() {
       const org = repos.settings.get("org");
       return {
-        openCount: repos.findings.countByStatus("open"),
+        openCount: repos.findings.countOpenDetections(),
         policyOpenCount: repos.findings.countPolicyByStatus("open"),
+        cveOpenCount: repos.findings.countCveByStatus("open"),
         ignoredCount: repos.findings.countByStatus("ignored"),
         lastScan: repos.scans.latest(),
         nextScanAt: canScan(org, githubTokenSource) ? repos.settings.get("next_scan_at") : null,

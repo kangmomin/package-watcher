@@ -27,7 +27,7 @@ import {
 } from "../test/v2.ts";
 import type { Db } from "./index.ts";
 
-const LATEST_VERSION = 5;
+const LATEST_VERSION = 6;
 const backupPathOf = (dbPath: string): string => `${dbPath}.v0-backup`;
 
 const handles: Db[] = [];

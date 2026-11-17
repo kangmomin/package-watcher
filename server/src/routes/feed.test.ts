@@ -25,8 +25,10 @@ describe("GET /api/feed", () => {
     const res = await t.request("GET", "/api/feed");
 
     expect(res.status).toBe(200);
+    const empty = { entryCount: 0, skippedCount: 0, lastSyncedAt: null, fullSyncDone: false, lastError: null };
     expect(feedStatusSchema.parse(res.json)).toEqual({
       enabled: true,
+      byKind: { malware: empty, cve: empty },
       entryCount: 0,
       byEcosystem: {},
       skippedCount: 0,

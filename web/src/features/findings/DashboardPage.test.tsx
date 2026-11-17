@@ -125,7 +125,7 @@ describe("대시보드 — 검출 표·필터·페이저", () => {
     renderWithProviders(<DashboardPage />);
 
     await findRowWith("api");
-    expect(findingsQueries(server)[0]).toEqual({ status: "open", excludeCategory: "policy", page: "1", limit: "50" });
+    expect(findingsQueries(server)[0]).toEqual({ status: "open", excludeCategory: "policy", excludeSource: "cve", page: "1", limit: "50" });
   });
 
   it("[CT-02] 행에 종류 라벨(직접/전이)과 상태 배지(영문 값 그대로)를 표시한다", async () => {
@@ -155,16 +155,16 @@ describe("대시보드 — 검출 표·필터·페이저", () => {
 
     await chooseOption(user, screen.getByRole("combobox", { name: UI.statusFilter }), "ignored");
     await waitFor(() =>
-      expect(findingsQueries(server).at(-1)).toEqual({ status: "ignored", excludeCategory: "policy", page: "1", limit: "50" }),
+      expect(findingsQueries(server).at(-1)).toEqual({ status: "ignored", excludeCategory: "policy", excludeSource: "cve", page: "1", limit: "50" }),
     );
 
     await chooseOption(user, screen.getByRole("combobox", { name: UI.statusFilter }), "resolved");
     await waitFor(() =>
-      expect(findingsQueries(server).at(-1)).toEqual({ status: "resolved", excludeCategory: "policy", page: "1", limit: "50" }),
+      expect(findingsQueries(server).at(-1)).toEqual({ status: "resolved", excludeCategory: "policy", excludeSource: "cve", page: "1", limit: "50" }),
     );
 
     await chooseOption(user, screen.getByRole("combobox", { name: UI.statusFilter }), TEXT.allStatuses);
-    await waitFor(() => expect(findingsQueries(server).at(-1)).toEqual({ excludeCategory: "policy", page: "1", limit: "50" }));
+    await waitFor(() => expect(findingsQueries(server).at(-1)).toEqual({ excludeCategory: "policy", excludeSource: "cve", page: "1", limit: "50" }));
   });
 
   it("[CT-02] repo·패키지 입력은 trim 후 300ms debounce 로 한 번만 요청하고, 비우면 파라미터를 생략한다", async () => {
@@ -179,14 +179,14 @@ describe("대시보드 — 검출 표·필터·페이저", () => {
     expect(withRepo()).toHaveLength(0);
     await advance(300);
     await waitFor(() => expect(withRepo()).toHaveLength(1));
-    expect(withRepo()[0]).toEqual({ status: "open", repo: "api", excludeCategory: "policy", page: "1", limit: "50" });
+    expect(withRepo()[0]).toEqual({ status: "open", repo: "api", excludeCategory: "policy", excludeSource: "cve", page: "1", limit: "50" });
 
     await user.type(screen.getByRole("textbox", { name: UI.packageFilter }), "lodash");
     await advance(300);
     await waitFor(() =>
       expect(findingsQueries(server).at(-1)).toEqual({
         status: "open",
-        excludeCategory: "policy",
+        excludeCategory: "policy", excludeSource: "cve",
         repo: "api",
         package: "lodash",
         page: "1",
@@ -199,7 +199,7 @@ describe("대시보드 — 검출 표·필터·페이저", () => {
     await user.clear(screen.getByRole("textbox", { name: UI.repoFilter }));
     await advance(300);
     await waitFor(() =>
-      expect(findingsQueries(server).at(-1)).toEqual({ status: "open", package: "lodash", excludeCategory: "policy", page: "1", limit: "50" }),
+      expect(findingsQueries(server).at(-1)).toEqual({ status: "open", package: "lodash", excludeCategory: "policy", excludeSource: "cve", page: "1", limit: "50" }),
     );
   });
 
@@ -213,11 +213,11 @@ describe("대시보드 — 검출 표·필터·페이저", () => {
 
     await user.click(screen.getByRole("button", { name: TEXT.next }));
     await screen.findByText("51–100 / 120");
-    expect(findingsQueries(server).at(-1)).toEqual({ status: "open", excludeCategory: "policy", page: "2", limit: "50" });
+    expect(findingsQueries(server).at(-1)).toEqual({ status: "open", excludeCategory: "policy", excludeSource: "cve", page: "2", limit: "50" });
 
     await user.click(screen.getByRole("button", { name: TEXT.next }));
     await screen.findByText("101–120 / 120");
-    expect(findingsQueries(server).at(-1)).toEqual({ status: "open", excludeCategory: "policy", page: "3", limit: "50" });
+    expect(findingsQueries(server).at(-1)).toEqual({ status: "open", excludeCategory: "policy", excludeSource: "cve", page: "3", limit: "50" });
     expect(screen.getByRole("button", { name: TEXT.next })).toBeDisabled();
 
     await user.click(screen.getByRole("button", { name: TEXT.prev }));
@@ -419,7 +419,7 @@ describe("대시보드 — 카드", () => {
     const { user } = renderWithProviders(<DashboardPage />);
 
     await findRowWith("api");
-    await waitFor(() => expect(screen.getAllByText("-")).toHaveLength(5));
+    await waitFor(() => expect(screen.getAllByText("-")).toHaveLength(6));
     expect(screen.getAllByRole("button", { name: TEXT.retry })).toHaveLength(1);
 
     fail = false;

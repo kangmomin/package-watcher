@@ -292,6 +292,11 @@ function BlacklistForm({ entry, isPending, onClose, onSave }: BlacklistFormProps
       {entry?.source === "feed" && (
         <p className="text-sm text-muted-foreground">외부 목록이 추가한 항목입니다. 끄면 다시 추가되지 않습니다.</p>
       )}
+      {entry?.source === "cve" && (
+        <p className="text-sm text-muted-foreground">
+          외부 목록의 취약점이 추가한 항목입니다. 끄면 org 전체에서 대조하지 않습니다.
+        </p>
+      )}
       <p className="text-sm text-muted-foreground">* 표시는 필수 항목입니다</p>
       <FieldGroup className="gap-4">
         <Field data-invalid={errors.ecosystem ? true : undefined}>

@@ -65,6 +65,7 @@ describe("블랙리스트 — 내보내기", () => {
         ecosystem: "go",
         status: "expired",
         q: "lo",
+        excludeSource: "cve",
       }),
     );
 

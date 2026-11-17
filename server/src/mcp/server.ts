@@ -12,6 +12,7 @@ import {
   ENTRY_STATUSES,
   FEED_ENTRIES_DEFAULT_LIMIT,
   FEED_ENTRIES_MAX_LIMIT,
+  FEED_KINDS,
   IMPORT_MAX_BYTES,
   IMPORT_MAX_ROWS,
   POLICY_CHECK_IDS,
@@ -23,6 +24,8 @@ import {
   SCANS_MAX_LIMIT,
   SEVERITIES,
   SUPPORTED_ECOSYSTEMS,
+  VULNERABILITIES_DEFAULT_LIMIT,
+  VULNERABILITIES_MAX_LIMIT,
   type EcosystemRule,
 } from "@pw/shared";
 import { Hono } from "hono";
@@ -59,6 +62,16 @@ const FINDINGS_QUERY = loose({
     type: "string",
     enum: ECOSYSTEM_CATEGORIES,
     description: "그 분류를 뺀 검출. 예: policy 를 빼면 위험한 설정을 제외한 검출. category 와 함께 쓰면 둘 다 적용한다",
+  }),
+  source: field({
+    type: "string",
+    enum: ENTRY_SOURCES,
+    description: "그 출처의 항목이 만든 검출만 (manual: 사용자 항목, feed: 외부 목록의 악성 패키지, cve: 일반 취약점). 생략하면 모든 출처",
+  }),
+  excludeSource: field({
+    type: "string",
+    enum: ENTRY_SOURCES,
+    description: "그 출처를 뺀 검출. 예: cve 를 빼면 취약점을 제외한 검출. source 와 함께 쓰면 둘 다 적용한다",
   }),
   severity: field({
     type: "string",
@@ -120,7 +133,8 @@ const EXPIRES_AT = field({
 const SOURCE = field({
   type: "string",
   enum: ENTRY_SOURCES,
-  description: "출처. manual = 사용자가 만든 항목, feed = 외부 목록(GitHub Advisory)이 일치해서 서버가 만든 항목. 생략하면 모두",
+  description:
+    "출처. manual = 사용자가 만든 항목, feed = 외부 목록(GitHub Advisory)의 악성 패키지가 일치해서 서버가 만든 항목, cve = 일반 취약점(CVE)이 일치해서 서버가 만든 항목. 생략하면 모두",
 });
 const BLACKLIST_QUERY = loose({
   ecosystem: field({ type: "string", enum: ECOSYSTEMS, description: "정확히 일치하는 종류만" }),
@@ -132,8 +146,14 @@ const BLACKLIST_QUERY = loose({
     description: "active(켜짐 + 만료 안 됨) / disabled(꺼짐 + 만료 안 됨) / expired(만료, 꺼짐 여부와 무관)",
   }),
   source: SOURCE,
+  excludeSource: field({
+    type: "string",
+    enum: ENTRY_SOURCES,
+    description: "그 출처를 뺀 항목. 예: cve 를 빼면 취약점 항목을 제외한다",
+  }),
 });
 const FEED_QUERY = loose({
+  kind: field({ type: "string", enum: FEED_KINDS, description: "분류. malware = 악성 패키지, cve = 일반 취약점. 생략하면 모두" }),
   q: field({ type: "string", description: "패키지 이름 또는 권고 id(GHSA-…)의 부분 일치(대소문자 무시)" }),
   ecosystem: field({ type: "string", enum: ECOSYSTEMS, description: "정확히 일치하는 종류만" }),
   page: field({ type: "integer", minimum: 1, description: "기본 1" }),
@@ -142,6 +162,18 @@ const FEED_QUERY = loose({
     minimum: 1,
     maximum: FEED_ENTRIES_MAX_LIMIT,
     description: `기본 ${FEED_ENTRIES_DEFAULT_LIMIT}, 최대 ${FEED_ENTRIES_MAX_LIMIT}`,
+  }),
+});
+const VULNERABILITIES_QUERY = loose({
+  ecosystem: field({ type: "string", enum: ECOSYSTEMS, description: "정확히 일치하는 종류만" }),
+  q: field({ type: "string", description: "패키지 이름 부분 일치(대소문자 무시)" }),
+  directOnly: field({ type: "boolean", description: "true 이면 직접 의존성인 검출이 있는 패키지만" }),
+  page: field({ type: "integer", minimum: 1, description: "기본 1" }),
+  limit: field({
+    type: "integer",
+    minimum: 1,
+    maximum: VULNERABILITIES_MAX_LIMIT,
+    description: `기본 ${VULNERABILITIES_DEFAULT_LIMIT}, 최대 ${VULNERABILITIES_MAX_LIMIT}`,
   }),
 });
 const FILE_FORMAT = field({ type: "string", enum: BLACKLIST_FILE_FORMATS, description: "파일 형식" });
@@ -227,9 +259,9 @@ function toId(value: unknown): number {
 }
 
 /**
- * tool 15개(`list_findings`, `set_finding_status`, `list_blacklist`, `add_blacklist_entry`,
+ * tool 16개(`list_findings`, `set_finding_status`, `list_blacklist`, `add_blacklist_entry`,
  * `update_blacklist_entry`, `remove_blacklist_entry`, `trigger_scan`, `list_scans`, `get_scan`, `get_settings`,
- * `bulk_update_blacklist`, `import_blacklist`, `export_blacklist`, `get_feed_status`, `search_feed`)를 등록한다.
+ * `bulk_update_blacklist`, `import_blacklist`, `export_blacklist`, `get_feed_status`, `search_feed`, `list_vulnerabilities`)를 등록한다.
  * 각 tool 은 대응 REST 와 같은 서비스 함수를 호출하고 결과 JSON 을 text content 로 반환한다.
  * 오류(검증 실패 포함)는 `isError: true` + `{code, message, details?}` JSON.
  * 주의: SDK 의 inputSchema 검증 실패는 JSON 이 아닌 문장으로 나가므로 검증은 서비스에서 한다.
@@ -255,7 +287,7 @@ export function createMcpServer(services: AppServices, logger: Logger = consoleL
 
   register(
     "list_findings",
-    "검출 목록을 조회한다 (GET /api/findings). 기본 목록(category·excludeCategory 없음)에는 위험한 설정(policy)이 섞인다. 검출만 보려면 excludeCategory: \"policy\" 를 준다. 각 검출의 ref 는 검출한 브랜치다(기본 브랜치는 빈 문자열). 결과: Page<Finding>",
+    "검출 목록을 조회한다 (GET /api/findings). 기본 목록(category·excludeCategory·source·excludeSource 없음)에는 위험한 설정(policy)과 취약점(source: cve)이 섞인다. 악성 검출만 보려면 excludeCategory: \"policy\" 와 excludeSource: \"cve\" 를 준다. 취약점의 패키지별 묶음은 list_vulnerabilities. 각 검출의 ref 는 검출한 브랜치다(기본 브랜치는 빈 문자열). 결과: Page<Finding>",
     FINDINGS_QUERY,
     (args) => services.findings.list(args),
   );
@@ -267,7 +299,7 @@ export function createMcpServer(services: AppServices, logger: Logger = consoleL
   );
   register(
     "list_blacklist",
-    "블랙리스트 항목 목록을 조회한다 (GET /api/blacklist). ecosystem·enabled·q·status·source 로 거른다. " +
+    "블랙리스트 항목 목록을 조회한다 (GET /api/blacklist). ecosystem·enabled·q·status·source·excludeSource 로 거른다. " +
       "enabled=true 에는 만료된 항목도 포함된다(사용자가 켠 항목 전부). 결과: { items: BlacklistEntry[] }",
     BLACKLIST_QUERY,
     (args) => services.blacklist.list(args),
@@ -358,24 +390,31 @@ export function createMcpServer(services: AppServices, logger: Logger = consoleL
   );
   register(
     "get_settings",
-    "설정과 연결 상태를 조회한다 (GET /api/settings, 읽기 전용). branchScanDays 는 기본 브랜치 외에 최근 이 일수 안에 커밋이 있는 브랜치도 스캔하는 기간이다(0 = 끔). 결과: Settings",
+    "설정과 연결 상태를 조회한다 (GET /api/settings, 읽기 전용). branchScanDays 는 기본 브랜치 외에 최근 이 일수 안에 커밋이 있는 브랜치도 스캔하는 기간이다(0 = 끔). cveMinScore 는 취약점을 대조하는 CVSS 점수의 기준이다(0 = 대조하지 않음). 결과: Settings",
     NO_INPUT,
     () => services.settings.get(),
   );
 
   register(
     "get_feed_status",
-    "외부 목록(feed, GitHub Advisory 의 악성 패키지 권고)의 상태를 조회한다 (GET /api/feed, 읽기 전용). " +
-      "항목 수, 종류별 수, 마지막 동기화, 동기화 진행 여부와 오류. 결과: FeedStatus",
+    "외부 목록(feed, GitHub Advisory 의 악성 패키지·일반 취약점 권고)의 상태를 조회한다 (GET /api/feed, 읽기 전용). " +
+      "항목 수, 종류별 수, 분류별(byKind: malware, cve) 상태, 마지막 동기화, 동기화 진행 여부와 오류. 결과: FeedStatus",
     NO_INPUT,
     () => services.feed.getStatus(),
   );
   register(
     "search_feed",
-    "외부 목록(feed)의 항목을 검색한다 (GET /api/feed/entries). 블랙리스트 목록에는 나오지 않는 항목이다 — 스캔에서 일치하면 그때 블랙리스트 항목(source=feed)이 생긴다. " +
+    "외부 목록(feed)의 항목을 검색한다 (GET /api/feed/entries). 블랙리스트 목록에는 나오지 않는 항목이다 — 스캔에서 일치하면 그때 블랙리스트 항목(source=feed 또는 cve)이 생긴다. kind 로 분류를 거른다. " +
       "최근 갱신 순. 결과: Page<FeedEntry>",
     FEED_QUERY,
     (args) => services.feed.entries(args),
+  );
+  register(
+    "list_vulnerabilities",
+    "취약점(일반 CVE)의 open 검출을 패키지별로 묶어 조회한다 (GET /api/vulnerabilities, 읽기 전용). " +
+      "최고 CVSS 점수 높은 순 → repo 수 순. 패키지별 묶음이다 — 상세는 list_findings 를 source: cve, package 로 호출한다. 결과: Page<VulnerabilityGroup>",
+    VULNERABILITIES_QUERY,
+    (args) => services.findings.listVulnerabilities(args),
   );
 
   return server;

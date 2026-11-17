@@ -89,7 +89,7 @@ describe("DB 마이그레이션 v4 (종류의 CHECK 제거)", () => {
 
     const { db, migratedFrom, backupPath } = open(path);
 
-    expect(userVersionOf(db)).toBe(5);
+    expect(userVersionOf(db)).toBe(6);
     expect(migratedFrom).toBe(3);
     expect(backupPath).toBe(`${path}.v3-backup`);
     expect(readdirSync(dirname(path)).filter((name) => name.includes("backup"))).toEqual([
@@ -153,7 +153,7 @@ describe("DB 마이그레이션 v4 (종류의 CHECK 제거)", () => {
 
     const { db, migratedFrom } = open(path);
 
-    expect(userVersionOf(db)).toBe(5);
+    expect(userVersionOf(db)).toBe(6);
     expect(migratedFrom).toBeNull();
     expect(() => insertEntry(db, "docker", "node", "20")).not.toThrow();
   });

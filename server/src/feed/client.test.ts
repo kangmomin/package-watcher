@@ -20,7 +20,7 @@ describe("createFeedClient (fetch mock)", () => {
       body: { data: { securityVulnerabilities: { pageInfo: { hasNextPage: true, endCursor: "CUR2" }, nodes: [node] } } },
     });
 
-    const page = await feed.fetchPage("CUR1");
+    const page = await feed.fetchPage("malware", "CUR1");
 
     expect(page).toEqual({ nodes: [node], nextCursor: "CUR2" });
     const call = mock.calls[0];
@@ -40,27 +40,27 @@ describe("createFeedClient (fetch mock)", () => {
       body: { data: { securityVulnerabilities: { pageInfo: { hasNextPage: false, endCursor: "X" }, nodes: [] } } },
     });
 
-    expect(await feed.fetchPage(null)).toEqual({ nodes: [], nextCursor: null });
+    expect(await feed.fetchPage("malware", null)).toEqual({ nodes: [], nextCursor: null });
   });
 
   it("[SE-77] GraphQL 의 RATE_LIMITED 오류와 primary rate limit(403 + remaining 0)은 RateLimitedError", async () => {
     const limited = client({ status: 200, body: { data: null, errors: [{ type: "RATE_LIMITED", message: "API rate limit exceeded" }] } });
-    await expect(limited.feed.fetchPage(null)).rejects.toBeInstanceOf(RateLimitedError);
+    await expect(limited.feed.fetchPage("malware", null)).rejects.toBeInstanceOf(RateLimitedError);
 
     const primary = client({
       status: 403,
       headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "9999999999" },
       body: { message: "API rate limit exceeded" },
     });
-    await expect(primary.feed.fetchPage(null)).rejects.toBeInstanceOf(RateLimitedError);
+    await expect(primary.feed.fetchPage("malware", null)).rejects.toBeInstanceOf(RateLimitedError);
   });
 
   it("[SE-78] 형식이 다른 응답과 HTTP 오류는 Error 이고 토큰을 메시지에 넣지 않는다", async () => {
     const malformed = client({ status: 200, body: { data: { securityVulnerabilities: null } } });
-    await expect(malformed.feed.fetchPage(null)).rejects.toThrow(/형식/);
+    await expect(malformed.feed.fetchPage("malware", null)).rejects.toThrow(/형식/);
 
     const unauthorized = client({ status: 401, body: { message: "Bad credentials" } });
-    const error = await unauthorized.feed.fetchPage(null).then(
+    const error = await unauthorized.feed.fetchPage("malware", null).then(
       () => null,
       (reason: unknown) => reason as Error,
     );

@@ -41,10 +41,12 @@ describe("GET /api/settings", () => {
       notifyMinSeverity: "low",
       feedEnabled: true,
       branchScanDays: 7,
+      cveMinScore: 8,
     });
     expect(Object.keys(res.json as object).sort()).toEqual(
       [
         "branchScanDays",
+        "cveMinScore",
         "digestTime",
         "digestTimezone",
         "feedEnabled",

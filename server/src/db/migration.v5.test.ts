@@ -77,8 +77,8 @@ describe("DB 마이그레이션 v5 (외부 목록, 브랜치·작성자의 준�
 
     const { db, migratedFrom, backupPath } = open(path);
 
-    expect(LATEST_VERSION).toBe(5);
-    expect(userVersionOf(db)).toBe(5);
+    expect(LATEST_VERSION).toBe(6);
+    expect(userVersionOf(db)).toBe(6);
     expect(migratedFrom).toBe(4);
     expect(backupPath).toBe(`${path}.v4-backup`);
     expect(readdirSync(dirname(path)).filter((name) => name.includes("backup"))).toEqual([
@@ -127,6 +127,9 @@ describe("DB 마이그레이션 v5 (외부 목록, 브랜치·작성자의 준�
       "url",
       "updated_at",
       "seen_run",
+      "kind", // v6 가 추가한다
+      "cvss_score",
+      "patched_version",
     ]);
     expect(columnsOf(db, "repo_authors")).toEqual(["repo", "author", "first_seen_at"]);
     expect(columnsOf(db, "blacklist_entries")).toEqual(expect.arrayContaining(["source", "external_id"]));
@@ -176,7 +179,7 @@ describe("DB 마이그레이션 v5 (외부 목록, 브랜치·작성자의 준�
     createV4Database(old);
     const { db: oldDb } = open(old);
 
-    expect(userVersionOf(freshDb)).toBe(5);
+    expect(userVersionOf(freshDb)).toBe(6);
     expect(migratedFrom).toBeNull();
     const tables = (db: Db) =>
       db

@@ -8,6 +8,7 @@
 import {
   BRANCH_SCAN_DAYS_MAX,
   BRANCH_SCAN_MAX_BRANCHES,
+  CVE_MIN_SCORE_MAX,
   entryStatusOf,
   SEVERITIES,
   SEVERITY_RANK,
@@ -53,6 +54,7 @@ type FormValues = z.input<typeof settingsInputSchema> & {
   notifyMinSeverity: Severity;
   feedEnabled: boolean;
   branchScanDays: number;
+  cveMinScore: number;
 };
 
 interface FormRowProps {
@@ -70,6 +72,7 @@ const FORM_FIELDS = [
   "notifyMinSeverity",
   "feedEnabled",
   "branchScanDays",
+  "cveMinScore",
 ] as const;
 
 /** 수신자 입력란에 [추가] 하지 않은 주소가 남은 채 저장하려 할 때의 recipients 필드 오류 */
@@ -85,6 +88,7 @@ function toFormValues(settings: Settings): FormValues {
     notifyMinSeverity: settings.notifyMinSeverity,
     feedEnabled: settings.feedEnabled,
     branchScanDays: settings.branchScanDays,
+    cveMinScore: settings.cveMinScore,
   };
 }
 
@@ -124,6 +128,8 @@ export function SettingsForm({ settings, isFetchedAfterMount = true }: SettingsF
     interval: `${id}-interval`,
     branchDays: `${id}-branch-days`,
     branchDaysHint: `${id}-branch-days-hint`,
+    cveMinScore: `${id}-cve-min-score`,
+    cveMinScoreHint: `${id}-cve-min-score-hint`,
     digestTime: `${id}-digest-time`,
     timezone: `${id}-timezone`,
     recipients: `${id}-recipients`,
@@ -322,6 +328,40 @@ export function SettingsForm({ settings, isFetchedAfterMount = true }: SettingsF
             enabled={field.value}
             onEnabledChange={field.onChange}
             isFormDirty={isDirty}
+            cveScoreField={
+              <div className="flex flex-col gap-1.5">
+                <FieldLabel htmlFor={ids.cveMinScore}>취약점의 기준 점수</FieldLabel>
+                <Controller
+                  control={form.control}
+                  name="cveMinScore"
+                  render={({ field: scoreField }) => (
+                    <Input
+                      id={ids.cveMinScore}
+                      type="number"
+                      inputMode="decimal"
+                      min={0}
+                      max={CVE_MIN_SCORE_MAX}
+                      step={0.1}
+                      className="max-w-28"
+                      disabled={!field.value}
+                      name={scoreField.name}
+                      ref={scoreField.ref}
+                      onBlur={scoreField.onBlur}
+                      value={Number.isNaN(scoreField.value) ? "" : scoreField.value}
+                      onChange={(event) =>
+                        scoreField.onChange(event.target.value === "" ? Number.NaN : event.target.valueAsNumber)
+                      }
+                      {...errorAria("cveMinScore", ids.cveMinScoreHint)}
+                    />
+                  )}
+                />
+                <FieldDescription id={ids.cveMinScoreHint}>
+                  CVSS 점수가 이 값 이상인 취약점을 대조합니다. 0 = 끔. 취약점은 즉시 메일을 보내지 않고 요약 메일에 건수만
+                  들어갑니다.
+                </FieldDescription>
+                <FieldError id={errorIdOf("cveMinScore")} errors={[errors.cveMinScore]} />
+              </div>
+            }
           />
         )}
       />

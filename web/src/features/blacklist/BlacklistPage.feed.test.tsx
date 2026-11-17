@@ -57,19 +57,19 @@ describe("블랙리스트 — 외부 목록의 출처", () => {
     expect(within(row).queryByRole("link")).not.toBeInTheDocument();
   });
 
-  it("[SE-82] 필터가 모두 기본이면 요청에 source 가 없다", async () => {
+  it("[SE-82] 필터가 모두 기본이면 요청에 source 가 없고 excludeSource=cve 만 있다", async () => {
     const server = setupServer();
     await renderBlacklist();
-    expect(server.last("GET", BLACKLIST)?.query).toEqual({});
+    expect(server.last("GET", BLACKLIST)?.query).toEqual({ excludeSource: "cve" });
   });
 
-  it("[SE-83] 출처 select: 전체 / 직접 등록 / 자동, 고르면 source 로 요청하고 '전체' 로 되돌리면 생략한다", async () => {
+  it("[SE-83] 출처 select: 기본 / 전체 / 직접 등록 / 자동 / 취약점, 고르면 source 로 요청하고 '전체' 로 되돌리면 생략한다", async () => {
     const server = setupServer();
     const { user } = await renderBlacklist();
     const select = screen.getByRole("combobox", { name: "출처" });
     await user.click(select);
     const listbox = await screen.findByRole("listbox");
-    expect(within(listbox).getAllByRole("option").map((o) => o.textContent)).toEqual(["전체", "직접 등록", "자동"]);
+    expect(within(listbox).getAllByRole("option").map((o) => o.textContent)).toEqual(["기본", "전체", "직접 등록", "자동", "취약점"]);
     await user.click(within(listbox).getByRole("option", { name: "자동" }));
     await waitFor(() => expect(server.last("GET", BLACKLIST)?.query).toEqual({ source: "feed" }));
     await chooseOption(user, screen.getByRole("combobox", { name: "출처" }), "직접 등록");

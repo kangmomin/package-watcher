@@ -7,6 +7,7 @@ import {
   isUserManagedEcosystem,
   usesVersionRange,
   type BlacklistEntry,
+  type EntrySource,
   type EntryStatus,
 } from "@pw/shared";
 import { ExternalLinkIcon, PencilIcon, Trash2Icon } from "lucide-react";
@@ -30,6 +31,7 @@ import {
   ALL_VERSIONS_LABEL,
   NOT_APPLICABLE_SR_TEXT,
   ecosystemLabel,
+  entrySourceLabel,
   entryStatusLabel,
   policyCheckTitle,
 } from "@/lib/format";
@@ -58,9 +60,10 @@ const ENTRY_STATUS_CLASSES: Record<EntryStatus, string> = {
   expired: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200",
 };
 
-/** 외부 목록이 추가한 항목의 표시: "자동" 배지 + 권고 링크(있을 때) */
-function FeedOrigin({ externalId }: { externalId: string | null }) {
-  const description = externalId ? `외부 목록이 추가한 항목 (${externalId})` : "외부 목록이 추가한 항목";
+/** 외부 목록이 추가한 항목의 표시: "자동"(악성 패키지) 또는 "취약점" 배지 + 권고 링크(있을 때) */
+function FeedOrigin({ source, externalId }: { source: EntrySource; externalId: string | null }) {
+  const base = source === "cve" ? "외부 목록의 취약점이 추가한 항목" : "외부 목록이 추가한 항목";
+  const description = externalId ? `${base} (${externalId})` : base;
   return (
     <>
       <Badge
@@ -70,7 +73,7 @@ function FeedOrigin({ externalId }: { externalId: string | null }) {
         title={description}
         className="shrink-0 font-sans text-[10px]"
       >
-        자동
+        {entrySourceLabel(source)}
       </Badge>
       {externalId && (
         <a
@@ -156,7 +159,7 @@ export function BlacklistTable({
                       ? cn(
                           "max-w-64 font-mono text-xs font-medium",
                           // feed 항목은 칸이 아니라 이름의 span 만 말줄임이다(배지·링크가 잘리지 않게).
-                          entry.source !== "feed" && "truncate",
+                          entry.source === "manual" && "truncate",
                         )
                       : "max-w-64 font-medium whitespace-normal"
                   }
@@ -166,7 +169,7 @@ export function BlacklistTable({
                     // 이름의 글자만 말줄임이다. 배지와 링크는 줄어들지 않는 flex 항목이라 잘리지 않는다.
                     <div className="flex items-center gap-2">
                       <span className="min-w-0 truncate">{entry.name}</span>
-                      {entry.source === "feed" && <FeedOrigin externalId={entry.externalId} />}
+                      {entry.source !== "manual" && <FeedOrigin source={entry.source} externalId={entry.externalId} />}
                     </div>
                   ) : (
                     // 내장 검사: 사람이 읽는 title 을 크게, id 를 작게 보인다.

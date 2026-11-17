@@ -1,7 +1,16 @@
-import type { BlacklistEntry, BlacklistQuery, Ecosystem, EntrySource, Severity } from "@pw/shared";
+import {
+  FEED_KIND_SOURCE,
+  type BlacklistEntry,
+  type BlacklistQuery,
+  type Ecosystem,
+  type EntrySource,
+  type FeedKind,
+  type Severity,
+} from "@pw/shared";
 import type { Db } from "../db/index.ts";
 import { comparableRange } from "../feed/comparable.ts";
 import { ACTIVE_ENTRY_SQL, EXPIRED_ENTRY_SQL, isExpired } from "../services/entryActivity.ts";
+import { CVE_ENTRY_PASSES_SQL } from "./cveGate.ts";
 
 /** 저장할 값. 검증·기본값 적용·병합이 끝난 상태라서 모든 필드가 있다. */
 export interface BlacklistWrite {
@@ -45,7 +54,13 @@ export interface BlacklistRepository {
    * 외부 목록(feed)에서 사라진 권고의 `source=feed` 항목을 끄고 사유 끝에 표식을 붙인다(항목당 1번 — 표식이 있으면 건너뛴다).
    * 바뀐 항목의 id 를 반환한다. 지우지는 않는다.
    */
-  disableWithdrawnFeedEntries(now: string): number[];
+  disableWithdrawnFeedEntries(kind: FeedKind, now: string): number[];
+  /**
+   * 기준 점수를 통과하는 `source=cve` 항목의 id. 같은 (종류, 이름, 범위)의 cve 행 중 `cveMeetsMinScore` 가 true 인 것이 있으면 통과다
+   * (같은 범위의 권고가 여럿이어도 항목은 1개라서 항목의 externalId 하나만 보면 점수가 낮은 권고에 가려진다).
+   * `minScore` 가 0 이면 비어 있다.
+   */
+  cveEntryIdsMeeting(minScore: number): Set<number>;
   /**
    * 모든 항목(꺼짐·만료 포함)의 키. 외부 목록의 항목이 이미 있는 항목과 겹치는지 보는 데 쓴다.
    * 키 모양은 `keyOf` 다.
@@ -131,10 +146,14 @@ export function createBlacklistRepository(db: Db): BlacklistRepository {
   const byNameStmt = db.prepare<[string, string], BlacklistRow>(
     `SELECT ${COLUMNS} FROM blacklist_entries WHERE ecosystem = ? AND name = ?`,
   );
-  const withdrawnStmt = db.prepare<[], { id: number; reason: string }>(
+  // 분류의 범위 안에서만 본다: 그 분류의 행에 없는 권고의 항목만 철회로 본다.
+  const withdrawnStmt = db.prepare<[string, string], { id: number; reason: string }>(
     `SELECT id, reason FROM blacklist_entries
-     WHERE source = 'feed' AND external_id IS NOT NULL
-       AND external_id NOT IN (SELECT external_id FROM feed_entries)`,
+     WHERE source = ? AND external_id IS NOT NULL
+       AND external_id NOT IN (SELECT external_id FROM feed_entries WHERE kind = ?)`,
+  );
+  const cveMeetingStmt = db.prepare<{ minScore: number }, { id: number }>(
+    `SELECT b.id FROM blacklist_entries b WHERE b.source = 'cve' AND ${CVE_ENTRY_PASSES_SQL}`,
   );
   const markWithdrawnStmt = db.prepare<[string, string, number]>(
     "UPDATE blacklist_entries SET enabled = 0, reason = ?, updated_at = ? WHERE id = ?",
@@ -157,6 +176,10 @@ export function createBlacklistRepository(db: Db): BlacklistRepository {
       if (filter.source !== undefined) {
         where.push("source = ?");
         params.push(filter.source);
+      }
+      if (filter.excludeSource !== undefined) {
+        where.push("source <> ?");
+        params.push(filter.excludeSource);
       }
       // 부분 일치는 instr 로 한다(LIKE 의 %, _ 이스케이프가 필요 없다).
       if (filter.q !== undefined) {
@@ -191,9 +214,10 @@ export function createBlacklistRepository(db: Db): BlacklistRepository {
         .find((candidate) => comparableRange(ecosystem, fromDbRangeText(candidate.version_range)) === wanted);
       return row ? toEntry(row, today) : null;
     },
-    disableWithdrawnFeedEntries(now) {
+    cveEntryIdsMeeting: (minScore) => new Set(cveMeetingStmt.all({ minScore }).map((row) => row.id)),
+    disableWithdrawnFeedEntries(kind, now) {
       const changed: number[] = [];
-      for (const row of withdrawnStmt.all()) {
+      for (const row of withdrawnStmt.all(FEED_KIND_SOURCE[kind], kind)) {
         if (row.reason.endsWith(WITHDRAWN_MARK)) continue;
         const reason = `${row.reason.slice(0, 500 - WITHDRAWN_MARK.length)}${WITHDRAWN_MARK}`;
         markWithdrawnStmt.run(reason, now, row.id);

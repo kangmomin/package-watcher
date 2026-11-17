@@ -1,4 +1,4 @@
-import type { Severity } from "@pw/shared";
+import type { FeedKind, Severity } from "@pw/shared";
 import { z } from "zod";
 import type { Clock } from "../clock.ts";
 import { RateLimitedError } from "../github/client.ts";
@@ -6,6 +6,7 @@ import { errorMessage } from "../lockfiles/common.ts";
 import type { Logger } from "../logger.ts";
 import type { FeedWrite } from "../repositories/feed.ts";
 import type { Repositories } from "../repositories/index.ts";
+import type { SettingKey } from "../repositories/settings.ts";
 import { HOUR_MS, printable, toIso } from "../services/common.ts";
 import { FatalFeedError, InvalidCursorError, type FeedClient } from "./client.ts";
 import { convertAdvisory } from "./ranges.ts";
@@ -26,6 +27,48 @@ const SEVERITY_OF: Record<string, Severity> = {
 
 const isDate = (value: string): boolean => !Number.isNaN(Date.parse(value));
 
+/** 분류마다 따로 저장하는 동기화 상태의 키. malware 는 운영 DB 에 이미 있는 `feed_*` 를 그대로 쓴다 */
+export interface SyncKeys {
+  fullDone: SettingKey;
+  cursor: SettingKey;
+  fullStartedAt: SettingKey;
+  runId: SettingKey;
+  lastFullAt: SettingKey;
+  lastStartedAt: SettingKey;
+  lastSyncedAt: SettingKey;
+  skipped: SettingKey;
+  lastError: SettingKey;
+}
+
+export const SYNC_KEYS: Readonly<Record<FeedKind, SyncKeys>> = {
+  malware: {
+    fullDone: "feed_full_sync_done",
+    cursor: "feed_cursor",
+    fullStartedAt: "feed_full_started_at",
+    runId: "feed_run_id",
+    lastFullAt: "feed_last_full_at",
+    lastStartedAt: "feed_last_started_at",
+    lastSyncedAt: "feed_last_synced_at",
+    skipped: "feed_skipped",
+    lastError: "feed_last_error",
+  },
+  cve: {
+    fullDone: "feed_cve_full_sync_done",
+    cursor: "feed_cve_cursor",
+    fullStartedAt: "feed_cve_full_started_at",
+    runId: "feed_cve_run_id",
+    lastFullAt: "feed_cve_last_full_at",
+    lastStartedAt: "feed_cve_last_started_at",
+    lastSyncedAt: "feed_cve_last_synced_at",
+    skipped: "feed_cve_skipped",
+    lastError: "feed_cve_last_error",
+  },
+};
+
+const PATCHED_MAX = 100;
+
+const scoreSchema = z.object({ score: z.number().nullish() }).nullish().catch(null);
+
 // 외부 응답은 믿지 않는다: 노드마다 검증하고, 맞지 않는 노드만 건너뛴다.
 const nodeSchema = z.object({
   updatedAt: z.string().refine(isDate),
@@ -37,10 +80,28 @@ const nodeSchema = z.object({
     severity: z.string(),
     permalink: z.string().nullish(),
     withdrawnAt: z.string().nullish(),
+    // 일반 취약점(cve)의 쿼리만 이 필드들을 받는다. 모양이 달라도 노드를 건너뛰지 않고 "없음"으로 본다.
+    cvssSeverities: z.object({ cvssV3: scoreSchema, cvssV4: scoreSchema }).nullish().catch(null),
   }),
+  firstPatchedVersion: z.object({ identifier: z.string().nullish() }).nullish().catch(null),
 });
 
+interface CvssSeverities {
+  cvssV3?: { score?: number | null } | null;
+  cvssV4?: { score?: number | null } | null;
+}
+
+/** CVSS 점수 = v3 와 v4 중 큰 값. 0·없음·범위 밖은 null (점수가 없는 권고는 등급으로 판단한다) */
+export function cvssScoreOf(severities: CvssSeverities | null | undefined): number | null {
+  const scores = [severities?.cvssV3?.score, severities?.cvssV4?.score].filter(
+    (score): score is number => typeof score === "number" && Number.isFinite(score) && score > 0 && score <= 10,
+  );
+  return scores.length === 0 ? null : Math.max(...scores);
+}
+
 export interface FeedSyncDeps {
+  /** 이 실행이 동기화하는 분류. 상태 키·sweep·철회가 모두 이 분류의 범위 안이다 */
+  kind: FeedKind;
   repos: Repositories;
   client: FeedClient;
   clock: Clock;
@@ -102,7 +163,13 @@ interface PageOutcome {
  * 페이지 1개를 반영한다. 호출 쪽이 연 트랜잭션 안에서 부른다. 더하기·갱신과 철회의 삭제만 하고 범위를 정리(prune)하지 않는다 —
  * 같은 권고의 범위가 여러 페이지·여러 실행에 나뉘어 와도 잃지 않는다. 옛 범위는 전체 동기화의 sweep 이 지운다.
  */
-function processPage(rawNodes: unknown[], repos: Repositories, seenRun: string | null, threshold: number): PageOutcome {
+function processPage(
+  kind: FeedKind,
+  rawNodes: unknown[],
+  repos: Repositories,
+  seenRun: string | null,
+  threshold: number,
+): PageOutcome {
   let skipped = 0;
   let reachedOld = false;
   const withdrawn = new Set<string>();
@@ -133,7 +200,11 @@ function processPage(rawNodes: unknown[], repos: Repositories, seenRun: string |
       skipped += 1;
       continue;
     }
+    const patched = printable((node.firstPatchedVersion?.identifier ?? "").trim()).slice(0, PATCHED_MAX);
     entries.push({
+      kind,
+      cvssScore: kind === "cve" ? cvssScoreOf(node.advisory.cvssSeverities) : null,
+      patchedVersion: kind === "cve" && patched !== "" ? patched : null,
       externalId: ghsaId,
       ecosystem: converted.ecosystem,
       name: converted.name,
@@ -150,44 +221,56 @@ function processPage(rawNodes: unknown[], repos: Repositories, seenRun: string |
     entries.filter((entry) => !withdrawn.has(entry.externalId)),
     seenRun,
   );
-  for (const externalId of withdrawn) changed += repos.feed.deleteByExternalId(externalId);
+  for (const externalId of withdrawn) changed += repos.feed.deleteByExternalId(kind, externalId);
   return { skipped, changed, reachedOld };
 }
 
 /**
  * 전체 동기화의 마무리. 호출 쪽의 트랜잭션 안에서 부른다. 반환: 바뀐 행의 수(sweep 과 꺼진 항목).
- * feed 에서 사라진 권고의 `source=feed` 항목은 끄고 그 검출은 resolved 로 한다(항목과 검출의 기록은 지우지 않는다).
+ * feed 에서 사라진 권고의 항목(malware → `source=feed`, cve → `source=cve`)은 끄고 그 검출은 resolved 로 한다(항목과 검출의 기록은 지우지 않는다).
+ * 다른 분류의 행·항목은 건드리지 않는다.
  */
-function finishFull(repos: Repositories, runId: string, skipped: number, startedAt: string, now: string): number {
+function finishFull(
+  kind: FeedKind,
+  repos: Repositories,
+  runId: string,
+  skipped: number,
+  startedAt: string,
+  now: string,
+): number {
   const settings = repos.settings;
-  let changed = repos.feed.sweep(runId);
-  if (repos.feed.count() > 0) {
-    const disabled = repos.blacklist.disableWithdrawnFeedEntries(now);
+  const keys = SYNC_KEYS[kind];
+  let changed = repos.feed.sweep(kind, runId);
+  if (repos.feed.count(kind) > 0) {
+    const disabled = repos.blacklist.disableWithdrawnFeedEntries(kind, now);
     for (const id of disabled) repos.findings.resolveByBlacklistEntry(id, now);
     changed += disabled.length;
   }
-  settings.set("feed_full_sync_done", "true");
-  settings.set("feed_cursor", null);
-  settings.set("feed_skipped", String(skipped));
-  settings.set("feed_last_started_at", settings.get("feed_full_started_at") ?? startedAt);
-  settings.set("feed_full_started_at", null);
-  settings.set("feed_run_id", null);
-  settings.set("feed_last_full_at", now);
-  settings.set("feed_last_synced_at", now);
-  settings.set("feed_last_error", null);
+  settings.set(keys.fullDone, "true");
+  settings.set(keys.cursor, null);
+  settings.set(keys.skipped, String(skipped));
+  settings.set(keys.lastStartedAt, settings.get(keys.fullStartedAt) ?? startedAt);
+  settings.set(keys.fullStartedAt, null);
+  settings.set(keys.runId, null);
+  settings.set(keys.lastFullAt, now);
+  settings.set(keys.lastSyncedAt, now);
+  settings.set(keys.lastError, null);
   return changed;
 }
 
 /**
- * 동기화 1회. 아래 중 하나이면 전체, 아니면 마지막 동기화 이후 바뀐 것만(증분) 받는다.
+ * 분류 1개(`deps.kind`)의 동기화 1회. 아래 중 하나이면 전체, 아니면 마지막 동기화 이후 바뀐 것만(증분) 받는다.
  * - 첫 전체 동기화가 아직 끝나지 않았다(중단된 것은 저장된 cursor 에서 이어받는다)
  * - 마지막 전체 동기화가 끝난 지 7일이 지났다
  * 전체 동기화는 받은 행에 실행 id 를 남기고, 끝나면 이번 실행이 보지 못한 행을 지운다(sweep). 그 전까지 기존 행은 대조에 쓰인다.
  * 절대 throw 하지 않는다 — 실패는 `feed_last_error` 에 저장하고 호출 쪽(백그라운드)은 그대로 둔다.
  */
 export async function runFeedSync(deps: FeedSyncDeps): Promise<FeedSyncResult> {
-  const { repos, client, clock, logger } = deps;
+  const { repos, client, clock, logger, kind } = deps;
   const settings = repos.settings;
+  const keys = SYNC_KEYS[kind];
+  // cve 의 실행 id 는 malware 와 같은 시각이어도 겹치지 않는다(seen_run 은 한 열을 같이 쓴다)
+  const runIdOf = (startedAt: string): string => (kind === "cve" ? `cve:${startedAt}` : startedAt);
   const delays = deps.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
   const sleep = deps.sleep ?? ((ms: number) => interruptibleSleep(ms, deps.shouldStop));
   let isFull = false;
@@ -200,7 +283,7 @@ export async function runFeedSync(deps: FeedSyncDeps): Promise<FeedSyncResult> {
   async function fetchWithRetry(cursor: string | null) {
     for (let attempt = 0; ; attempt += 1) {
       try {
-        return await client.fetchPage(cursor);
+        return await client.fetchPage(kind, cursor);
       } catch (error) {
         if (deps.shouldStop()) throw new StopRequested();
         const delay = delays[attempt];
@@ -215,9 +298,9 @@ export async function runFeedSync(deps: FeedSyncDeps): Promise<FeedSyncResult> {
 
   try {
     const startedAt = toIso(clock.now());
-    const fullDone = settings.get("feed_full_sync_done") === "true";
-    let cursor: string | null = settings.get("feed_cursor");
-    const lastFullAt = Date.parse(settings.get("feed_last_full_at") ?? "");
+    const fullDone = settings.get(keys.fullDone) === "true";
+    let cursor: string | null = settings.get(keys.cursor);
+    const lastFullAt = Date.parse(settings.get(keys.lastFullAt) ?? "");
     const stale = fullDone && !Number.isNaN(lastFullAt) && clock.now().getTime() - lastFullAt >= FULL_RESYNC_MS;
     const full = !fullDone || cursor !== null || stale;
     isFull = full;
@@ -226,19 +309,19 @@ export async function runFeedSync(deps: FeedSyncDeps): Promise<FeedSyncResult> {
     let skipped = 0;
     let threshold = Number.NEGATIVE_INFINITY;
     if (full) {
-      const saved = settings.get("feed_run_id");
+      const saved = settings.get(keys.runId);
       if (cursor !== null && saved) {
         runId = saved;
-        skipped = Number(settings.get("feed_skipped")) || 0;
+        skipped = Number(settings.get(keys.skipped)) || 0;
       } else {
         // 새 전체 동기화. 여러 번에 나눠 받아도 같은 실행 id 와 시작 시각을 쓴다.
         cursor = null;
-        runId = startedAt;
-        settings.set("feed_run_id", runId);
-        settings.set("feed_full_started_at", startedAt);
+        runId = runIdOf(startedAt);
+        settings.set(keys.runId, runId);
+        settings.set(keys.fullStartedAt, startedAt);
       }
     } else {
-      const last = Date.parse(settings.get("feed_last_started_at") ?? "");
+      const last = Date.parse(settings.get(keys.lastStartedAt) ?? "");
       // 시작 시각이 없으면(깨진 설정) 증분이 아니라 많이 받는다.
       threshold = Number.isNaN(last) ? Number.NEGATIVE_INFINITY : last - OVERLAP_MS;
     }
@@ -264,12 +347,12 @@ export async function runFeedSync(deps: FeedSyncDeps): Promise<FeedSyncResult> {
       const nextCursor = page.nextCursor;
       let finished = 0;
       const outcome = repos.transaction(() => {
-        const result = processPage(page.nodes, repos, full ? runId : null, threshold);
+        const result = processPage(kind, page.nodes, repos, full ? runId : null, threshold);
         if (full) {
-          settings.set("feed_cursor", nextCursor);
-          settings.set("feed_skipped", String(skipped + result.skipped));
+          settings.set(keys.cursor, nextCursor);
+          settings.set(keys.skipped, String(skipped + result.skipped));
           // 마지막 페이지와 마무리(sweep, fullSyncDone, cursor 삭제)는 한 트랜잭션이다 — 사이에 멈춰도 처음부터 다시 받지 않는다.
-          if (nextCursor === null) finished = finishFull(repos, runId, skipped + result.skipped, startedAt, toIso(clock.now()));
+          if (nextCursor === null) finished = finishFull(kind, repos, runId, skipped + result.skipped, startedAt, toIso(clock.now()));
         }
         return result;
       });
@@ -290,16 +373,16 @@ export async function runFeedSync(deps: FeedSyncDeps): Promise<FeedSyncResult> {
 
     // 증분 동기화의 마무리
     repos.transaction(() => {
-      settings.set("feed_last_started_at", startedAt);
-      settings.set("feed_last_synced_at", toIso(clock.now()));
-      settings.set("feed_last_error", null);
+      settings.set(keys.lastStartedAt, startedAt);
+      settings.set(keys.lastSyncedAt, toIso(clock.now()));
+      settings.set(keys.lastError, null);
     });
     return { status: "ok", full, progressed };
   } catch (error) {
     if (error instanceof StopRequested) return { status: "stopped", full: isFull, progressed };
-    logger.error("외부 목록(feed) 동기화에 실패했습니다", error);
+    logger.error(`외부 목록(feed, ${kind}) 동기화에 실패했습니다`, error);
     try {
-      settings.set("feed_last_error", describeError(error));
+      settings.set(keys.lastError, describeError(error));
     } catch (saveError) {
       logger.error("외부 목록 동기화의 오류를 저장하지 못했습니다", saveError);
     }
