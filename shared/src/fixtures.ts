@@ -390,7 +390,9 @@ export const summaryRunning: Summary = { ...summaryDefault, lastScan: scanRunnin
 // ---------------------------------------------------------------- Settings
 
 export const settingsDefault: Settings = {
+  scanTarget: "org",
   org: "my-org",
+  accountLogin: null,
   scanIntervalHours: 24,
   digestTime: "09:00",
   digestTimezone: "Asia/Seoul",
@@ -404,7 +406,9 @@ export const settingsDefault: Settings = {
 };
 
 export const settingsUnconfigured: Settings = {
+  scanTarget: "org",
   org: null,
+  accountLogin: null,
   scanIntervalHours: 24,
   digestTime: "09:00",
   digestTimezone: "Asia/Seoul",

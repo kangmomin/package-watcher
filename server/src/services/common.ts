@@ -8,6 +8,7 @@ import {
   settingsSchema,
   severitySchema,
   toDetails,
+  type ScanTarget,
   type Severity,
 } from "@pw/shared";
 import { z } from "zod";
@@ -62,7 +63,9 @@ export function parseInput<S extends z.ZodType>(schema: S, input: unknown): z.ou
 }
 
 export interface StoredSettings {
+  scanTarget: ScanTarget;
   org: string | null;
+  accountLogin: string | null;
   scanIntervalHours: number;
   digestTime: string;
   recipients: string[];
@@ -86,7 +89,9 @@ export function readStoredSettings(settings: SettingsRepository): StoredSettings
     // 기본 켬. 저장된 값이 "false" 일 때만 끈다.
     feedEnabled: settings.get("feed_enabled") !== "false",
     notifyMinSeverity: minSeverity.success ? minSeverity.data : DEFAULT_NOTIFY_MIN_SEVERITY,
+    scanTarget: settings.get("scan_target") === "user" ? "user" : "org",
     org: settings.get("org"),
+    accountLogin: settings.get("account_login"),
     scanIntervalHours: interval.success ? interval.data : DEFAULT_SCAN_INTERVAL_HOURS,
     digestTime: digestTime.success ? digestTime.data : DEFAULT_DIGEST_TIME,
     recipients: parseRecipients(settings.get("recipients")),
@@ -102,9 +107,26 @@ function parseRecipients(raw: string | null): string[] {
   }
 }
 
-/** 자동 스캔과 `nextScanAt` 의 전제: org 와 토큰이 모두 있다. */
-export function canScan(org: string | null, tokenSource: TokenSource): org is string {
-  return org !== null && tokenSource !== "none";
+/**
+ * 스캔 대상을 가리키는 값. 대상이 바뀌었는지(설정 저장·스캔 도중) 비교하는 데 쓴다.
+ * org 대상: `org:<org>` (org 가 없으면 null), 로그인 계정: `user`.
+ */
+export function scanTargetKey(settings: Pick<StoredSettings, "scanTarget" | "org">): string | null {
+  if (settings.scanTarget === "user") return "user";
+  return settings.org === null ? null : `org:${settings.org}`;
+}
+
+/** 저장소에서 바로 읽는 `scanTargetKey` */
+export function storedScanTargetKey(settings: SettingsRepository): string | null {
+  return scanTargetKey({
+    scanTarget: settings.get("scan_target") === "user" ? "user" : "org",
+    org: settings.get("org"),
+  });
+}
+
+/** 자동 스캔과 `nextScanAt` 의 전제: 스캔 대상(org 또는 로그인 계정)과 토큰이 모두 있다. */
+export function canScan(targetKey: string | null, tokenSource: TokenSource): targetKey is string {
+  return targetKey !== null && tokenSource !== "none";
 }
 
 /** 순서를 유지하며 최대 `limit` 개씩 실행한다. 하나라도 실패하면 새 작업을 시작하지 않고 그 오류로 reject. */

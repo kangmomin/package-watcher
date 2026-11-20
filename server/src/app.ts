@@ -29,7 +29,7 @@ import { createScanRoutes } from "./routes/scans.ts";
 import { createSettingsRoutes } from "./routes/settings.ts";
 import { createScheduler, FIRST_SCAN_DELAY_MS, type Scheduler } from "./scheduler.ts";
 import { createBlacklistService } from "./services/blacklistService.ts";
-import { addMs, canScan, toIso } from "./services/common.ts";
+import { addMs, canScan, storedScanTargetKey, toIso } from "./services/common.ts";
 import { todayKst } from "./services/entryActivity.ts";
 import { createFeedService, type FeedServiceDeps } from "./services/feedService.ts";
 import { createFindingService } from "./services/findingService.ts";
@@ -169,7 +169,7 @@ export function createApp(deps: AppDeps): AppInstance {
     if (interrupted > 0) logger.warn(`서버 재시작으로 중단된 스캔 ${interrupted}건을 failed 로 기록했습니다`);
     applyInitialSettings(repos, deps.initialSettings ?? {}, logger);
     if (
-      canScan(repos.settings.get("org"), githubTokenSource) &&
+      canScan(storedScanTargetKey(repos.settings), githubTokenSource) &&
       repos.settings.get("next_scan_at") === null
     ) {
       repos.settings.set("next_scan_at", toIso(addMs(startedAt, FIRST_SCAN_DELAY_MS)));

@@ -186,7 +186,10 @@ export const ORG = "my-org";
 export const RECIPIENTS = ["a@example.com", "b@example.com"];
 
 export interface SettingsBody {
-  org: string;
+  /** 생략하면 저장된 값을 유지한다(기본 org) */
+  scanTarget?: "org" | "user";
+  /** scanTarget = user 이면 null 가능 */
+  org: string | null;
   scanIntervalHours: number;
   digestTime: string;
   recipients: string[];

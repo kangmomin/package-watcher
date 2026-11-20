@@ -12,7 +12,7 @@ import {
 import type { TokenSource } from "../config.ts";
 import { AppError } from "../errors.ts";
 import type { Repositories } from "../repositories/index.ts";
-import { canScan, parseInput } from "./common.ts";
+import { canScan, parseInput, storedScanTargetKey } from "./common.ts";
 
 /** REST 와 MCP 가 함께 쓴다. 검증은 shared zod + `toDetails`, 실패는 AppError. */
 export interface FindingService {
@@ -73,14 +73,14 @@ export function createFindingService(deps: FindingServiceDeps): FindingService {
       return { ecosystem, packageName: name, ...rows };
     },
     summary() {
-      const org = repos.settings.get("org");
+      const target = storedScanTargetKey(repos.settings);
       return {
         openCount: repos.findings.countOpenDetections(),
         policyOpenCount: repos.findings.countPolicyByStatus("open"),
         cveOpenCount: repos.findings.countCveByStatus("open"),
         ignoredCount: repos.findings.countByStatus("ignored"),
         lastScan: repos.scans.latest(),
-        nextScanAt: canScan(org, githubTokenSource) ? repos.settings.get("next_scan_at") : null,
+        nextScanAt: canScan(target, githubTokenSource) ? repos.settings.get("next_scan_at") : null,
       };
     },
   };

@@ -16,6 +16,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { deferredReply, reply, setupFetchMock, type FetchMock, type ReplyFactory } from "@/test/fetchMock";
 import { createTestQueryClient, renderWithProviders } from "@/test/render";
 import {
+  chooseOption,
   containing,
   expectFieldError,
   expectNoToast,
@@ -230,6 +231,7 @@ describe("설정 — 저장", () => {
     await findToast(TEXT.saved);
     const body = server.last("PUT", SETTINGS)?.body;
     expect(settingsInputSchema.parse(body)).toEqual({
+      scanTarget: "org",
       org: "new-org",
       scanIntervalHours: 6,
       digestTime: "09:00",
@@ -245,6 +247,26 @@ describe("설정 — 저장", () => {
     // reset 뒤에는 dirty 가 아니다
     expect(testEmailButton()).toBeEnabled();
     expect(screen.queryByText(TEXT.saveFirst)).not.toBeInTheDocument();
+  });
+
+  it("스캔 대상을 로그인한 계정으로 바꾸면 org 를 비워도 저장되고, 계정 안내를 보인다", async () => {
+    const server = setupServer({ ...settingsDefault, org: null, accountLogin: null });
+    const { user } = renderSettings();
+    await waitForForm();
+
+    // org 대상에서는 org 가 필수다
+    await user.click(saveButton());
+    await expectFieldError(orgInput(), "GitHub org 를 입력하십시오");
+
+    await chooseOption(user, screen.getByRole("combobox", { name: /^스캔 대상/ }), "로그인한 계정");
+    expect(screen.getByText(containing("첫 스캔 때 확인"))).toBeInTheDocument();
+    await user.click(saveButton());
+
+    await findToast(TEXT.saved);
+    expect(settingsInputSchema.parse(server.last("PUT", SETTINGS)?.body)).toMatchObject({
+      scanTarget: "user",
+      org: null,
+    });
   });
 
   it("[CT-08] 저장에 성공하면 settings·summary·findings 를 무효화한다", async () => {

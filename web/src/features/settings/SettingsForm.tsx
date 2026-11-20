@@ -1,5 +1,6 @@
 // 설정 폼.
-// 필드: org(null → 빈 입력, 안내 "org를 바꾸면 현재 검출이 모두 resolved로 바뀝니다"), interval(시간),
+// 필드: 스캔 대상(org | 로그인 계정), org(null → 빈 입력, 로그인 계정 대상이면 선택),
+// 안내 "스캔 대상을 바꾸면 현재 검출이 모두 resolved로 바뀝니다", interval(시간),
 // 요약 시각 + "Asia/Seoul", 수신자 chip. 제출 전 shared 스키마로 검증.
 // 폼 reset 은 첫 로드와 저장 성공(응답 값) 때만. 저장 중 [저장] 비활성.
 // 첫 로드: 캐시 값으로 폼을 만들었으면 마운트 후 처음 도착한 새 응답에서 dirty 가 아닐 때 한 번 reset 한다.
@@ -13,6 +14,7 @@ import {
   SEVERITIES,
   SEVERITY_RANK,
   settingsInputSchema,
+  type ScanTarget,
   type Settings,
   type SettingsInput,
   type Severity,
@@ -51,6 +53,8 @@ export interface SettingsFormProps {
 
 /** 폼 값 = 저장 스키마의 입력 모양(검증 전). 스키마에 필드가 생기면 toFormValues 가 타입 오류로 알려 준다. */
 type FormValues = z.input<typeof settingsInputSchema> & {
+  scanTarget: ScanTarget;
+  org: string;
   notifyMinSeverity: Severity;
   feedEnabled: boolean;
   branchScanDays: number;
@@ -65,6 +69,7 @@ interface FormRowProps {
 }
 
 const FORM_FIELDS = [
+  "scanTarget",
   "org",
   "scanIntervalHours",
   "digestTime",
@@ -81,6 +86,7 @@ const PENDING_RECIPIENT_MESSAGE = "[추가]를 눌러 수신자에 넣거나 입
 
 function toFormValues(settings: Settings): FormValues {
   return {
+    scanTarget: settings.scanTarget,
     org: settings.org ?? "",
     scanIntervalHours: settings.scanIntervalHours,
     digestTime: settings.digestTime,
@@ -125,6 +131,8 @@ export function SettingsForm({ settings, isFetchedAfterMount = true }: SettingsF
   }, [form, isFetchedAfterMount, settings]);
 
   const ids = {
+    scanTarget: `${id}-scan-target`,
+    scanTargetHint: `${id}-scan-target-hint`,
     org: `${id}-org`,
     orgHint: `${id}-org-hint`,
     interval: `${id}-interval`,
@@ -140,6 +148,9 @@ export function SettingsForm({ settings, isFetchedAfterMount = true }: SettingsF
     notifyMinSeverityHint: `${id}-notify-min-severity-hint`,
     notifyMinSeverityWarning: `${id}-notify-min-severity-warning`,
   };
+  // 로그인 계정 대상이면 org 는 쓰지 않는다(입력은 남겨 두고 선택 항목으로 보인다).
+  const scanTarget = useWatch({ control: form.control, name: "scanTarget" });
+  const isAccountTarget = scanTarget === "user";
   // 입력 중의 값(비었거나 NaN 이면 0 이 아니다)으로 "기본 브랜치만" 을 보인다.
   const branchScanDays = useWatch({ control: form.control, name: "branchScanDays" });
   const showThresholdWarning = belowThresholdCount !== undefined && belowThresholdCount > 0;
@@ -189,17 +200,55 @@ export function SettingsForm({ settings, isFetchedAfterMount = true }: SettingsF
     <form onSubmit={submit} noValidate className="flex max-w-3xl flex-col gap-6">
       <p className="text-sm text-muted-foreground">* 표시는 필수 항목입니다</p>
       <div className="flex flex-col gap-5">
-        <FormRow label="GitHub org" htmlFor={ids.org} isRequired>
+        <FormRow label="스캔 대상" htmlFor={ids.scanTarget} isRequired>
+          <Controller
+            control={form.control}
+            name="scanTarget"
+            render={({ field }) => (
+              <Select
+                value={field.value}
+                onValueChange={(next) => {
+                  field.onChange(next);
+                  // 대상을 바꾸면 org 필드의 오류(필수)는 다시 판정한다.
+                  form.clearErrors("org");
+                }}
+              >
+                <SelectTrigger
+                  id={ids.scanTarget}
+                  className="w-56"
+                  {...errorAria("scanTarget", ids.scanTargetHint)}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="org">GitHub org</SelectItem>
+                  <SelectItem value="user">로그인한 계정</SelectItem>
+                </SelectContent>
+              </Select>
+            )}
+          />
+          <FieldDescription id={ids.scanTargetHint}>
+            {isAccountTarget
+              ? `GitHub 토큰으로 로그인한 계정(${settings.accountLogin ?? "첫 스캔 때 확인"})이 소유한 repo와 협업자로 초대된 repo를 스캔합니다. 다른 사람의 repo는 owner/이름으로 표시합니다.`
+              : "설정한 GitHub org의 repo를 스캔합니다."}{" "}
+            스캔 대상을 바꾸면 현재 검출이 모두 resolved로 바뀝니다
+          </FieldDescription>
+          <FieldError id={errorIdOf("scanTarget")} errors={[errors.scanTarget]} />
+        </FormRow>
+
+        <FormRow label="GitHub org" htmlFor={ids.org} isRequired={!isAccountTarget}>
           <Input
             id={ids.org}
             autoComplete="off"
-            aria-required="true"
+            aria-required={isAccountTarget ? "false" : "true"}
             className="max-w-72"
             {...errorAria("org", ids.orgHint)}
             {...form.register("org")}
           />
           <FieldDescription id={ids.orgHint}>
-            org를 바꾸면 현재 검출이 모두 resolved로 바뀝니다
+            {isAccountTarget
+              ? "로그인한 계정을 스캔하는 동안에는 쓰지 않습니다(비워 두면 저장된 org를 유지합니다)"
+              : "org를 바꾸면 현재 검출이 모두 resolved로 바뀝니다"}
           </FieldDescription>
           <FieldError id={errorIdOf("org")} errors={[errors.org]} />
         </FormRow>

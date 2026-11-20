@@ -5,6 +5,10 @@ import type { Db } from "../db/index.ts";
  */
 export type SettingKey =
   | "org"
+  // 스캔 대상의 종류(`org` | `user`). 없으면 org
+  | "scan_target"
+  // scan_target = user 의 스캔이 마지막으로 확인한 로그인 계정 (계정이 바뀌면 활성 검출을 resolve 한다)
+  | "account_login"
   | "scan_interval_hours"
   | "digest_time"
   | "recipients"

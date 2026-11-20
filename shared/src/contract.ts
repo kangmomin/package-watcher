@@ -23,6 +23,14 @@ export const SCAN_REPO_STATUSES = [
   "skipped",
 ] as const;
 export const TOKEN_SOURCES = ["env", "gh", "none"] as const;
+
+/**
+ * 스캔 대상의 종류. `org` = 설정한 GitHub org 의 repo, `user` = 토큰으로 로그인한 계정의 repo
+ * (계정이 소유한 repo 와 협업자로 초대된 repo — `GET /user/repos?affiliation=owner,collaborator`).
+ * `user` 에서 계정이 소유하지 않은 repo 는 검출·스캔 기록의 repo 이름이 `owner/name` 이다(소유한 repo 는 `name`).
+ */
+export const SCAN_TARGETS = ["org", "user"] as const;
+export type ScanTarget = (typeof SCAN_TARGETS)[number];
 export const ERROR_CODES = [
   "VALIDATION_ERROR",
   "NOT_FOUND",
@@ -451,7 +459,11 @@ export type Summary = z.infer<typeof summarySchema>;
 const DIGEST_TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 export const settingsSchema = z.object({
+  /** 스캔 대상의 종류. `user` 이면 `org` 는 쓰지 않는다(저장된 값은 남는다). */
+  scanTarget: z.enum(SCAN_TARGETS),
   org: z.string().min(1).nullable(),
+  /** `scanTarget = user` 의 마지막 스캔이 확인한 로그인 계정. 확인 전이면 null */
+  accountLogin: z.string().min(1).nullable(),
   scanIntervalHours: z.number().int().min(1).max(168),
   digestTime: z.string().regex(DIGEST_TIME),
   digestTimezone: z.literal(DIGEST_TIMEZONE),
@@ -788,8 +800,19 @@ export const recipientsSchema = z
     }
   });
 
+/** 빈 문자열(공백만 포함)은 org 를 넣지 않은 것(null)으로 본다. */
+const orgInputSchema = z.preprocess(
+  (value) => (typeof value === "string" && value.trim() === "" ? null : value),
+  orgSchema.nullable(),
+);
+
+export const scanTargetSchema = z.enum(SCAN_TARGETS, { error: "scanTarget 은 org 또는 user 입니다" });
+
 export const settingsInputSchema = z.object({
-  org: orgSchema,
+  /** 생략하면 저장된 값을 유지한다(v1 클라이언트 호환). */
+  scanTarget: scanTargetSchema.optional(),
+  /** `scanTarget = user` 이면 생략·null 가능(저장된 org 를 유지한다). 그 외에는 필수. */
+  org: orgInputSchema.optional(),
   scanIntervalHours: scanIntervalHoursSchema,
   digestTime: digestTimeSchema,
   recipients: recipientsSchema,
@@ -806,6 +829,11 @@ export const settingsInputSchema = z.object({
     .optional(),
   /** 생략하면 저장된 값을 유지한다. */
   cveMinScore: z.number({ error: CVE_MIN_SCORE_MESSAGE }).refine(isCveMinScore, CVE_MIN_SCORE_MESSAGE).optional(),
+}).superRefine((value, ctx) => {
+  // 대상이 user 가 아니면(생략 포함) org 가 필요하다. 생략한 대상이 저장된 user 이어도 org 를 요구한다(v1 과 같은 규칙).
+  if (value.scanTarget !== "user" && (value.org === undefined || value.org === null)) {
+    ctx.addIssue({ code: "custom", path: ["org"], message: "GitHub org 를 입력하십시오" });
+  }
 });
 export type SettingsInput = z.infer<typeof settingsInputSchema>;
 

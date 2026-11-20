@@ -53,6 +53,34 @@ describe("createOctokitClient (fetch mock)", () => {
     expect(repos[2]).toMatchObject({ fork: true });
   });
 
+  it("getAuthenticatedLogin 은 GET /user 의 login, listAccountRepos 는 소유·협업자 repo 의 모든 페이지다", async () => {
+    const seen: string[] = [];
+    const mock = createFetchMock(({ url }) => {
+      seen.push(`${url.pathname}?${url.searchParams.toString()}`);
+      if (url.pathname === "/user") return { status: 200, body: { login: "Me" } };
+      if (url.pathname !== "/user/repos") return NOT_FOUND;
+      if (url.searchParams.get("affiliation") !== "owner,collaborator") return NOT_FOUND;
+      const page = url.searchParams.get("page") ?? "1";
+      if (page === "1") {
+        const next = `${API}/user/repos?affiliation=owner%2Ccollaborator&per_page=100&page=2`;
+        return {
+          status: 200,
+          body: [repoJson("alpha", { full_name: "Me/alpha" })],
+          headers: { link: `<${next}>; rel="next", <${next}>; rel="last"` },
+        };
+      }
+      return { status: 200, body: [repoJson("lib", { full_name: "friend/lib" })] };
+    });
+    const client = createOctokitClient({ token: "test-token", fetch: mock.fetch });
+
+    expect(await client.getAuthenticatedLogin()).toBe("Me");
+    const repos = await client.listAccountRepos();
+
+    expect(repos.map((repo) => repo.fullName)).toEqual(["Me/alpha", "friend/lib"]);
+    expect(repos.map((repo) => repo.name)).toEqual(["alpha", "lib"]);
+    expect(seen.filter((request) => request.startsWith("/user/repos"))).toHaveLength(2);
+  });
+
   it("[EC-02] 목록의 2페이지가 실패하면 listOrgRepos 전체가 실패한다", async () => {
     const mock = createFetchMock(({ url }) => {
       if (url.pathname !== "/orgs/my-org/repos") return NOT_FOUND;

@@ -390,7 +390,7 @@ export function createMcpServer(services: AppServices, logger: Logger = consoleL
   );
   register(
     "get_settings",
-    "설정과 연결 상태를 조회한다 (GET /api/settings, 읽기 전용). branchScanDays 는 기본 브랜치 외에 최근 이 일수 안에 커밋이 있는 브랜치도 스캔하는 기간이다(0 = 끔). cveMinScore 는 취약점을 대조하는 CVSS 점수의 기준이다(0 = 대조하지 않음). 결과: Settings",
+    "설정과 연결 상태를 조회한다 (GET /api/settings, 읽기 전용). scanTarget 은 스캔 대상이다(org = 설정한 GitHub org, user = 토큰으로 로그인한 계정이 소유하거나 협업자인 repo — 다른 owner 의 repo 이름은 owner/name). accountLogin 은 user 대상의 마지막 스캔이 확인한 계정이다. branchScanDays 는 기본 브랜치 외에 최근 이 일수 안에 커밋이 있는 브랜치도 스캔하는 기간이다(0 = 끔). cveMinScore 는 취약점을 대조하는 CVSS 점수의 기준이다(0 = 대조하지 않음). 결과: Settings",
     NO_INPUT,
     () => services.settings.get(),
   );

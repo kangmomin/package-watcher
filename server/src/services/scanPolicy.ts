@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { POLICY_CHECK_IDS, POLICY_ECOSYSTEM, type BlacklistEntry, type PolicyCheckId } from "@pw/shared";
+import { repoFullNameOf } from "../github/accountClient.ts";
 import type { Logger } from "../logger.ts";
 import { isRunCommand, type SourceFacts, type SourceKind } from "../sources/index.ts";
 import { isExcludedPath } from "../ecosystems/index.ts";
@@ -20,7 +21,9 @@ export interface PolicyManifest {
 }
 
 export interface PolicyInput {
+  /** repo 의 owner (org 대상은 org, 로그인 계정 대상은 그 repo 의 실제 owner) — 같은 owner 의 action·submodule 은 내부로 본다 */
   org: string;
+  /** 검출에 저장하는 repo 이름 (로그인 계정 대상의 협업자 repo 는 `owner/name`) */
   repo: string;
   /** tree 전체의 경로 (node_modules 포함) */
   treePaths: readonly string[];
@@ -403,7 +406,7 @@ export function createPolicyRules(snapshot: BlacklistEntry[]): PolicyRules {
     entryIds: new Map([...entries].map(([id, entry]) => [id, entry.id])),
 
     async evaluate(input, logger) {
-      const where = `${input.org}/${input.repo}`;
+      const where = repoFullNameOf(input.org, input.repo);
       const matches: PolicyMatch[] = [];
       const add = (id: PolicyCheckId, candidates: Candidate[]): void => {
         const entry = entries.get(id);

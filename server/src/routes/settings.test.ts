@@ -31,7 +31,9 @@ describe("GET /api/settings", () => {
 
     expect(res.status).toBe(200);
     expect(settingsSchema.parse(res.json)).toEqual({
+      scanTarget: "org",
       org: null,
+      accountLogin: null,
       scanIntervalHours: 24,
       digestTime: "09:00",
       digestTimezone: "Asia/Seoul",
@@ -45,6 +47,8 @@ describe("GET /api/settings", () => {
     });
     expect(Object.keys(res.json as object).sort()).toEqual(
       [
+        "accountLogin",
+        "scanTarget",
         "branchScanDays",
         "cveMinScore",
         "digestTime",

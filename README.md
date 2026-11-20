@@ -1,6 +1,6 @@
 # package-watcher
 
-GitHub org 의 repo 를 주기적으로 스캔해서, 블랙리스트에 올린 패키지(npm, Go, PyPI, NuGet, Cargo, pub, Maven, RubyGems, Composer, CocoaPods)가 의존성에 들어왔는지 감시한다.
+GitHub org 의 repo(또는 토큰으로 로그인한 계정의 repo)를 주기적으로 스캔해서, 블랙리스트에 올린 패키지(npm, Go, PyPI, NuGet, Cargo, pub, Maven, RubyGems, Composer, CocoaPods)가 의존성에 들어왔는지 감시한다.
 
 - npm 은 `package.json`(dependencies / devDependencies / optionalDependencies / peerDependencies)과 lockfile 4종(`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock`)을 읽는다. 다른 종류의 파일은 "블랙리스트 규칙"의 표를 본다.
 - 검출은 SQLite 에 저장하고, 신규 검출은 즉시, 미해결 검출은 매일 요약 메일(SMTP)로 알린다.
@@ -25,10 +25,22 @@ Copy-Item .env.example .env    # 필요한 값만 채운다 (선택)
 $env:GITHUB_TOKEN = gh auth token; docker compose up --build
 ```
 
-브라우저에서 <http://localhost:3000> 을 연다. 설정 화면에서 GitHub org, 스캔 주기, 요약 시각, 메일 수신자를 저장하면 자동 스캔이 시작된다.
+브라우저에서 <http://localhost:3000> 을 연다. 설정 화면에서 스캔 대상(GitHub org 또는 로그인한 계정), 스캔 주기, 요약 시각, 메일 수신자를 저장하면 자동 스캔이 시작된다.
 데이터(SQLite)는 named volume `pw-data`(컨테이너의 `/data/package-watcher.db`)에 남는다. `docker compose down` 후 다시 올려도 유지되고, 지우려면 `docker compose down -v` 를 쓴다.
 
 GitHub 토큰에는 org 의 repo 를 읽을 권한이 필요하다(classic 토큰: `repo`, `read:org` / fine-grained 토큰: 대상 org 의 Contents·Metadata read).
+
+### 로그인한 계정의 repo 스캔
+
+설정 화면의 **스캔 대상**을 "로그인한 계정"으로 고르면 org 대신 GitHub 토큰의 계정을 스캔한다(`PUT /api/settings` 의 `scanTarget: "user"`, 이때 `org` 는 생략·`null` 가능).
+
+- 대상은 계정이 **소유한 repo** 와 **협업자(collaborator)로 초대된 repo** 다(`GET /user/repos?affiliation=owner,collaborator`). 계정이 속한 org 의 repo 는 협업자로 초대되지 않았으면 들어가지 않는다. archived·fork repo 는 org 와 같이 검사하지 않는다.
+- 계정은 스캔할 때마다 `GET /user` 로 확인한다. 설정 화면과 `GET /api/settings` 의 `accountLogin` 이 마지막으로 확인한 계정이다(첫 스캔 전에는 `null`).
+- 검출·스캔 기록의 repo 이름은 계정이 소유한 repo 는 `이름`, 다른 사람이 소유한 repo 는 `owner/이름` 이다. 링크(`htmlUrl`)는 실제 owner 의 주소다.
+- 협업자 repo 가 목록에서 빠지면(초대가 끝남) 저장소가 남아 있어도 그 repo 의 검출을 `resolved` 로 바꾼다. 계정이 소유한 repo 는 org 와 같은 규칙(재확인 후에만)을 따른다.
+- 토큰의 계정이 바뀌면(다른 토큰으로 재시작) 다음 스캔이 이전 계정의 활성 검출을 모두 `resolved` 로 바꾸고 새 계정의 repo 를 검사한다. 스캔 대상(org ↔ 로그인한 계정, 또는 org 대상의 org)을 바꾸면 org 를 바꿀 때처럼 현재 검출이 모두 `resolved` 가 된다. 로그인한 계정 대상에서 org 칸만 바꾸는 것은 대상 변경이 아니다.
+- 토큰 권한: classic 토큰은 private repo 까지 보려면 `repo`, fine-grained 토큰은 대상 repo 의 Contents·Metadata read 가 필요하다. fine-grained 토큰은 소유자 1명(계정 또는 org)의 repo 만 볼 수 있으므로 협업자 repo 까지 보려면 classic 토큰을 쓴다.
+- `unpinned-action` 의 "같은 org" 와 `external-submodule` 의 "스캔 중인 org" 는 그 repo 의 실제 owner 로 판정한다.
 
 ## 스캔 화면
 
@@ -445,7 +457,7 @@ GITHUB_API_URL=http://localhost:3200 npm run dev -w server
   - Composer: `composer.json` 의 `php`·`ext-*` 같은 플랫폼 항목(이름에 `/` 가 없는 것)과 `dev-main` 같은 브랜치 버전은 읽지 않는다.
   - `vscode`·`helm`·`terraform`: 버전은 정확한 값의 목록이다. Terraform 은 HCL 을 완전히 파싱하지 않고 최상위의 `module` 블록의 `source`·`version` 만 읽는다(보간 `${…}` 이 든 source, heredoc 안의 내용, `locals` 로 만든 값은 읽지 않는다). 파일당 항목은 5000개까지 읽는다.
 - GitHub API primary rate limit 이 소진되면 기다리지 않고 남은 repo 를 `RATE_LIMITED` 실패로 기록한다. 다음 스캔에서 다시 검사한다.
-- org 는 1개만 감시한다. org 를 바꾸면 현재 검출이 모두 `resolved` 가 된다.
+- 스캔 대상은 1개(org 1개 또는 로그인한 계정)만 감시한다. 대상을 바꾸면 현재 검출이 모두 `resolved` 가 된다.
 - 대상 목록에서 빠진 repo 의 검출은 GitHub 에서 다시 확인한 뒤에만 `resolved` 로 바꾼다. repo 목록이 비거나 직전보다 절반 넘게 줄면 토큰 권한 축소로 보고 보류한다(그 repo 들은 실패 repo 로 기록된다).
 - 스캔 결과를 저장한 뒤 알림 메일을 보내는 동안(보통 몇 초, 최대 약 30초)에는 화면의 [지금 스캔] 이 활성이어도 새 스캔 요청이 409 `SCAN_RUNNING` 으로 거절된다. 메일 발송이 끝난 뒤 다시 시도한다.
 - 로그인·권한 관리가 없다. 외부에 노출하지 않는다.

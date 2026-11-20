@@ -12,6 +12,8 @@ import {
 
 export interface FakeRepoInput {
   name: string;
+  /** 로그인 계정 대상(`listAccountRepos`)에서의 owner. 기본은 로그인 계정(`login`) — 다르면 협업자 repo 다 */
+  owner?: string;
   /** 경로 → 파일 내용 */
   files?: Record<string, string>;
   archived?: boolean;
@@ -23,6 +25,8 @@ export interface FakeRepoInput {
 
 export type FakeMethod =
   | "listOrgRepos"
+  | "getAuthenticatedLogin"
+  | "listAccountRepos"
   | "getRepo"
   | "getTree"
   | "getFile"
@@ -66,6 +70,7 @@ export interface Gate {
 
 interface RepoState {
   name: string;
+  owner: string | null;
   archived: boolean;
   fork: boolean;
   defaultBranch: string;
@@ -110,8 +115,10 @@ interface PendingGate {
  */
 export class FakeGitHubClient implements GitHubClient {
   readonly calls: FakeCall[] = [];
-  /** `listOrgRepos` 실패 (org 목록 조회 실패 — 페이지 실패 포함) */
+  /** `listOrgRepos`·`listAccountRepos` 실패 (목록 조회 실패 — 페이지 실패 포함) */
   listError: Error | null = null;
+  /** 토큰의 계정 (`getAuthenticatedLogin`). Error 면 throw */
+  login: string | Error = "me";
   /** 목록에 두 번 나오는 repo 이름 */
   readonly duplicateInList = new Set<string>();
   /** `getRepo` 결과 덮어쓰기. Error 면 throw, null 이면 404 */
@@ -132,6 +139,7 @@ export class FakeGitHubClient implements GitHubClient {
   upsertRepo(input: FakeRepoInput): void {
     this.repos.set(input.name, {
       name: input.name,
+      owner: input.owner ?? null,
       archived: input.archived ?? false,
       fork: input.fork ?? false,
       defaultBranch: input.defaultBranch ?? "main",
@@ -328,6 +336,26 @@ export class FakeGitHubClient implements GitHubClient {
       if (state.hidden) continue;
       listed.push(toInfo(org, state));
       if (this.duplicateInList.has(state.name)) listed.push(toInfo(org, state));
+    }
+    return listed;
+  }
+
+  async getAuthenticatedLogin(): Promise<string> {
+    await this.enter("getAuthenticatedLogin", "", null, null);
+    if (this.login instanceof Error) throw this.login;
+    return this.login;
+  }
+
+  /** 모든 repo 를 owner(기본: 로그인 계정)의 repo 로 나열한다. 이름은 owner 를 뺀 이름이다 */
+  async listAccountRepos(): Promise<RepoInfo[]> {
+    await this.enter("listAccountRepos", "", null, null);
+    if (this.listError) throw this.listError;
+    const login = this.login instanceof Error ? "me" : this.login;
+    const listed: RepoInfo[] = [];
+    for (const state of this.repos.values()) {
+      if (state.hidden) continue;
+      listed.push(toInfo(state.owner ?? login, state));
+      if (this.duplicateInList.has(state.name)) listed.push(toInfo(state.owner ?? login, state));
     }
     return listed;
   }

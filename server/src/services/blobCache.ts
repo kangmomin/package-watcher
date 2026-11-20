@@ -35,6 +35,8 @@ export function createBlobCache(
   let fetched = 0;
   const wrapped: GitHubClient = {
     listOrgRepos: (org) => client.listOrgRepos(org),
+    getAuthenticatedLogin: () => client.getAuthenticatedLogin(),
+    listAccountRepos: () => client.listAccountRepos(),
     getRepo: (org, repo) => client.getRepo(org, repo),
     getTree: (org, repo, ref) => client.getTree(org, repo, ref),
     listBranches: (org, repo) => client.listBranches(org, repo),

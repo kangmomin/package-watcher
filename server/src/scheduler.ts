@@ -2,7 +2,7 @@ import type { Clock } from "./clock.ts";
 import type { TokenSource } from "./config.ts";
 import type { Logger } from "./logger.ts";
 import type { Repositories } from "./repositories/index.ts";
-import { addMs, canScan, HOUR_MS, readStoredSettings, toIso, toKst } from "./services/common.ts";
+import { addMs, canScan, HOUR_MS, readStoredSettings, scanTargetKey, toIso, toKst } from "./services/common.ts";
 import { todayKst } from "./services/entryActivity.ts";
 import type { FeedService } from "./services/feedService.ts";
 import type { Notifier } from "./services/notifier.ts";
@@ -61,7 +61,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
 
   async function runAutoScan(now: Date): Promise<void> {
     const settings = readStoredSettings(repos.settings);
-    if (!canScan(settings.org, githubTokenSource)) return;
+    if (!canScan(scanTargetKey(settings), githubTokenSource)) return;
 
     const stored = repos.settings.get("next_scan_at");
     const next = stored === null ? Number.NaN : Date.parse(stored);

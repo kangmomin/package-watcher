@@ -30,6 +30,7 @@ import {
   type RepoInfo,
   type TreeEntry,
 } from "../github/client.ts";
+import { createAccountClient, repoFullNameOf, splitRepoKey } from "../github/accountClient.ts";
 import {
   errorMessage,
   isPlainObject,
@@ -59,7 +60,7 @@ import { BASELINE_MARKER, LAST_EVAL_MARKER } from "../repositories/repoAuthors.t
 import type { RepoDone } from "../repositories/scanRepos.ts";
 import type { ScanResult } from "../repositories/scans.ts";
 import { assignLockfiles, dirOf, readWorkspaceGlobs } from "../workspaces.ts";
-import { mapWithConcurrency, parseInput, printable, readStoredSettings, toIso } from "./common.ts";
+import { mapWithConcurrency, parseInput, printable, readStoredSettings, scanTargetKey, storedScanTargetKey, toIso } from "./common.ts";
 import { isEntryActive, todayKst } from "./entryActivity.ts";
 import { createBlobCache, type BlobCache } from "./blobCache.ts";
 import type { DiskBlobCache } from "./diskBlobCache.ts";
@@ -99,7 +100,7 @@ const RATE_LIMITED = "RATE_LIMITED";
 const ACCESS_SUSPECT =
   "접근 불가 의심: 대상 목록이 비었거나 직전보다 절반 넘게 줄어서 resolve 를 보류했습니다";
 const STILL_EXISTS = "대상 목록에 없지만 저장소가 존재합니다. 토큰의 접근 권한을 확인하십시오";
-const ORG_CHANGED = "스캔 중 GitHub org 설정이 바뀌어 결과를 저장하지 않았습니다";
+const ORG_CHANGED = "스캔 중 스캔 대상(GitHub org 또는 로그인 계정) 설정이 바뀌어 결과를 저장하지 않았습니다";
 const ABANDONED = "비정상 종료";
 const DEPENDENCY_FIELDS = [
   "dependencies",
@@ -263,10 +264,19 @@ type RepoOutcome =
     }
   | { repo: string; ok: false; error: string };
 
+/** 스캔을 시작할 때 읽은 대상. `key` 는 `scanTargetKey` — 종료 트랜잭션에서 대상이 바뀌지 않았는지 확인한다 */
+type ResolvedTarget = { kind: "org"; org: string; key: string } | { kind: "user"; key: string };
+
 type Collected =
   | { kind: "listFailed"; error: string }
   | {
       kind: "listed";
+      /** repo 이름의 owner: org 대상은 org, 로그인 계정 대상은 계정의 login */
+      owner: string;
+      /** 로그인 계정 대상일 때 확인한 login. org 대상은 null */
+      accountLogin: string | null;
+      /** 직전 스캔과 로그인 계정이 다르다 → 종료 트랜잭션에서 이전 계정의 활성 검출을 모두 resolve 한다 */
+      accountChanged: boolean;
       /** archived·fork 를 포함한 목록 크기 (`listed_baseline` 비교용) */
       listedCount: number;
       /** 대상 repo(archived·fork 제외)마다 1개 */
@@ -318,13 +328,15 @@ function describeError(error: unknown): string {
  * ② 재확인 응답의 `full_name` 이 그 repo 자신인가.
  * org 는 소문자로 정규화해 저장하므로 org 부분은 대소문자를 무시한다. repo 이름은 목록이 준 정식 이름이므로
  * 대소문자까지 같아야 한다 — 대소문자만 바뀐 이름(`Foo` → `foo`)도 이름 변경이다(S-15).
+ * 로그인 계정 대상의 `owner/name` 이름(협업자 repo)은 그 owner 와 비교한다.
  */
 function isSameRepo(fullName: string, org: string, repo: string): boolean {
+  const [owner, name] = splitRepoKey(org, repo);
   const slash = fullName.indexOf("/");
   return (
     slash !== -1 &&
-    fullName.slice(0, slash).toLowerCase() === org.toLowerCase() &&
-    fullName.slice(slash + 1) === repo
+    fullName.slice(0, slash).toLowerCase() === owner.toLowerCase() &&
+    fullName.slice(slash + 1) === name
   );
 }
 
@@ -378,9 +390,11 @@ function htmlUrlOf(
   ref: string,
   checkId = "",
 ): string {
-  const root = `https://github.com/${org}/${repo}`;
+  // 로그인 계정 대상의 협업자 repo 는 이름이 `owner/name` 이다.
+  const [owner, name] = splitRepoKey(org, repo);
+  const root = `https://github.com/${owner}/${name}`;
   try {
-    const base = `https://github.com/${encodeURIComponent(org)}/${encodeURIComponent(repo)}`;
+    const base = `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
     const history = ref === DEFAULT_BRANCH_REF ? historyKindOf(ecosystem, checkId) : null;
     if (history === "pr" && filePath.startsWith(PULL_PATH_PREFIX)) {
       return `${base}/pull/${encodeURIComponent(filePath.slice(PULL_PATH_PREFIX.length))}`;
@@ -544,7 +558,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       policy.active.has("workflow-changed") && defaultEntries.some((entry) => entry.path.startsWith(WORKFLOW_DIR));
     if (!wantCommits && !wantPulls && !wantWorkflow) return;
 
-    const where = `${org}/${repo.name}`;
+    const where = repoFullNameOf(org, repo.name);
     const sinceIso = toIso(rules.branchSince);
     const { failed } = result.history;
     let blocked = result.rateLimited;
@@ -632,7 +646,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     if (workflowCommits.length > 0 || newCommitters.length > 0) {
       const history = { workflowCommits, newCommitters };
       result.policyMatches.push(
-        ...(await policy.evaluate({ org, repo: repo.name, treePaths: [], manifests: [], sources: [], history }, logger)),
+        ...(await policy.evaluate({ org: splitRepoKey(org, repo.name)[0], repo: repo.name, treePaths: [], manifests: [], sources: [], history }, logger)),
       );
     }
   }
@@ -711,7 +725,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     const pushedAt = Date.parse(repo.pushedAt);
     // N일 안에 push 가 없으면 N일 안의 커밋도 없다 — 브랜치를 조회하지 않는다.
     if (Number.isNaN(pushedAt) || pushedAt < rules.branchSince.getTime()) return;
-    const where = `${org}/${repo.name}`;
+    const where = repoFullNameOf(org, repo.name);
     const sinceIso = toIso(rules.branchSince);
     const stopOnRateLimit = (): void => {
       result.rateLimited = true;
@@ -823,7 +837,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     // path 는 제외 폴더(node_modules 등)를 포함한 tree 전체를 본다. 파일을 받지 않는다.
     const matches: Match[] = indicators.hasPath
       ? withRef(
-          await indicators.matchPaths(repo.name, `${org}/${repo.name}`, entries.map((entry) => entry.path), logger),
+          await indicators.matchPaths(repo.name, repoFullNameOf(org, repo.name), entries.map((entry) => entry.path), logger),
         )
       : [];
     for (const entry of entries) {
@@ -877,14 +891,14 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     ): Promise<PolicyMatch[]> =>
       policyActive
         ? policy.evaluate(
-            { org, repo: repo.name, treePaths: entries.map((entry) => entry.path), manifests, sources, ...extra },
+            { org: splitRepoKey(org, repo.name)[0], repo: repo.name, treePaths: entries.map((entry) => entry.path), manifests, sources, ...extra },
             logger,
           )
         : Promise.resolve([]);
 
     if (!isBranch && indicators.hasBranch) {
       const branches = await client.listBranches(org, repo.name);
-      matches.push(...withRef(indicators.matchBranches(repo.name, `${org}/${repo.name}`, branches, logger)));
+      matches.push(...withRef(indicators.matchBranches(repo.name, repoFullNameOf(org, repo.name), branches, logger)));
     }
     if (declaredCount === 0) {
       return {
@@ -970,7 +984,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     if (indicators.hasContent) {
       matches.push(
         ...withRef(
-          await indicators.matchContents(repo.name, `${org}/${repo.name}`, received ?? new Map(), logger, skippedPaths),
+          await indicators.matchContents(repo.name, repoFullNameOf(org, repo.name), received ?? new Map(), logger, skippedPaths),
         ),
       );
     }
@@ -1014,7 +1028,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       if (!bunLockDirs.has(dirOf(entry.path))) {
         logger.warn(
           `bun.lockb 는 읽지 않습니다. lockfile 이 없는 것으로 처리합니다 (EC-12): ` +
-            printable(`${org}/${repo.name}/${entry.path}`),
+            printable(`${repoFullNameOf(org, repo.name)}/${entry.path}`),
         );
       }
     }
@@ -1131,7 +1145,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
           const hosts = resolvedHostsOf(file.kind, contentOf(file.path));
           if (hosts.length > 0) lockHosts.push({ path: file.path, hosts });
         } catch (error) {
-          logger.warn(`lock 파일의 주소를 읽지 못해 건너뜁니다: ${printable(`${org}/${repo.name}/${file.path}`)}: ${printable(errorMessage(error))}`);
+          logger.warn(`lock 파일의 주소를 읽지 못해 건너뜁니다: ${printable(`${repoFullNameOf(org, repo.name)}/${file.path}`)}: ${printable(errorMessage(error))}`);
         }
       }
     }
@@ -1175,11 +1189,41 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
 
   async function collect(
     scanId: number,
-    org: string,
-    client: GitHubClient,
+    target: ResolvedTarget,
+    baseClient: GitHubClient,
     snapshot: BlacklistEntry[],
     feedContext: FeedContext | null,
   ): Promise<Collected> {
+    // 로그인 계정 대상: 계정(login)을 owner 로 삼고, 협업자 repo 는 `owner/name` 이름으로 다루는 클라이언트를 쓴다.
+    let org: string;
+    let client: GitHubClient;
+    let accountLogin: string | null = null;
+    let accountChanged = false;
+    if (target.kind === "user") {
+      try {
+        accountLogin = await baseClient.getAuthenticatedLogin();
+      } catch (error) {
+        return { kind: "listFailed", error: `로그인한 GitHub 계정을 확인하지 못했습니다: ${describeError(error)}` };
+      }
+      org = accountLogin;
+      client = createAccountClient(baseClient);
+      const previousLogin = repos.settings.get("account_login");
+      accountChanged = previousLogin !== null && previousLogin.toLowerCase() !== accountLogin.toLowerCase();
+      // repo 이름은 계정 사이에 겹칠 수 있다 — 계정이 바뀌었으면 작성자 기록을 비운다 (org 대상은 begin 에서 같은 일을 한다)
+      const authorsKey = `user:${accountLogin.toLowerCase()}`;
+      if (repos.settings.get("authors_org") !== authorsKey) {
+        track("작성자 기록 초기화", () =>
+          repos.transaction(() => {
+            repos.repoAuthors.deleteAll();
+            repos.settings.set("authors_org", authorsKey);
+          }),
+        );
+      }
+    } else {
+      org = target.org;
+      client = baseClient;
+    }
+
     let listed: RepoInfo[];
     try {
       listed = await client.listOrgRepos(org);
@@ -1244,12 +1288,13 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     // ② 대상 목록에 없는 repo 의 활성 검출 — 재확인 후에만 resolve 한다.
     const targetNames = new Set(targets.map((repo) => repo.name));
     // 작성자 기록만 남은 repo 도 같은 재확인을 거친다 (삭제된 repo 의 기록을 지우려고)
-    const candidates = [
-      ...new Set([...repos.findings.listActive().map((finding) => finding.repo), ...repos.repoAuthors.listRepos()]),
-    ]
-      .filter((name) => !targetNames.has(name))
-      .sort();
-    const baseline = Number.parseInt(repos.settings.get("listed_baseline") ?? "", 10);
+    // 계정이 바뀌었으면 이전 계정의 검출은 종료 트랜잭션에서 모두 resolve 하므로 재확인하지 않는다.
+    const candidates = accountChanged
+      ? []
+      : [...new Set([...repos.findings.listActive().map((finding) => finding.repo), ...repos.repoAuthors.listRepos()])]
+          .filter((name) => !targetNames.has(name))
+          .sort();
+    const baseline = accountChanged ? Number.NaN : Number.parseInt(repos.settings.get("listed_baseline") ?? "", 10);
     // 목록이 비었거나 절반 넘게 줄면 토큰 접근 축소로 보고 ② 를 모두 보류한다.
     const suspicious =
       targets.length === 0 || (Number.isInteger(baseline) && unique.length * 2 < baseline);
@@ -1265,6 +1310,9 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
         const info = await client.getRepo(org, name);
         if (info === null || info.archived || info.fork || !isSameRepo(info.fullName, org, name)) {
           resolveRepos.push(name); // 삭제·archived·fork·이름 변경(대소문자만 바뀐 것 포함)·이전
+        } else if (target.kind === "user" && name.includes("/")) {
+          // 협업자 repo 는 저장소가 남아 있어도 초대가 끝나면(협업자에서 빠지면) 목록에서 빠진다 — 대상이 아니다.
+          resolveRepos.push(name);
         } else lookupFailures.push({ repo: name, error: STILL_EXISTS });
       } catch (error) {
         if (error instanceof RateLimitedError) rateLimited = true;
@@ -1274,6 +1322,9 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
 
     return {
       kind: "listed",
+      owner: org,
+      accountLogin,
+      accountChanged,
       listedCount: unique.length,
       outcomes,
       resolveRepos,
@@ -1398,17 +1449,17 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     return mapping;
   }
 
-  /** 동기 트랜잭션 1개: ① org 확인 ② 유효 항목 ③ 생성·resolve ④ 스캔 행 마감 */
+  /** 동기 트랜잭션 1개: ① 스캔 대상 확인 ② 유효 항목 ③ 생성·resolve ④ 스캔 행 마감 */
   function finalize(
     scanId: number,
-    org: string,
+    target: ResolvedTarget,
     snapshot: BlacklistEntry[],
     collected: Collected,
     feedIndex: FeedIndex | null,
     passingCve: ReadonlySet<number>,
   ): { scan: Scan; sendMail: boolean } {
     return repos.transaction(() => {
-      if (repos.settings.get("org") !== org) {
+      if (storedScanTargetKey(repos.settings) !== target.key) {
         failProgress(scanId, ORG_CHANGED);
         return { scan: repos.scans.finish(scanId, failedResult(ORG_CHANGED)), sendMail: false };
       }
@@ -1422,8 +1473,17 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
         failProgress(scanId, collected.error);
         return { scan: repos.scans.finish(scanId, failedResult(collected.error)), sendMail: true };
       }
+      const org = collected.owner;
 
       const now = toIso(clock.now());
+      if (collected.accountLogin !== null) {
+        // 토큰의 계정이 바뀌었다 — 이전 계정의 검출은 이번 대상과 무관하므로 모두 resolve 하고 기준선을 새로 잡는다.
+        if (collected.accountChanged) {
+          repos.findings.resolveAllActive(now);
+          repos.settings.set("listed_baseline", null);
+        }
+        repos.settings.set("account_login", collected.accountLogin);
+      }
       const entries = unchangedEntries(snapshot, today);
       const feedIds = materializeFeedEntries(collected.outcomes, entries, feedIndex, now, today);
       const results = new Map<string, Match>();
@@ -1583,7 +1643,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
 
   async function execute(
     scan: Scan,
-    org: string,
+    target: ResolvedTarget,
     client: GitHubClient,
     snapshot: BlacklistEntry[],
     feedContext: FeedContext | null,
@@ -1598,8 +1658,8 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     // 오래된 캐시 정리는 스캔을 막지 않는다(실패는 캐시 안에서 warn).
     void diskCache?.prune();
     try {
-      const collected = await collect(scan.id, org, client, snapshot, feedContext);
-      ({ scan: finished, sendMail } = finalize(scan.id, org, snapshot, collected, feedContext?.index ?? null, passingCve));
+      const collected = await collect(scan.id, target, client, snapshot, feedContext);
+      ({ scan: finished, sendMail } = finalize(scan.id, target, snapshot, collected, feedContext?.index ?? null, passingCve));
     } catch (error) {
       logger.error(`스캔 #${scan.id} 중 예상하지 못한 오류`, error);
       finished = failUnexpected(scan, error);
@@ -1625,10 +1685,19 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
     return finished;
   }
 
+  /** 저장된 스캔 대상. 대상이 정해지지 않았으면(org 대상인데 org 가 없다) null */
+  function resolveTarget(): ResolvedTarget | null {
+    const stored = readStoredSettings(repos.settings);
+    const key = scanTargetKey(stored);
+    if (key === null) return null;
+    if (stored.scanTarget === "user") return { kind: "user", key };
+    return stored.org === null ? null : { kind: "org", org: stored.org, key };
+  }
+
   function begin(trigger: ScanTrigger): { scan: Scan; done: Promise<Scan> } {
-    const org = repos.settings.get("org");
-    if (!org) {
-      throw new AppError("ORG_NOT_SET", "GitHub org 가 설정되지 않았습니다. 설정 화면에서 org 를 저장하십시오");
+    const target = resolveTarget();
+    if (!target) {
+      throw new AppError("ORG_NOT_SET", "GitHub org 가 설정되지 않았습니다. 설정 화면에서 org 를 저장하거나 로그인 계정을 대상으로 고르십시오");
     }
     if (githubTokenSource === "none" || !github) throw new AppError("TOKEN_MISSING", TOKEN_MISSING_MESSAGE);
     if (running) throw new AppError("SCAN_RUNNING", "스캔이 이미 실행 중입니다");
@@ -1640,8 +1709,9 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       logger.warn(`running 으로 남은 스캔 ${abandoned}건을 failed(${ABANDONED})로 기록했습니다`);
     }
 
-    // repo 이름은 org 사이에 겹칠 수 있다 — org 가 바뀌었으면 작성자 기록을 비운다
-    if (repos.settings.get("authors_org") !== org) {
+    // repo 이름은 org 사이에 겹칠 수 있다 — org 가 바뀌었으면 작성자 기록을 비운다 (로그인 계정 대상은 collect 에서 login 을 확인한 뒤)
+    if (target.kind === "org" && repos.settings.get("authors_org") !== target.org) {
+      const org = target.org;
       repos.transaction(() => {
         repos.repoAuthors.deleteAll();
         repos.settings.set("authors_org", org);
@@ -1661,7 +1731,7 @@ export function createScanService(deps: ScanServiceDeps): ScanService {
       ? { index: feedIndex, blocked: repos.blacklist.allKeys(), blockedForMalware: repos.blacklist.nonCveKeys() }
       : null;
     // lock 은 메일 발송까지 끝난 뒤 finally 에서 푼다.
-    const done = execute(scan, org, github, snapshot, feedContext, passingCve).finally(() => {
+    const done = execute(scan, target, github, snapshot, feedContext, passingCve).finally(() => {
       running = null;
     });
     running = done;

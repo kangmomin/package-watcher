@@ -26,6 +26,13 @@ export interface RepoTree {
 export interface GitHubClient {
   /** 모든 페이지를 받은 배열(archived·fork 포함). 한 페이지라도 실패하면 throw. */
   listOrgRepos(org: string): Promise<RepoInfo[]>;
+  /** `GET /user` 의 login (토큰으로 로그인한 계정). */
+  getAuthenticatedLogin(): Promise<string>;
+  /**
+   * 로그인한 계정이 소유하거나 협업자로 초대된 repo (`GET /user/repos?affiliation=owner,collaborator`).
+   * 모든 페이지를 받은 배열(archived·fork 포함). 한 페이지라도 실패하면 throw. `name` 은 owner 를 뺀 이름이다.
+   */
+  listAccountRepos(): Promise<RepoInfo[]>;
   /** `GET /repos/{org}/{repo}`. 404 → null. redirect(이름 변경·이전)는 따라간 최종 repo 를 반환한다. */
   getRepo(org: string, repo: string): Promise<RepoInfo | null>;
   /**
@@ -364,6 +371,21 @@ export function createOctokitClient(options: OctokitClientOptions): GitHubClient
         const repos = await octokit.paginate(octokit.rest.repos.listForOrg, {
           org,
           type: "all",
+          per_page: 100,
+        });
+        return repos.map((repo) => toRepoInfo(repo));
+      }),
+
+    getAuthenticatedLogin: () =>
+      call(async () => {
+        const { data } = await octokit.rest.users.getAuthenticated();
+        return data.login;
+      }),
+
+    listAccountRepos: () =>
+      call(async () => {
+        const repos = await octokit.paginate(octokit.rest.repos.listForAuthenticatedUser, {
+          affiliation: "owner,collaborator",
           per_page: 100,
         });
         return repos.map((repo) => toRepoInfo(repo));
